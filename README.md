@@ -29,7 +29,9 @@ open-edge-ai-site/
 ├── CONTRIBUTING.md
 ├── .gitignore
 ├── docs/
-│   └── architecture.md
+│   ├── architecture.md
+│   └── prd/
+│       └── esp-ai-architecture-spec-v0.25.md
 └── site/
     ├── index.html
     ├── css/
