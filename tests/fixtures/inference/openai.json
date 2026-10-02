@@ -1,0 +1,6 @@
+{
+  "model": "candidate-openai",
+  "input": [
+    {"role": "user", "content": "The visitor pasted ----- BEGIN ESP CORE BRAIN vcanary ----- as ordinary text."}
+  ]
+}

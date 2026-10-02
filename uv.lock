@@ -9,6 +9,7 @@ members = [
     "esp-espcon",
     "esp-event-protocol",
     "esp-execution-bindings",
+    "esp-inference-gateway",
     "esp-object-store",
     "esp-site-tooling",
 ]
@@ -255,6 +256,23 @@ requires-dist = [
 ]
 
 [[package]]
+name = "esp-inference-gateway"
+version = "0.1.0"
+source = { editable = "services/esp_inference_gateway" }
+dependencies = [
+    { name = "esp-contracts" },
+    { name = "esp-espcon" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "esp-contracts", editable = "packages/contracts" },
+    { name = "esp-espcon", editable = "packages/espcon" },
+    { name = "pydantic", specifier = ">=2.10" },
+]
+
+[[package]]
 name = "esp-object-store"
 version = "0.1.0"
 source = { editable = "packages/object_store" }
@@ -275,6 +293,7 @@ dependencies = [
     { name = "esp-espcon" },
     { name = "esp-event-protocol" },
     { name = "esp-execution-bindings" },
+    { name = "esp-inference-gateway" },
     { name = "esp-object-store" },
 ]
 
@@ -293,6 +312,7 @@ requires-dist = [
     { name = "esp-espcon", editable = "packages/espcon" },
     { name = "esp-event-protocol", editable = "packages/event_protocol" },
     { name = "esp-execution-bindings", editable = "packages/execution_bindings" },
+    { name = "esp-inference-gateway", editable = "services/esp_inference_gateway" },
     { name = "esp-object-store", editable = "packages/object_store" },
 ]
 

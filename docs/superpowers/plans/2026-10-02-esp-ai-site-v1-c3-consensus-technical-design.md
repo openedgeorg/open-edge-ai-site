@@ -404,7 +404,7 @@ An implementation task first establishes a runnable failing test for missing beh
 
 **Interfaces:** `RequestAdapter.parse_and_locate(raw: bytes) -> ParsedRequest`; `RequestAdapter.inject_absent(parsed: ParsedRequest, release: ResolvedRelease) -> ParsedRequest`; `verify_and_serialize(raw: bytes, release: ResolvedRelease, adapter: RequestAdapter) -> VerifiedRequest`. `VerifiedRequest` contains immutable body, body hash/length, both blocks' content paths/offsets/hash/length and injection actions; it conveys no execution authority.
 
-- [ ] **Step 1: Write failing verifier tests for both shapes.**
+- [x] **Step 1: Write failing verifier tests for both shapes.**
   ```python
   def test_privileged_blocks_only_and_separate_behavior(verifier_cases):
       result = verifier_cases.verify_user_pasted_markers()
@@ -415,10 +415,10 @@ An implementation task first establishes a runnable failing test for missing beh
           verifier_cases.verify_conflicting_behavior()
   ```
   Parameterize missing/exact/modified/duplicate/split/wrong-version blocks, Unicode composition, newline/BOM, JSON escaping/duplicate keys/non-finite numbers, context overflow, malicious tool/source markers and missing artifact.
-- [ ] **Step 2: Run red.** `uv run --all-packages pytest tests/unit/test_instruction_verifier.py -q`.
-- [ ] **Step 3: Implement the final-buffer algorithm in Shared Contracts §4.** Recognize only qualified privileged fields; absent injection preserves unrelated instructions; a present wrong block is never repaired. Re-extract after one serialization. Deny unsupported routes/opaque state. A marker in ordinary data is not a corpus-wide rejection rule.
-- [ ] **Step 4: Run green.** Repeat tests; require independent extraction equal to each exact byte array and zero successful corrupt-block cases.
-- [ ] **Step 5: Commit later.** Stage gateway verifier/adapters/tests; `git commit -m "feat: prove exact Brain and behavior in final request bytes"`.
+- [x] **Step 2: Run red.** `uv run --all-packages pytest tests/unit/test_instruction_verifier.py -q`.
+- [x] **Step 3: Implement the final-buffer algorithm in Shared Contracts §4.** Recognize only qualified privileged fields; absent injection preserves unrelated instructions; a present wrong block is never repaired. Re-extract after one serialization. Deny unsupported routes/opaque state. A marker in ordinary data is not a corpus-wide rejection rule.
+- [x] **Step 4: Run green.** Repeat tests; require independent extraction equal to each exact byte array and zero successful corrupt-block cases.
+- [x] **Step 5: Commit later.** Stage gateway verifier/adapters/tests; `git commit -m "feat: prove exact Brain and behavior in final request bytes"`.
 
 ### Task 7: Implement evidence-first proxy and prove the Python transport boundary
 

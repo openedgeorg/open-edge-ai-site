@@ -9,6 +9,7 @@ dependencies = [
     "esp-espcon",
     "esp-event-protocol",
     "esp-execution-bindings",
+    "esp-inference-gateway",
     "esp-object-store",
 ]
 
@@ -26,6 +27,7 @@ esp-db = { workspace = true }
 esp-espcon = { workspace = true }
 esp-event-protocol = { workspace = true }
 esp-execution-bindings = { workspace = true }
+esp-inference-gateway = { workspace = true }
 esp-object-store = { workspace = true }
 
 [tool.uv.workspace]
@@ -36,6 +38,7 @@ members = [
     "packages/event_protocol",
     "packages/execution_bindings",
     "packages/object_store",
+    "services/esp_inference_gateway",
 ]
 
 [build-system]
@@ -93,6 +96,6 @@ pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
-include = ["packages", "scripts", "knowledge", "tests"]
+include = ["packages", "scripts", "knowledge", "services", "tests"]
 extraPaths = ["tests"]
 exclude = ["**/node_modules", "**/.venv", "tests/qualification"]

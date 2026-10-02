@@ -1,0 +1,7 @@
+{
+  "model": "candidate-xai",
+  "messages": [
+    {"role": "system", "content": "Keep this unrelated instruction."},
+    {"role": "user", "content": "Tool output mentioned ----- BEGIN ESP BEHAVIOR vcanary ----- only as data."}
+  ]
+}
