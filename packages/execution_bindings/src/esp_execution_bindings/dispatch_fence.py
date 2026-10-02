@@ -1,0 +1,220 @@
+"""Shared dispatch fences and exclusive revocation, incarnation before mapping."""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+
+from esp_contracts.runtime import DispatchTicket, RunBinding
+from esp_db.client import Db, Transaction, transaction
+from esp_execution_bindings.authorize import assert_dispatchable, read_authority, read_eligibility
+from esp_execution_bindings.binding import AuthorizationError
+
+
+async def with_dispatch_authority(
+    binding: RunBinding,
+    start: Callable[[], Awaitable[DispatchTicket]],
+    *,
+    db: Db,
+) -> DispatchTicket:
+    async with transaction(db) as tx:
+        if not await _fence(tx, binding.runtime_incarnation_id, binding.provider_session_id, exclusive=False):
+            raise AuthorizationError("fence_unavailable")
+        record = await read_authority(tx, binding.provider_session_id)
+        release_status, profile_status = await read_eligibility(tx, binding.provider_session_id)
+        assert_dispatchable(record, binding, release_status, profile_status)
+        # The ticket's response stays outside this transaction. Task 7 proves the real write boundary.
+        return await start()
+
+
+async def revoke_mapping(db: Db, mapping_id: str, expected_epoch: int) -> bool:
+    try:
+        async with transaction(db) as tx:
+            incarnation_id = await _incarnation(tx, mapping_id)
+            if incarnation_id is None or not await _fence(tx, incarnation_id, mapping_id, exclusive=True):
+                raise AuthorizationError("fence_unavailable")
+            updated = await tx.execute_one(
+                """
+                UPDATE provider_session
+                SET ownership_epoch = ownership_epoch + 1, runtime_state = 'unavailable'
+                WHERE id = %s::uuid AND ownership_epoch = %s AND is_current
+                RETURNING id::text AS id
+                """,
+                (mapping_id, expected_epoch),
+            )
+            if updated is None:
+                raise AuthorizationError("epoch_mismatch")
+    except AuthorizationError:
+        return False
+    return True
+
+
+async def revoke_incarnation(db: Db, instance_id: str, incarnation_id: str) -> list[str]:
+    try:
+        async with transaction(db) as tx:
+            rows = await tx.execute(
+                """
+                SELECT id::text AS id
+                FROM provider_session
+                WHERE harness_instance_id = %s::uuid
+                  AND runtime_incarnation_id = %s::uuid
+                  AND is_current
+                ORDER BY id
+                """,
+                (instance_id, incarnation_id),
+            )
+            mapping_ids = [str(row["id"]) for row in rows]
+            for mapping_id in mapping_ids:
+                if not await _fence(tx, incarnation_id, mapping_id, exclusive=True):
+                    raise AuthorizationError("fence_unavailable")
+            revoked: list[str] = []
+            for mapping_id in mapping_ids:
+                updated = await tx.execute_one(
+                    """
+                    UPDATE provider_session
+                    SET ownership_epoch = ownership_epoch + 1, runtime_state = 'unavailable'
+                    WHERE id = %s::uuid AND runtime_incarnation_id = %s::uuid AND is_current
+                    RETURNING id::text AS id
+                    """,
+                    (mapping_id, incarnation_id),
+                )
+                if updated is None:
+                    raise AuthorizationError("epoch_mismatch")
+                revoked.append(str(updated["id"]))
+    except AuthorizationError:
+        return []
+    return revoked
+
+
+async def clear_terminal_guard(db: Db, mapping_id: str, expected_epoch: int) -> bool:
+    try:
+        async with transaction(db) as tx:
+            incarnation_id = await _incarnation(tx, mapping_id)
+            if incarnation_id is None or not await _fence(tx, incarnation_id, mapping_id, exclusive=True):
+                raise AuthorizationError("fence_unavailable")
+            updated = await tx.execute_one(
+                """
+                UPDATE conversation AS c
+                SET active_provider_session_id = NULL, updated_at = transaction_timestamp()
+                FROM provider_session AS ps
+                WHERE ps.id = %s::uuid
+                  AND ps.ownership_epoch = %s
+                  AND ps.is_current
+                  AND c.id = ps.conversation_id
+                  AND c.active_provider_session_id = ps.id
+                RETURNING c.id::text AS id
+                """,
+                (mapping_id, expected_epoch),
+            )
+            if updated is None:
+                raise AuthorizationError("epoch_mismatch")
+    except AuthorizationError:
+        return False
+    return True
+
+
+async def register_native_session(db: Db, mapping_id: str, expected_epoch: int, native_session_id: str) -> bool:
+    try:
+        async with transaction(db) as tx:
+            incarnation_id = await _incarnation(tx, mapping_id)
+            if incarnation_id is None or not await _fence(tx, incarnation_id, mapping_id, exclusive=True):
+                raise AuthorizationError("fence_unavailable")
+            updated = await tx.execute_one(
+                """
+                UPDATE provider_session
+                SET native_session_id = %s
+                WHERE id = %s::uuid
+                  AND ownership_epoch = %s
+                  AND (native_session_id IS NULL OR native_session_id = %s)
+                RETURNING id::text AS id
+                """,
+                (native_session_id, mapping_id, expected_epoch, native_session_id),
+            )
+            if updated is None:
+                raise AuthorizationError("epoch_mismatch")
+    except AuthorizationError:
+        return False
+    return True
+
+
+async def withdraw_release(db: Db, release_id: str) -> bool:
+    return await _mutate_eligibility(
+        db,
+        """
+        SELECT ps.runtime_incarnation_id::text AS incarnation_id, ps.id::text AS mapping_id
+        FROM provider_session AS ps
+        WHERE ps.brain_release_id = %s AND ps.is_current AND ps.runtime_incarnation_id IS NOT NULL
+        ORDER BY ps.runtime_incarnation_id::text, ps.id::text
+        """,
+        (release_id,),
+        """
+        UPDATE brain_release SET status = 'withdrawn'
+        WHERE version = %s AND status <> 'withdrawn'
+        RETURNING version
+        """,
+        (release_id,),
+    )
+
+
+async def disable_profile(db: Db, qualification_id: str) -> bool:
+    return await _mutate_eligibility(
+        db,
+        """
+        SELECT ps.runtime_incarnation_id::text AS incarnation_id, ps.id::text AS mapping_id
+        FROM provider_session AS ps
+        JOIN provider_deployment AS pd ON pd.id = ps.deployment_ref
+        WHERE pd.shared_process_qualification_id = %s
+          AND ps.is_current
+          AND ps.runtime_incarnation_id IS NOT NULL
+        ORDER BY ps.runtime_incarnation_id::text, ps.id::text
+        """,
+        (qualification_id,),
+        """
+        UPDATE runtime_qualification SET status = 'invalidated'
+        WHERE id = %s AND status <> 'invalidated'
+        RETURNING id
+        """,
+        (qualification_id,),
+    )
+
+
+async def _mutate_eligibility(
+    db: Db,
+    inventory_sql: str,
+    inventory_params: tuple[object, ...],
+    update_sql: str,
+    update_params: tuple[object, ...],
+) -> bool:
+    try:
+        async with transaction(db) as tx:
+            rows = await tx.execute(inventory_sql, inventory_params)
+            for row in rows:
+                incarnation_id = row["incarnation_id"]
+                mapping_id = row["mapping_id"]
+                if not isinstance(incarnation_id, str) or not isinstance(mapping_id, str):
+                    raise AuthorizationError("fence_unavailable")
+                if not await _fence(tx, incarnation_id, mapping_id, exclusive=True):
+                    raise AuthorizationError("fence_unavailable")
+            updated = await tx.execute_one(update_sql, update_params)
+            if updated is None:
+                raise AuthorizationError("authority_unavailable")
+    except AuthorizationError:
+        return False
+    return True
+
+
+async def _fence(tx: Transaction, incarnation_id: str, mapping_id: str, *, exclusive: bool) -> bool:
+    row = await tx.execute_one(
+        "SELECT esp_try_fence(%s, %s, %s) AS locked",
+        (incarnation_id, mapping_id, exclusive),
+    )
+    return row is not None and row["locked"] is True
+
+
+async def _incarnation(tx: Transaction, mapping_id: str) -> str | None:
+    row = await tx.execute_one(
+        "SELECT runtime_incarnation_id::text AS incarnation_id FROM provider_session WHERE id = %s::uuid",
+        (mapping_id,),
+    )
+    if row is None or not isinstance(row["incarnation_id"], str):
+        return None
+    return row["incarnation_id"]

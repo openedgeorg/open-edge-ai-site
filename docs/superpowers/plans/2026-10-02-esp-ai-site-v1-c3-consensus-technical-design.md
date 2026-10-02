@@ -381,7 +381,7 @@ An implementation task first establishes a runnable failing test for missing beh
 
 **Interfaces:** `mint_operation_authority(record: AuthorityRecord) -> OperationAuthority`; `verify_binding(token: str, audience: Literal["inference","knowledge"]) -> RunBinding`; `authorize_binding(binding: RunBinding) -> AuthorityRecord`; `with_dispatch_authority(binding: RunBinding, start: Callable[[], Awaitable[DispatchTicket]]) -> DispatchTicket`; `revoke_mapping(mapping_id: str, expected_epoch: int) -> bool`; `revoke_incarnation(instance_id: str, incarnation_id: str) -> list[str]`. Consume Task 1's `DispatchTicket` protocol; this task uses a typed test transport, and Task 7 provides its actual write-boundary implementation.
 
-- [ ] **Step 1: Write failing authority and two-connection tests.**
+- [x] **Step 1: Write failing authority and two-connection tests.**
   ```python
   async def test_scopes_and_revocations_fail_closed(authority_lab):
       assert await authority_lab.setup_token_inference_starts() == 0
@@ -391,10 +391,10 @@ An implementation task first establishes a runnable failing test for missing beh
       assert not await authority_lab.old_completion_clears_replacement()
   ```
   Parameterize every pin, guard, native ID, epoch, lease, incarnation and provider mismatch; include primary outage and release/profile disablement.
-- [ ] **Step 2: Run red.** `uv run --all-packages pytest tests/integration/test_authority.py -q`; expect unauthorized paths still accepted or missing fences.
-- [ ] **Step 3: Implement signatures/current joins and shared/exclusive fence protocol.** Resolve release identity from current metadata; fail closed on unavailable authority. All authority-changing paths use the same documented fence order, including whole-process revocation. Execution tokens require conditional real-native-ID registration. No positive authorization cache and no signing secret in runtime/gateway/MCP.
-- [ ] **Step 4: Run green.** Repeat tests against the primary DB. Prove conditional updates and revocation ordering with the test transport, while explicitly leaving the actual Python handoff proof to Task 7/G1.
-- [ ] **Step 5: Commit later.** Stage authority/migration/tests; `git commit -m "feat: enforce operation scopes and incarnation-wide revocation ordering"`.
+- [x] **Step 2: Run red.** `uv run --all-packages pytest tests/integration/test_authority.py -q`; expect unauthorized paths still accepted or missing fences.
+- [x] **Step 3: Implement signatures/current joins and shared/exclusive fence protocol.** Resolve release identity from current metadata; fail closed on unavailable authority. All authority-changing paths use the same documented fence order, including whole-process revocation. Execution tokens require conditional real-native-ID registration. No positive authorization cache and no signing secret in runtime/gateway/MCP.
+- [x] **Step 4: Run green.** Repeat tests against the primary DB. Prove conditional updates and revocation ordering with the test transport, while explicitly leaving the actual Python handoff proof to Task 7/G1.
+- [x] **Step 5: Commit later.** Stage authority/migration/tests; `git commit -m "feat: enforce operation scopes and incarnation-wide revocation ordering"`.
 
 ### Task 6: Verify exact final Brain and separate behavior blocks
 
