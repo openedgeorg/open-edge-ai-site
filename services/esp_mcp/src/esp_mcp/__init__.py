@@ -1,1 +1,1 @@
-"""Knowledge retrieval. Tool transport is added by the MCP server task."""
+"""Read-only knowledge retrieval and the six authorized MCP tools."""

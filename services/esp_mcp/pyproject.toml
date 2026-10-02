@@ -1,13 +1,16 @@
 [project]
 name = "esp-mcp"
 version = "0.1.0"
-description = "Versioned ESP knowledge retrieval. MCP transport is a later task."
+description = "Read-only MCP knowledge tools authorized from the current transport scope."
 requires-python = ">=3.12"
 dependencies = [
     "esp-contracts",
     "esp-db",
     "esp-embeddings",
+    "esp-execution-bindings",
     "esp-object-store",
+    "fastapi>=0.115",
+    "mcp>=1.30",
     "pydantic>=2.10",
 ]
 
@@ -15,6 +18,7 @@ dependencies = [
 esp-contracts = { workspace = true }
 esp-db = { workspace = true }
 esp-embeddings = { workspace = true }
+esp-execution-bindings = { workspace = true }
 esp-object-store = { workspace = true }
 
 [build-system]
