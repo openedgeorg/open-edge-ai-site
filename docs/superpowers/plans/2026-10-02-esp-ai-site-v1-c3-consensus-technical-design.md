@@ -288,7 +288,7 @@ An implementation task first establishes a runnable failing test for missing beh
 
 **Interfaces:** Produces all Shared Contracts models, `parse_chat_event(value: object) -> ChatEvent` and `parse_submit(value: object) -> SubmitMessage`. `SubmitMessage` contains exactly the three message-body fields in the HTTP table; API validation maps Pydantic errors to documented HTTP codes.
 
-- [ ] **Step 1: Write the failing tests.** Add just enough uv/dev configuration to run `test_wire_aliases_epochs_and_strict_input` and a parameterized roundtrip over all eleven event variants, using synthetic fixture IDs:
+- [x] **Step 1: Write the failing tests.** Add just enough uv/dev configuration to run `test_wire_aliases_epochs_and_strict_input` and a parameterized roundtrip over all eleven event variants, using synthetic fixture IDs:
   ```python
   def test_wire_aliases_epochs_and_strict_input(valid_binding, valid_message):
       assert valid_binding.model_dump(mode="json")["ownership_epoch"] == "9007199254740993"
@@ -299,10 +299,10 @@ An implementation task first establishes a runnable failing test for missing beh
           parse_submit({**valid_message, "message": "😀" * 2049})
   ```
   Also assert unknown event/state rejection, null unknown usage and 20-column/100-row bounds.
-- [ ] **Step 2: Run red.** `uv run --all-packages pytest tests/unit/test_contracts.py -q`; expect missing schemas/failed assertions after the runner works.
-- [ ] **Step 3: Implement the contracts.** Use strict Pydantic v2 discriminated unions/aliases, byte-based message validation, canonical int64 serialization and exact §12.11 runtime/instance states. Configure ruff, strict pyright and markers/discovery excluding credentialed qualification. Pin dependencies with one lockfile.
-- [ ] **Step 4: Run green.** Repeat the test command; run `uv run ruff check .` and `uv run pyright`. Expect eleven-variant roundtrip, precision preservation and static-check success.
-- [ ] **Step 5: Commit later.** Stage task-owned workspace/contracts/tests; `git commit -m "feat: establish Python ESP contracts and test workspace"`.
+- [x] **Step 2: Run red.** `uv run --all-packages pytest tests/unit/test_contracts.py -q`; expect missing schemas/failed assertions after the runner works.
+- [x] **Step 3: Implement the contracts.** Use strict Pydantic v2 discriminated unions/aliases, byte-based message validation, canonical int64 serialization and exact §12.11 runtime/instance states. Configure ruff, strict pyright and markers/discovery excluding credentialed qualification. Pin dependencies with one lockfile.
+- [x] **Step 4: Run green.** Repeat the test command; run `uv run ruff check .` and `uv run pyright`. Expect eleven-variant roundtrip, precision preservation and static-check success.
+- [x] **Step 5: Commit later.** Stage task-owned workspace/contracts/tests; `git commit -m "feat: establish Python ESP contracts and test workspace"`.
 
 ### Task 2: Start G0 discovery and build a truthful qualification recorder
 
