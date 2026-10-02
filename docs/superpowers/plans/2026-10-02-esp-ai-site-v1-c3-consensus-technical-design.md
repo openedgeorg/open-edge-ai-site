@@ -428,7 +428,7 @@ An implementation task first establishes a runnable failing test for missing beh
 
 **Interfaces:** `build_gateway(deps: GatewayDependencies) -> FastAPI`; `persist_verified_request(binding: RunBinding, request: VerifiedRequest) -> EvidenceReceipt`; `FencedTransport.start(route: ApprovedRoute, body: bytes, receipt: EvidenceReceipt) -> DispatchTicket`. `EvidenceReceipt` identifies immutable request/proof objects and request hash. `DispatchTicket` exposes proved initiation/write completion metadata and a separate `response: Awaitable[ProviderResponse]`; `ProviderResponse` contains status/allowed headers and `AsyncIterator[bytes]`. `relay_response(response: ProviderResponse) -> StreamingResponse` waits outside the DB fence.
 
-- [ ] **Step 1: Write failing ordering/fault tests.**
+- [x] **Step 1: Write failing ordering/fault tests.**
   ```python
   async def test_evidence_and_real_write_are_ordered(wire_lab):
       trace = await wire_lab.forward_one()
@@ -439,10 +439,10 @@ An implementation task first establishes a runnable failing test for missing beh
       assert await wire_lab.stale_mutations_when_dispatch_wins() == 0
   ```
   Pause actual transport before connect, before first write, during buffered/TLS writes and before completion; race mapping/process revocation, deadline/lease expiry and DB session loss. Also test split frames, two origins, 429/5xx, redirects, midstream disconnect and lost outcome ack.
-- [ ] **Step 2: Run red.** `uv run --all-packages pytest tests/integration/test_gateway_pipeline.py tests/integration/test_dispatch_boundary.py tests/integration/test_evidence_audit.py -q`; controlled upstream uses real sockets and real PostgreSQL.
-- [ ] **Step 3: Implement proxy/evidence and the instrumented transport candidate.** Encrypt/checksum/ack exact bytes and proof before connect. Rebuild headers, strip internal credentials, disable retries/redirects/env proxies. Select the real write/handoff hook in the pinned httpcore network backend and document the observed buffering boundary with captures; hold the shared fence only across recheck and bounded initiation/write completion. Never substitute a final uncoordinated read or assume generator exhaustion proves dispatch. If the mechanism cannot be proved under faults, keep this deliverable/gate pending.
-- [ ] **Step 4: Run green and audit.** Repeat the exact suites; independently extract stored versus received bytes and verify origin-specific streaming. Confirm transactions end before delayed response headers. If bytes may have left but outcome acknowledgement is lost, record uncertainty without replay; later G1 repeats proof in the real runtime profile.
-- [ ] **Step 5: Commit later.** Stage proxy/transport/tests and sanitized proof note; `git commit -m "feat: gate provider transport on durable evidence and proved authority handoff"`.
+- [x] **Step 2: Run red.** `uv run --all-packages pytest tests/integration/test_gateway_pipeline.py tests/integration/test_dispatch_boundary.py tests/integration/test_evidence_audit.py -q`; controlled upstream uses real sockets and real PostgreSQL.
+- [x] **Step 3: Implement proxy/evidence and the instrumented transport candidate.** Encrypt/checksum/ack exact bytes and proof before connect. Rebuild headers, strip internal credentials, disable retries/redirects/env proxies. Select the real write/handoff hook in the pinned httpcore network backend and document the observed buffering boundary with captures; hold the shared fence only across recheck and bounded initiation/write completion. Never substitute a final uncoordinated read or assume generator exhaustion proves dispatch. If the mechanism cannot be proved under faults, keep this deliverable/gate pending.
+- [x] **Step 4: Run green and audit.** Repeat the exact suites; independently extract stored versus received bytes and verify origin-specific streaming. Confirm transactions end before delayed response headers. If bytes may have left but outcome acknowledgement is lost, record uncertainty without replay; later G1 repeats proof in the real runtime profile.
+- [x] **Step 5: Commit later.** Stage proxy/transport/tests and sanitized proof note; `git commit -m "feat: gate provider transport on durable evidence and proved authority handoff"`.
 
 ### Task 8: Implement versioned hybrid retrieval and exact fact resolution
 

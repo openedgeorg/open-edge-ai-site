@@ -5,13 +5,21 @@ description = "Exact Brain and behavior verification for outbound provider reque
 requires-python = ">=3.12"
 dependencies = [
     "esp-contracts",
+    "esp-db",
     "esp-espcon",
+    "esp-execution-bindings",
+    "esp-object-store",
+    "fastapi>=0.115",
+    "httpx>=0.28",
     "pydantic>=2.10",
 ]
 
 [tool.uv.sources]
 esp-contracts = { workspace = true }
+esp-db = { workspace = true }
 esp-espcon = { workspace = true }
+esp-execution-bindings = { workspace = true }
+esp-object-store = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
