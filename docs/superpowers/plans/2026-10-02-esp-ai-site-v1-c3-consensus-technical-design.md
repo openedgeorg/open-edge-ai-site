@@ -357,7 +357,7 @@ An implementation task first establishes a runnable failing test for missing beh
 
 **Interfaces:** `ObjectStore.put_immutable(key: str, body: bytes, metadata: dict[str,str]) -> ObjectReceipt`; `ObjectStore.get(key: str, version_id: str | None = None) -> bytes`; `resolve_release(release_id: str) -> ResolvedRelease`; `publish_candidate(directory: Path, manifest: ReleaseManifest) -> ReleaseManifest`. `ResolvedRelease` contains manifest, Brain bytes and behavior bytes; `ObjectReceipt` contains immutable version/hash/reference.
 
-- [ ] **Step 1: Write failing byte/pin tests.**
+- [x] **Step 1: Write failing byte/pin tests.**
   ```python
   async def test_separate_pinned_artifacts_never_fall_back(release_lab):
       a = await release_lab.resolve("fixture-a")
@@ -368,10 +368,10 @@ An implementation task first establishes a runnable failing test for missing beh
           await release_lab.resolve_with_missing_behavior("fixture-a")
   ```
   Test multibyte/CRLF/trailing-newline bytes, distinct version/hash identities, overwrite refusal, conflicting legacy hash fields, withdrawn cached artifacts and unchanged old pins after new publication.
-- [ ] **Step 2: Run red.** `uv run --all-packages pytest tests/integration/test_release_artifacts.py -q`; expect missing resolution/immutability behavior.
-- [ ] **Step 3: Implement binary reads, hash/length checks and immutable publication.** Artifacts → manifest → metadata pointer; partial upload cannot enable selection. Translate §8.3 legacy hash naming once, rejecting conflict. Fixtures are synthetic canaries under test/draft namespaces; no domain stub or `status: production`. Task 27 controls production publication.
-- [ ] **Step 4: Run green.** Repeat the test; verify both byte arrays and pinned behavior identity survive publication without merging or normalization.
-- [ ] **Step 5: Commit later.** Stage artifact/registry/fixture files; `git commit -m "feat: resolve immutable Brain and separately pinned behavior artifacts"`.
+- [x] **Step 2: Run red.** `uv run --all-packages pytest tests/integration/test_release_artifacts.py -q`; expect missing resolution/immutability behavior.
+- [x] **Step 3: Implement binary reads, hash/length checks and immutable publication.** Artifacts → manifest → metadata pointer; partial upload cannot enable selection. Translate §8.3 legacy hash naming once, rejecting conflict. Fixtures are synthetic canaries under test/draft namespaces; no domain stub or `status: production`. Task 27 controls production publication.
+- [x] **Step 4: Run green.** Repeat the test; verify both byte arrays and pinned behavior identity survive publication without merging or normalization.
+- [x] **Step 5: Commit later.** Stage artifact/registry/fixture files; `git commit -m "feat: resolve immutable Brain and separately pinned behavior artifacts"`.
 
 ### Task 5: Authorize every protected operation and coordinate all revocations
 

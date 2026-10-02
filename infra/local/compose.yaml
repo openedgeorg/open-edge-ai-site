@@ -17,3 +17,11 @@ services:
     image: valkey/valkey:8
     ports:
       - "127.0.0.1:63799:6379"
+  object_store:
+    # Public MinIO images are no longer pullable. LocalStack supplies the local S3 API only.
+    image: localstack/localstack:4.7
+    environment:
+      SERVICES: s3
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - "127.0.0.1:59000:4566"

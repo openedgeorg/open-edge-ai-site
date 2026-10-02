@@ -6,7 +6,9 @@ requires-python = ">=3.12"
 dependencies = [
     "esp-contracts",
     "esp-db",
+    "esp-espcon",
     "esp-event-protocol",
+    "esp-object-store",
 ]
 
 [dependency-groups]
@@ -20,13 +22,17 @@ dev = [
 [tool.uv.sources]
 esp-contracts = { workspace = true }
 esp-db = { workspace = true }
+esp-espcon = { workspace = true }
 esp-event-protocol = { workspace = true }
+esp-object-store = { workspace = true }
 
 [tool.uv.workspace]
 members = [
     "packages/contracts",
     "packages/db",
+    "packages/espcon",
     "packages/event_protocol",
+    "packages/object_store",
 ]
 
 [build-system]
