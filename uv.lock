@@ -17,6 +17,7 @@ members = [
     "esp-inference-gateway",
     "esp-mcp",
     "esp-object-store",
+    "esp-provider-shared",
     "esp-site-tooling",
 ]
 
@@ -381,6 +382,21 @@ dependencies = [
 requires-dist = [{ name = "esp-contracts", editable = "packages/contracts" }]
 
 [[package]]
+name = "esp-provider-shared"
+version = "0.1.0"
+source = { editable = "providers/shared" }
+dependencies = [
+    { name = "esp-contracts" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "esp-contracts", editable = "packages/contracts" },
+    { name = "pydantic", specifier = ">=2.10" },
+]
+
+[[package]]
 name = "esp-site-tooling"
 version = "0.1.0"
 source = { editable = "." }
@@ -394,6 +410,7 @@ dependencies = [
     { name = "esp-inference-gateway" },
     { name = "esp-mcp" },
     { name = "esp-object-store" },
+    { name = "esp-provider-shared" },
 ]
 
 [package.dev-dependencies]
@@ -415,6 +432,7 @@ requires-dist = [
     { name = "esp-inference-gateway", editable = "services/esp_inference_gateway" },
     { name = "esp-mcp", editable = "services/esp_mcp" },
     { name = "esp-object-store", editable = "packages/object_store" },
+    { name = "esp-provider-shared", editable = "providers/shared" },
 ]
 
 [package.metadata.requires-dev]
