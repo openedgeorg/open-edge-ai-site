@@ -1,0 +1,19 @@
+{
+  "design_assumption": "DA-01",
+  "provider": "xai",
+  "harness_build": null,
+  "runtime_image_digest": null,
+  "transport_integration_digest": null,
+  "storage_profile": null,
+  "tool_policy_digest": null,
+  "configuration_digest": null,
+  "status": "pending",
+  "validated_resident_session_limit": null,
+  "validated_active_turn_limit": null,
+  "acceptance_budgets_ref": null,
+  "evidence_bundle_ref": null,
+  "failed_criteria": [],
+  "review_owner": null,
+  "reviewed_at": null,
+  "notes": "G0 inventory is incomplete. This file is not a validated Grok Build record. ACP persistence is not inferred from headless documentation."
+}

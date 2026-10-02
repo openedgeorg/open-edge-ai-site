@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openedge.example/qualification/manifest.schema.json",
+  "title": "DA-01 qualification manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["design_assumption", "provider", "status"],
+  "properties": {
+    "design_assumption": {"const": "DA-01"},
+    "provider": {"enum": ["openai", "xai"]},
+    "harness_build": {"type": ["string", "null"]},
+    "runtime_image_digest": {"type": ["string", "null"]},
+    "transport_integration_digest": {"type": ["string", "null"]},
+    "storage_profile": {"type": ["string", "null"]},
+    "tool_policy_digest": {"type": ["string", "null"]},
+    "configuration_digest": {"type": ["string", "null"]},
+    "status": {"enum": ["pending", "validated", "invalidated"]},
+    "validated_resident_session_limit": {"type": ["integer", "null"]},
+    "validated_active_turn_limit": {"type": ["integer", "null"]},
+    "acceptance_budgets_ref": {"type": ["string", "null"]},
+    "evidence_bundle_ref": {"type": ["string", "null"]},
+    "failed_criteria": {"type": "array", "items": {"type": "string"}},
+    "review_owner": {"type": ["string", "null"]},
+    "reviewed_at": {"type": ["string", "null"]},
+    "notes": {"type": "string"}
+  }
+}

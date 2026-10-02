@@ -312,7 +312,7 @@ An implementation task first establishes a runnable failing test for missing beh
 
 **Interfaces:** `inspect_candidate(provider: Provider, profile: RuntimeProfile) -> CapabilityReport`; `classify_qualification(report: QualificationResult) -> Literal["pending","validated","invalidated"]`. CLI subcommands are `inspect`, `network`, `storage`, `g1`, `g2`, `capacity`, `da01`, `privacy`, `release`. Future tasks supply their scenario runners; unimplemented gates report pending.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
   ```python
   def test_missing_or_empty_evidence_cannot_qualify(qualification_cases):
       for case in qualification_cases.missing_binary_skipped_empty_or_unproven:
@@ -321,10 +321,10 @@ An implementation task first establishes a runnable failing test for missing beh
       assert classify_qualification(qualification_cases.g2_only) == "pending"
   ```
   Assert nonzero CLI exit for pending/invalidated, exact required-scenario sets and positive observation counts; a synthetic complete recorder fixture never writes a production row.
-- [ ] **Step 2: Run red.** `uv run --all-packages pytest tests/unit/test_qualification_results.py -q`. `uv run --all-packages python scripts/qualify.py inspect --provider openai` and the xAI equivalent must report incomplete inventory until real evidence exists.
-- [ ] **Step 3: Implement discovery/recording.** Inspect exact installed candidate versions/config schemas without upgrading them. Inventory native create/resume/unload, acceptance/correlation/status/history, cancel, model/MCP context hooks, compaction and title/summary/memory/warmup/model-list/subagent paths. Record model account/context/snapshot and every build/profile digest. Discovery may use isolated probes; it is not the G1 application proof. Tasks 11–12 finish candidate-specific evidence.
-- [ ] **Step 4: Run green for recorder tests and rerun discovery.** Unit results pass; live results remain honestly pending where evidence is missing. Essential demonstrated absence invalidates only that candidate and stops its dependent live branch; independent contract work can continue.
-- [ ] **Step 5: Commit later.** Stage recorder/tests/sanitized candidate reports; `git commit -m "test: record early native capability evidence without false qualification"`. Never commit credentials, raw private evidence or a fabricated validated record.
+- [x] **Step 2: Run red.** `uv run --all-packages pytest tests/unit/test_qualification_results.py -q`. `uv run --all-packages python scripts/qualify.py inspect --provider openai` and the xAI equivalent must report incomplete inventory until real evidence exists.
+- [x] **Step 3: Implement discovery/recording.** Inspect exact installed candidate versions/config schemas without upgrading them. Inventory native create/resume/unload, acceptance/correlation/status/history, cancel, model/MCP context hooks, compaction and title/summary/memory/warmup/model-list/subagent paths. Record model account/context/snapshot and every build/profile digest. Discovery may use isolated probes; it is not the G1 application proof. Tasks 11–12 finish candidate-specific evidence.
+- [x] **Step 4: Run green for recorder tests and rerun discovery.** Unit results pass; live results remain honestly pending where evidence is missing. Essential demonstrated absence invalidates only that candidate and stops its dependent live branch; independent contract work can continue.
+- [x] **Step 5: Commit later.** Stage recorder/tests/sanitized candidate reports; `git commit -m "test: record early native capability evidence without false qualification"`. Never commit credentials, raw private evidence or a fabricated validated record.
 
 ### Task 3: Implement current-state SQL schema and restricted authority roles
 
