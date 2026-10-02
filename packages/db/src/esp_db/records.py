@@ -1,0 +1,36 @@
+"""Column contract for the restricted current-authority view."""
+
+from __future__ import annotations
+
+AUTHORITY_COLUMNS: tuple[str, ...] = (
+    "conversation_id",
+    "owner_subject_id",
+    "provider",
+    "provider_session_id",
+    "session_generation",
+    "is_current",
+    "native_session_id",
+    "active_agent_run_id",
+    "harness_instance_id",
+    "runtime_incarnation_id",
+    "ownership_epoch",
+    "owner_lease_expires_at",
+    "active_agent_run_expires_at",
+    "brain_release_id",
+    "brain_hash",
+    "behavior_version",
+    "behavior_hash",
+    "corpus_release_id",
+    "deployment_ref",
+    "model",
+    "qualification_status",
+    "database_time",
+    "runtime_state",
+    "guard_provider_session_id",
+    "cancel_requested",
+    "recovery_count",
+    "recovery_started_at",
+    "recovery_deadline_at",
+    "current_request_id",
+    "current_native_work_ref",
+)

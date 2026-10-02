@@ -334,7 +334,7 @@ An implementation task first establishes a runnable failing test for missing beh
 
 **Interfaces:** `open_db(dsn: str) -> Db`; `transaction(db: Db) -> AsyncContextManager[Transaction]`; `read_current_authority(db: Db, provider_session_id: str) -> AuthorityRecord | None`. Record models include every P §17 column plus the explicitly documented current-state extensions.
 
-- [ ] **Step 1: Write real-database failing tests.**
+- [x] **Step 1: Write real-database failing tests.**
   ```python
   async def test_schema_enforces_current_identity(sql_lab):
       assert await sql_lab.change_provider_sqlstate() == "23514"
@@ -344,10 +344,10 @@ An implementation task first establishes a runnable failing test for missing beh
       assert not {"message", "turn", "job"} & await sql_lab.application_tables()
   ```
   Add invalid pin mutation, decreasing epoch, mismatched retained generation and incomplete validated-record rejection.
-- [ ] **Step 2: Run red.** Start only disposable PostgreSQL/Valkey via `docker compose -f infra/local/compose.yaml up -d postgres valkey`, then `uv run --all-packages pytest tests/integration/test_schema.py -q`; expect missing constraints.
-- [ ] **Step 3: Implement plain-SQL migrations and psycopg access.** Add guard/mapping deferred consistency, indexes, capacity slot/current-policy tables and exact-profile eligibility joins. Give gateway/MCP separate SELECT-only authority views, publisher a distinct knowledge role, and `qualification_admin` exclusive reviewed-validation writes. Bounded pools/statements, no ORM retries, no native/evidence contents in SQL.
-- [ ] **Step 4: Run green.** `uv run --all-packages python scripts/migrate.py` against the disposable DB; rerun the tests and migration. Expect all invariants, role denial and idempotent migration application.
-- [ ] **Step 5: Commit later.** Stage migration/data/local-test files; `git commit -m "feat: persist constrained current authority and capacity metadata"`.
+- [x] **Step 2: Run red.** Start only disposable PostgreSQL/Valkey via `docker compose -f infra/local/compose.yaml up -d postgres valkey`, then `uv run --all-packages pytest tests/integration/test_schema.py -q`; expect missing constraints.
+- [x] **Step 3: Implement plain-SQL migrations and psycopg access.** Add guard/mapping deferred consistency, indexes, capacity slot/current-policy tables and exact-profile eligibility joins. Give gateway/MCP separate SELECT-only authority views, publisher a distinct knowledge role, and `qualification_admin` exclusive reviewed-validation writes. Bounded pools/statements, no ORM retries, no native/evidence contents in SQL.
+- [x] **Step 4: Run green.** `uv run --all-packages python scripts/migrate.py` against the disposable DB; rerun the tests and migration. Expect all invariants, role denial and idempotent migration application.
+- [x] **Step 5: Commit later.** Stage migration/data/local-test files; `git commit -m "feat: persist constrained current authority and capacity metadata"`.
 
 ### Task 4: Publish immutable candidate artifacts and resolve separate behavior pins
 

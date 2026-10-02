@@ -5,6 +5,7 @@ description = "ESP site operator tooling. Application services live in workspace
 requires-python = ">=3.12"
 dependencies = [
     "esp-contracts",
+    "esp-db",
     "esp-event-protocol",
 ]
 
@@ -18,11 +19,13 @@ dev = [
 
 [tool.uv.sources]
 esp-contracts = { workspace = true }
+esp-db = { workspace = true }
 esp-event-protocol = { workspace = true }
 
 [tool.uv.workspace]
 members = [
     "packages/contracts",
+    "packages/db",
     "packages/event_protocol",
 ]
 
