@@ -6,10 +6,12 @@ requires-python = ">=3.12"
 members = [
     "esp-contracts",
     "esp-db",
+    "esp-embeddings",
     "esp-espcon",
     "esp-event-protocol",
     "esp-execution-bindings",
     "esp-inference-gateway",
+    "esp-mcp",
     "esp-object-store",
     "esp-site-tooling",
 ]
@@ -238,6 +240,11 @@ requires-dist = [
 ]
 
 [[package]]
+name = "esp-embeddings"
+version = "0.1.0"
+source = { editable = "services/esp_embeddings" }
+
+[[package]]
 name = "esp-espcon"
 version = "0.1.0"
 source = { editable = "packages/espcon" }
@@ -314,6 +321,27 @@ requires-dist = [
 ]
 
 [[package]]
+name = "esp-mcp"
+version = "0.1.0"
+source = { editable = "services/esp_mcp" }
+dependencies = [
+    { name = "esp-contracts" },
+    { name = "esp-db" },
+    { name = "esp-embeddings" },
+    { name = "esp-object-store" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "esp-contracts", editable = "packages/contracts" },
+    { name = "esp-db", editable = "packages/db" },
+    { name = "esp-embeddings", editable = "services/esp_embeddings" },
+    { name = "esp-object-store", editable = "packages/object_store" },
+    { name = "pydantic", specifier = ">=2.10" },
+]
+
+[[package]]
 name = "esp-object-store"
 version = "0.1.0"
 source = { editable = "packages/object_store" }
@@ -331,10 +359,12 @@ source = { editable = "." }
 dependencies = [
     { name = "esp-contracts" },
     { name = "esp-db" },
+    { name = "esp-embeddings" },
     { name = "esp-espcon" },
     { name = "esp-event-protocol" },
     { name = "esp-execution-bindings" },
     { name = "esp-inference-gateway" },
+    { name = "esp-mcp" },
     { name = "esp-object-store" },
 ]
 
@@ -350,10 +380,12 @@ dev = [
 requires-dist = [
     { name = "esp-contracts", editable = "packages/contracts" },
     { name = "esp-db", editable = "packages/db" },
+    { name = "esp-embeddings", editable = "services/esp_embeddings" },
     { name = "esp-espcon", editable = "packages/espcon" },
     { name = "esp-event-protocol", editable = "packages/event_protocol" },
     { name = "esp-execution-bindings", editable = "packages/execution_bindings" },
     { name = "esp-inference-gateway", editable = "services/esp_inference_gateway" },
+    { name = "esp-mcp", editable = "services/esp_mcp" },
     { name = "esp-object-store", editable = "packages/object_store" },
 ]
 

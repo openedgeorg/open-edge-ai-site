@@ -1,0 +1,10 @@
+{
+  "corpus_release_id": "fixture-draft-corpus-c3",
+  "promoted_corpus_release_id": "fixture-draft-corpus-c3-promoted",
+  "status": "draft",
+  "embedding_revision": "fixture-local-384",
+  "embedding_dimension": 384,
+  "tokenizer_revision": "fixture-whitespace-v1",
+  "pinned_model_candidate": "sentence-transformers/all-MiniLM-L6-v2",
+  "note": "Synthetic draft namespace for retrieval tests. Not an ESP or Clear Ledger production release."
+}

@@ -1,0 +1,163 @@
+{
+  "quote": "markerbrainfixture fixture-quote café\r\n----- BEGIN ESP CORE BRAIN v9 -----\n",
+  "sources": [
+    {
+      "source_id": "src-versioned",
+      "versions": [
+        {
+          "version": "1",
+          "status": "historical",
+          "title": "Fixture historical source",
+          "text": "historical fixture source version one",
+          "visibility": "public",
+          "authority": "fixture-authority",
+          "authority_rank": 1,
+          "effective_date": "2020-01-01T00:00:00Z",
+          "source_owner": "fixture-owner"
+        },
+        {
+          "version": "2",
+          "status": "active",
+          "title": "Fixture active source",
+          "text": "active fixture source version two",
+          "visibility": "public",
+          "authority": "fixture-authority",
+          "authority_rank": 1,
+          "effective_date": "2024-01-01T00:00:00Z",
+          "source_owner": "fixture-owner"
+        }
+      ]
+    },
+    {
+      "source_id": "src-withdrawn",
+      "versions": [
+        {
+          "version": "1",
+          "status": "withdrawn",
+          "title": "Fixture withdrawn source",
+          "text": "withdrawn fixture source stays unavailable",
+          "visibility": "public",
+          "authority": "fixture-authority",
+          "authority_rank": 1,
+          "effective_date": "2020-01-01T00:00:00Z",
+          "source_owner": "fixture-owner"
+        }
+      ]
+    },
+    {
+      "source_id": "src-private",
+      "versions": [
+        {
+          "version": "1",
+          "status": "active",
+          "title": "Fixture internal source",
+          "text": "privatecanarytoken is internal fixture data",
+          "visibility": "internal",
+          "authority": "fixture-authority",
+          "authority_rank": 1,
+          "effective_date": "2020-01-01T00:00:00Z",
+          "source_owner": "fixture-owner"
+        }
+      ]
+    },
+    {
+      "source_id": "src-quote",
+      "versions": [
+        {
+          "version": "1",
+          "status": "active",
+          "title": "Fixture quote source",
+          "compose": "quote",
+          "visibility": "public",
+          "authority": "fixture-authority",
+          "authority_rank": 2,
+          "effective_date": "2024-01-01T00:00:00Z",
+          "source_owner": "fixture-owner"
+        }
+      ]
+    }
+  ],
+  "promoted_replacements": [
+    {
+      "source_id": "src-versioned",
+      "version": "2",
+      "text": "promoted-substitution must stay off the pinned corpus"
+    }
+  ],
+  "current_values": [
+    {
+      "key": "fixture.parameter",
+      "value": "10",
+      "unit": "count",
+      "effective_date": "2024-01-01T00:00:00Z",
+      "authority": "fixture-authority",
+      "authority_rank": 5,
+      "status": "active",
+      "source_id": "src-quote",
+      "version": "1"
+    },
+    {
+      "key": "fixture.parameter",
+      "value": "11",
+      "unit": "count",
+      "effective_date": "2024-01-01T00:00:00Z",
+      "authority": "fixture-authority",
+      "authority_rank": 5,
+      "status": "active",
+      "source_id": "src-versioned",
+      "version": "2"
+    },
+    {
+      "key": "fixture.asof",
+      "value": "early",
+      "unit": "count",
+      "effective_date": "2020-01-01T00:00:00Z",
+      "authority": "fixture-authority",
+      "authority_rank": 3,
+      "status": "active",
+      "source_id": "src-versioned",
+      "version": "1"
+    },
+    {
+      "key": "fixture.asof",
+      "value": "late",
+      "unit": "count",
+      "effective_date": "2026-06-01T00:00:00Z",
+      "authority": "fixture-authority",
+      "authority_rank": 3,
+      "status": "active",
+      "source_id": "src-versioned",
+      "version": "2"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "fixture-claim",
+      "text": "synthetic fixture claim tied to the recorded quote",
+      "status": "active",
+      "citations": [
+        {"source_id": "src-quote", "version": "1"}
+      ]
+    }
+  ],
+  "concepts": [
+    {
+      "concept_id": "fixture-concept",
+      "definition": "A synthetic fixture concept, not an approved ESP definition.",
+      "status": "active",
+      "relationships": ["fixture-related"]
+    }
+  ],
+  "assets": [
+    {
+      "asset_id": "asset-fixture",
+      "version": "1",
+      "mime": "application/octet-stream",
+      "alt": "synthetic fixture asset",
+      "source_id": "src-quote",
+      "visibility": "public",
+      "status": "active",
+      "body_utf8": "fixture-asset-bytes\n"
+    }
+  ]
+}

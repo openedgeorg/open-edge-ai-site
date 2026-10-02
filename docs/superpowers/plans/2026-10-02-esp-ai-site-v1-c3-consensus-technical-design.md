@@ -452,7 +452,7 @@ An implementation task first establishes a runnable failing test for missing beh
 
 **Interfaces:** `embed(texts: list[str]) -> EmbeddingBatch` (revision/dimension/vectors); `search_sources(query: str, scope: KnowledgeScope, filters: SearchFilters | None = None) -> KnowledgeResult[SearchResults]`; `resolve_source(source_id: str, version: str | None, scope: KnowledgeScope) -> KnowledgeResult[SourceRecord]`; `resolve_fact(kind: Literal["claim","concept","current_value"], key: str, scope: KnowledgeScope) -> KnowledgeResult[FactRecord]`; `resolve_asset(asset_id: str, scope: KnowledgeScope, version: str | None = None) -> KnowledgeResult[AssetRecord]`. Record shapes are in Shared Contracts §5.
 
-- [ ] **Step 1: Write failing provenance/precedence tests.**
+- [x] **Step 1: Write failing provenance/precedence tests.**
   ```python
   async def test_versions_conflicts_and_withdrawal(corpus_lab):
       assert (await corpus_lab.explicit_old_source()).data.version == "1"
@@ -462,10 +462,10 @@ An implementation task first establishes a runnable failing test for missing beh
       assert await corpus_lab.quoted_locator_bytes() == corpus_lab.original_quote
   ```
   Include malicious marker text as data, store outage, pinned snapshot after promotion, current-value as-of, unavailable embeddings and rebuilt-index revision mismatch.
-- [ ] **Step 2: Run red.** `uv run --all-packages pytest tests/integration/test_retrieval.py -q`.
-- [ ] **Step 3: Implement separate knowledge schema/roles and local retrieval.** Preserve immutable original source/asset objects and metadata before derived chunk/vector indexes. Apply access/precedence before ranking; return explicit conflict/not-found/unavailable. Verify/license/pin the embedding candidate and tokenizer; local image cannot call hosted model APIs. Freeze exact offsets and mark lexical degradation.
-- [ ] **Step 4: Run green.** Repeat tests against PostgreSQL/pgvector plus controlled embedding failures; confirm no invented facts, wrong-version substitution or private hits.
-- [ ] **Step 5: Commit later.** Stage knowledge/embedding/schema/fixtures; `git commit -m "feat: retrieve authoritative versioned sources and exact facts"`.
+- [x] **Step 2: Run red.** `uv run --all-packages pytest tests/integration/test_retrieval.py -q`.
+- [x] **Step 3: Implement separate knowledge schema/roles and local retrieval.** Preserve immutable original source/asset objects and metadata before derived chunk/vector indexes. Apply access/precedence before ranking; return explicit conflict/not-found/unavailable. Verify/license/pin the embedding candidate and tokenizer; local image cannot call hosted model APIs. Freeze exact offsets and mark lexical degradation.
+- [x] **Step 4: Run green.** Repeat tests against PostgreSQL/pgvector plus controlled embedding failures; confirm no invented facts, wrong-version substitution or private hits.
+- [x] **Step 5: Commit later.** Stage knowledge/embedding/schema/fixtures; `git commit -m "feat: retrieve authoritative versioned sources and exact facts"`.
 
 ### Task 9: Expose only the six independently authorized read-only MCP tools
 

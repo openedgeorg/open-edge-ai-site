@@ -9,7 +9,9 @@ dependencies = [
     "esp-espcon",
     "esp-event-protocol",
     "esp-execution-bindings",
+    "esp-embeddings",
     "esp-inference-gateway",
+    "esp-mcp",
     "esp-object-store",
 ]
 
@@ -27,7 +29,9 @@ esp-db = { workspace = true }
 esp-espcon = { workspace = true }
 esp-event-protocol = { workspace = true }
 esp-execution-bindings = { workspace = true }
+esp-embeddings = { workspace = true }
 esp-inference-gateway = { workspace = true }
+esp-mcp = { workspace = true }
 esp-object-store = { workspace = true }
 
 [tool.uv.workspace]
@@ -38,7 +42,9 @@ members = [
     "packages/event_protocol",
     "packages/execution_bindings",
     "packages/object_store",
+    "services/esp_embeddings",
     "services/esp_inference_gateway",
+    "services/esp_mcp",
 ]
 
 [build-system]
