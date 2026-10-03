@@ -2288,6 +2288,53 @@ def dns_internal_only_outcome(attempts: Sequence[EgressAttempt]) -> LiveOutcome:
     return "inconclusive"
 
 
+class KeyFindings(BaseModel):
+    model_config = STRICT
+    provider: list[str]
+    signing: list[str]
+
+
+class KeyProbeReport(BaseModel):
+    """`esp_provider_shared.runtime_main.key_material_report` as printed by the runtime-container probe."""
+
+    model_config = STRICT
+    roots: list[str]
+    environment: KeyFindings
+    files: KeyFindings
+    scanned_files: int
+    unreadable: int
+    truncated: bool
+
+
+@dataclass(frozen=True)
+class ScenarioVerdict:
+    outcome: LiveOutcome
+    findings: list[str]
+
+
+_SIGNING_SPEC_NAME = re.compile(r"SIGNING|PRIVATE", re.IGNORECASE)
+
+
+def key_material_outcomes(
+    spec_findings: Sequence[str], report: KeyProbeReport | Mapping[str, Any]
+) -> tuple[ScenarioVerdict, ScenarioVerdict]:
+    """(provider keys absent, signing keys absent). Any finding violates; a truncated scan is inconclusive."""
+    probe = report if isinstance(report, KeyProbeReport) else KeyProbeReport.model_validate(report)
+    provider = [f"pod_spec:{item}" for item in spec_findings if not _SIGNING_SPEC_NAME.search(item)]
+    signing = [f"pod_spec:{item}" for item in spec_findings if _SIGNING_SPEC_NAME.search(item)]
+    provider += [f"environment:{name}" for name in probe.environment.provider]
+    provider += [f"file:{path}" for path in probe.files.provider]
+    signing += [f"environment:{name}" for name in probe.environment.signing]
+    signing += [f"file:{path}" for path in probe.files.signing]
+
+    def verdict(findings: list[str]) -> ScenarioVerdict:
+        if findings:
+            return ScenarioVerdict("violated", findings)
+        return ScenarioVerdict("inconclusive" if probe.truncated else "satisfied", findings)
+
+    return verdict(provider), verdict(signing)
+
+
 def load_tool_policy(path: Path = TOOL_POLICY_PATH) -> ToolPolicy:
     return ToolPolicy.model_validate(_strict_json(path.read_bytes()))
 

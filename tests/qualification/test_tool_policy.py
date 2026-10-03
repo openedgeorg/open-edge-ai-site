@@ -14,7 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from scripts.qualify import load_tool_policy, offered_tools, tool_policy_violations
+from scripts.qualify import (
+    KeyProbeReport,
+    key_material_outcomes,
+    load_tool_policy,
+    offered_tools,
+    tool_policy_violations,
+)
 from tests.support.qualification_cluster import QualificationCluster
 
 ROOT_WRITE_PROBE = r"""
@@ -40,28 +46,12 @@ except OSError as exc:
 print(json.dumps(results))
 """
 
+# The runtime image's own bounded scan: mounted secret roots plus the native volume and the harness
+# homes ($CODEX_HOME/auth.json, $GROK_HOME, $HOME), provider and signing material classified apart.
 KEY_PROBE = r"""
-import json, os, re
-from esp_provider_shared.runtime_main import forbidden_runtime_material
-SECRET = re.compile(rb"PRIVATE KEY|\bsk-[A-Za-z0-9_-]{20,}|\bxai-[A-Za-z0-9_-]{20,}|\"d\"\s*:")
-found = {"environment": forbidden_runtime_material(dict(os.environ)), "files": []}
-# The control identity's own TLS key is the one private key a runtime holds; projected secret files
-# are symlinks into a timestamped directory, so compare resolved paths.
-allowed = {os.path.realpath("/etc/esp/mtls/tls.key")}
-for root in ("/etc/esp", "/var/run/secrets", "/run/secrets"):
-    for directory, _, names in os.walk(root):
-        for name in names:
-            path = os.path.join(directory, name)
-            if os.path.realpath(path) in allowed:
-                continue
-            try:
-                with open(path, "rb") as handle:
-                    head = handle.read(65536)
-            except OSError:
-                continue
-            if SECRET.search(head):
-                found["files"].append(path)
-print(json.dumps(found))
+import json, os
+from esp_provider_shared.runtime_main import key_material_report
+print(json.dumps(key_material_report(dict(os.environ))))
 """
 
 CONTROL_PROBE = r"""
@@ -157,28 +147,20 @@ def test_runtime_holds_no_provider_or_signing_keys(cluster: QualificationCluster
         for source in container.get("envFrom", []):
             if "secretRef" in source:
                 spec_findings.append(f"{container['name']}:envFrom")
-    completed = cluster.exec_python(name, KEY_PROBE)
+    completed = cluster.exec_python(name, KEY_PROBE, timeout=300)
     if completed.returncode != 0:
         pytest.fail(f"key probe failed to run: {completed.stderr.strip()[:200]}")
-    found = json.loads(completed.stdout)
-    ref = cluster.keep_raw(f"keys-{cluster.provider}", json.dumps({"spec": spec_findings, "probe": found}))
-    provider_keys = spec_findings + [item for item in found["environment"] if "SIGNING" not in item]
-    signing_keys = [item for item in found["environment"] if "SIGNING" in item] + found["files"]
-    cluster.record(
-        "network",
-        "tools_runtime_provider_keys_absent",
-        "violated" if provider_keys else "satisfied",
-        ref,
-        json.dumps(provider_keys),
+    report = KeyProbeReport.model_validate_json(completed.stdout)
+    ref = cluster.keep_raw(
+        f"keys-{cluster.provider}", json.dumps({"spec": spec_findings, "probe": report.model_dump(mode="json")})
     )
-    cluster.record(
-        "network",
-        "tools_runtime_signing_keys_absent",
-        "violated" if signing_keys else "satisfied",
-        ref,
-        json.dumps(signing_keys),
-    )
-    assert provider_keys == [] and signing_keys == []
+    provider, signing = key_material_outcomes(spec_findings, report)
+    for scenario, verdict in (
+        ("tools_runtime_provider_keys_absent", provider),
+        ("tools_runtime_signing_keys_absent", signing),
+    ):
+        cluster.record("network", scenario, verdict.outcome, ref, json.dumps(verdict.findings))
+    assert provider.outcome == "satisfied" and signing.outcome == "satisfied", (provider, signing)
 
 
 def test_control_endpoint_refuses_an_unauthenticated_caller(cluster: QualificationCluster) -> None:

@@ -21,7 +21,7 @@ from typing import Any, cast
 import pytest
 
 from esp_contracts.eligibility import CandidateAdmissionPolicy
-from esp_provider_shared.runtime_main import forbidden_runtime_material
+from esp_provider_shared.runtime_main import forbidden_runtime_material, key_material_report
 from esp_provider_shared.runtime_main import main as runtime_main
 from scripts.qualify import (
     REQUIRED_NETWORK_SCENARIOS,
@@ -30,6 +30,7 @@ from scripts.qualify import (
     EgressAttempt,
     IsolationGate,
     JunitSummary,
+    KeyProbeReport,
     LiveObservation,
     QualificationEnvironment,
     classify_egress_attempt,
@@ -38,12 +39,14 @@ from scripts.qualify import (
     dns_internal_only_outcome,
     evaluate_live_evidence,
     forward_proxy_outcome,
+    key_material_outcomes,
     load_candidate_policy,
     load_tool_policy,
     offered_tools,
     tool_policy_violations,
 )
 from tests.qualification.test_egress import PROBE as EGRESS_PROBE
+from tests.qualification.test_tool_policy import KEY_PROBE
 from tests.support.policy_lab import CLUSTER_UID, policy_document, synthetic_profile, synthetic_release
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -398,6 +401,112 @@ def test_offered_tools_are_checked_against_the_policy_for_both_wire_shapes() -> 
         assert any(expected in violation for violation in violations), expected
     assert tool_policy_violations(offered_tools(b"{not json"), policy) == ["request_unparseable"]
     assert tool_policy_violations(offered_tools(b"{}"), policy) == []
+
+
+# Synthetic, obviously fake credential shapes; none is a real key or token.
+_FAKE_PEM = "-----BEGIN PRIVATE KEY-----\nTESTONLYTESTONLY\n-----END PRIVATE KEY-----\n"
+_FAKE_CODEX_AUTH = {
+    "OPENAI_API_KEY": None,
+    "tokens": {
+        "id_token": "test-only-id-token-value",
+        "access_token": "test-only-access-token-value",
+        "refresh_token": "test-only-refresh-token-value",
+    },
+}
+
+
+def _native_homes(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    native = tmp_path / "native"
+    codex_home, grok_home, home = native / "codex", native / "grok", native / "home"
+    for directory in (codex_home / "sessions", grok_home, home):
+        directory.mkdir(parents=True)
+    etc_esp = tmp_path / "etc-esp"
+    (etc_esp / "mtls").mkdir(parents=True)
+    (etc_esp / "mtls" / "tls.key").write_text(_FAKE_PEM, encoding="utf-8")
+    # The staged harness configurations are the negative control: no credential in them.
+    (codex_home / "config.toml").write_bytes((ROOT / "infra/runtime/codex/config.toml").read_bytes())
+    (grok_home / "config.toml").write_bytes((ROOT / "infra/runtime/grok/config.toml").read_bytes())
+    # A transcript that merely mentions credential words (escaped JSON) is not a credential.
+    transcript = json.dumps({"text": json.dumps({"access_token": "discussed-in-a-turn-only"})})
+    (codex_home / "sessions" / "rollout.jsonl").write_text(transcript + "\n", encoding="utf-8")
+    environ = {
+        "PATH": "/usr/bin",
+        "ESP_NATIVE_ROOT": str(native),
+        "CODEX_HOME": str(codex_home),
+        "GROK_HOME": str(grok_home),
+        "HOME": str(home),
+        "ESP_CONTROL_TLS_DIR": str(etc_esp / "mtls"),
+    }
+    return environ, etc_esp
+
+
+def test_key_scan_covers_the_native_homes_where_harnesses_keep_credentials(tmp_path: Path) -> None:
+    environ, etc_esp = _native_homes(tmp_path)
+    clean = key_material_report(environ, fixed_roots=(str(etc_esp),))
+    assert clean["files"] == {"provider": [], "signing": []}
+    assert clean["environment"] == {"provider": [], "signing": []}
+    assert not clean["truncated"] and clean["scanned_files"] == 3  # the allowed mTLS key is skipped
+    codex_home, grok_home, home = Path(environ["CODEX_HOME"]), Path(environ["GROK_HOME"]), Path(environ["HOME"])
+    (codex_home / "auth.json").write_text(json.dumps(_FAKE_CODEX_AUTH), encoding="utf-8")
+    (grok_home / "credentials.json").write_text(json.dumps({"api_key": "test-only-xai-key-value"}), encoding="utf-8")
+    (home / ".env").write_text("XAI_API_KEY=test-only-xai-key-value\n", encoding="utf-8")
+    (etc_esp / "signing").mkdir()
+    (etc_esp / "signing" / "key.pem").write_text(_FAKE_PEM, encoding="utf-8")
+    found = key_material_report(environ, fixed_roots=(str(etc_esp),))
+    assert sorted(found["files"]["provider"]) == sorted(
+        [str(codex_home / "auth.json"), str(grok_home / "credentials.json"), str(home / ".env")]
+    )
+    # The control identity's own key is allowed; any other private key is signing material.
+    assert found["files"]["signing"] == [str(etc_esp / "signing" / "key.pem")]
+
+
+def test_key_scan_bounds_its_work_and_reports_truncation(tmp_path: Path) -> None:
+    environ, etc_esp = _native_homes(tmp_path)
+    report = key_material_report(environ, fixed_roots=(str(etc_esp),), max_files=2)
+    assert report["truncated"]
+
+
+def test_provider_and_signing_key_findings_are_classified_separately(tmp_path: Path) -> None:
+    environ, etc_esp = _native_homes(tmp_path)
+    (Path(environ["CODEX_HOME"]) / "auth.json").write_text(json.dumps(_FAKE_CODEX_AUTH), encoding="utf-8")
+    report = key_material_report(
+        {**environ, "ESP_SIGNING_KEY": "redacted", "OPENAI_API_KEY": "redacted"}, fixed_roots=(str(etc_esp),)
+    )
+    provider, signing = key_material_outcomes([], report)
+    assert provider.outcome == "violated" and signing.outcome == "violated"
+    assert any("auth.json" in item for item in provider.findings)
+    assert "environment:OPENAI_API_KEY" in provider.findings
+    assert signing.findings == ["environment:ESP_SIGNING_KEY"]
+    only_provider = key_material_report(environ, fixed_roots=(str(etc_esp),))
+    provider, signing = key_material_outcomes([], only_provider)
+    assert provider.outcome == "violated" and signing.outcome == "satisfied"
+    clean_environ, clean_etc = _native_homes(tmp_path / "clean")
+    provider, signing = key_material_outcomes([], key_material_report(clean_environ, fixed_roots=(str(clean_etc),)))
+    assert provider.outcome == signing.outcome == "satisfied"
+    clean = key_material_report(clean_environ, fixed_roots=(str(clean_etc),))
+    provider, _ = key_material_outcomes(["runtime:OPENAI_API_KEY"], clean)
+    assert provider.outcome == "violated"
+    truncated = key_material_report(clean_environ, fixed_roots=(str(clean_etc),), max_files=1)
+    provider, signing = key_material_outcomes([], truncated)
+    assert provider.outcome == signing.outcome == "inconclusive"
+
+
+def test_live_key_probe_runs_the_runtime_images_scan(tmp_path: Path) -> None:
+    environ, _ = _native_homes(tmp_path)
+    (Path(environ["CODEX_HOME"]) / "auth.json").write_text(json.dumps(_FAKE_CODEX_AUTH), encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, "-c", KEY_PROBE],
+        env=environ,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    report = KeyProbeReport.model_validate_json(completed.stdout)
+    assert report.files.provider == [str(Path(environ["CODEX_HOME"]) / "auth.json")]
+    provider, signing = key_material_outcomes([], report)
+    assert provider.outcome == "violated" and signing.outcome == "satisfied"
 
 
 def test_runtime_entry_refuses_provider_and_signing_key_material() -> None:
