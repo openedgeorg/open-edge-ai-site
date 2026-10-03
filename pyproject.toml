@@ -15,6 +15,7 @@ dependencies = [
     "esp-object-store",
     "esp-provider-openai",
     "esp-provider-shared",
+    "esp-provider-xai",
 ]
 
 [dependency-groups]
@@ -37,6 +38,7 @@ esp-mcp = { workspace = true }
 esp-object-store = { workspace = true }
 esp-provider-openai = { workspace = true }
 esp-provider-shared = { workspace = true }
+esp-provider-xai = { workspace = true }
 
 [tool.uv.workspace]
 members = [
@@ -51,6 +53,7 @@ members = [
     "services/esp_mcp",
     "providers/openai",
     "providers/shared",
+    "providers/xai",
 ]
 
 [build-system]

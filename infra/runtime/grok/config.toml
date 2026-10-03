@@ -1,0 +1,177 @@
+# ESP Grok Build candidate profile for grok 1.0.46 (2765805b9442) (G0, status pending).
+#
+# Staged as $GROK_HOME/config.toml for one long-lived `grok agent --no-leader stdio` ACP process.
+# This build has no strict configuration mode: G0 discovery observed that unknown keys and sections
+# are silently ignored and that permission rules load without their tool names being validated.
+# Only some settings were observed to take effect (reflected in the initialize handshake:
+# models.default, models.disabled_models, features.session_recap, features.voice_mode,
+# features.cancel_rewind, goal.enabled + workflows.enabled, and the esp_knowledge MCP server). Every
+# other key below is configured intent whose enforcement is not demonstrated.
+#
+# Model traffic goes to the supervisor-local attribution relay on loopback. The relay reads the
+# session id the build's model-request client sends in `x-grok-session-id` and attaches that
+# session's bound inference scope before forwarding to the ESP Inference Gateway. No API key,
+# environment key, static header or query parameter identifies a session here.
+
+disable_web_search = true
+
+[cli]
+auto_update = false
+show_tips = false
+use_leader = false
+session_registry = false
+
+[models]
+default = "esp-grok"
+disabled_models = ["grok-4.6", "grok-4.5"]
+# Auxiliary model slots name a model the runtime profile does not pin. The relay refuses any request
+# for it, so title, summary, suggestion, image-description and web-search calls are never forwarded.
+session_summary = "esp-auxiliary-disabled"
+prompt_suggestion = "esp-auxiliary-disabled"
+image_description = "esp-auxiliary-disabled"
+web_search = "esp-auxiliary-disabled"
+
+[model.esp-grok]
+# The deployment supplies the xAI model identifier; this placeholder is replaced together with the
+# runtime profile's pinned model, which changes this file's digest and requires requalification.
+model = "esp-configured-xai-model"
+base_url = "http://127.0.0.1:8472/xai/v1"
+name = "ESP gateway relay"
+# Matches the gateway's xAI request adapter (system messages are the privileged fields).
+api_backend = "chat_completions"
+
+[features]
+session_recap = false
+voice_mode = false
+cancel_rewind = false
+turn_summary = false
+title_refresh = false
+auto_wake = false
+telemetry = "off"
+remote_fetch = false
+backend_tools = false
+web_fetch = false
+write_file = false
+image_gen = false
+video_gen = false
+lsp_tools = false
+ask_user_question = false
+codebase_indexing = false
+feedback = false
+session_search = false
+managed_config = false
+campaigns = false
+active_agent_messages = false
+subagent_worktree_snapshot = false
+file_acceleration = false
+non_git_warning = false
+
+[subagents]
+enabled = false
+
+[goal]
+enabled = false
+
+[workflows]
+enabled = false
+
+[memory]
+enabled = false
+
+[memory_v2]
+enabled = false
+
+[ui]
+# The CLI documents dontAsk; the configuration reference does not list it. If the build ignores it,
+# the default ask mode applies and the supervisor's ACP client guard rejects every permission prompt.
+permission_mode = "dontAsk"
+prompt_suggestions = false
+
+[permission]
+# Deny wins over allow and over every permission mode. Claude-style aliases and native tool names
+# are both listed because the build does not report unknown names.
+deny = [
+    "Bash",
+    "Read",
+    "Edit",
+    "Write",
+    "MultiEdit",
+    "Grep",
+    "Glob",
+    "LS",
+    "WebSearch",
+    "WebFetch",
+    "Task",
+    "run_terminal_command",
+    "read_file",
+    "search_replace",
+    "write_file",
+    "list_dir",
+    "grep",
+    "web_search",
+    "web_fetch",
+    "spawn_subagent",
+    "image_gen",
+    "image_edit",
+    "video_gen",
+    "todo_write",
+    "ask_user_question",
+]
+allow = ["MCPTool(esp_knowledge__*)"]
+
+[sandbox]
+profile = "strict"
+
+[storage]
+# Session folders are native history; the build must never age them out on its own.
+cleanup_ttl_days = 0
+
+[mcp_servers.esp_knowledge]
+# Supervisor-local MCP relay. The build documents the {{session_id}} header template; the relay maps
+# that session to its bound knowledge scope before forwarding to the Knowledge Service.
+url = "http://127.0.0.1:8473/mcp"
+headers = { "x-mcp-session-id" = "{{session_id}}" }
+
+[managed_mcps]
+enabled = false
+
+[relay]
+enabled = false
+
+[telemetry]
+trace_upload = false
+otel_enabled = false
+
+[doom_loop_recovery]
+enabled = false
+
+[long_reasoning_reminder]
+enabled = false
+
+[diagnostics]
+crash_handler = false
+
+[harness]
+disable_workspace_teleport = true
+wait_for_uploads = false
+
+[shell_environment_policy]
+include_only = []
+
+[compat.claude]
+agents = false
+hooks = false
+mcps = false
+rules = false
+skills = false
+
+[compat.cursor]
+agents = false
+hooks = false
+mcps = false
+rules = false
+skills = false
+
+[compat.codex]
+hooks = false
+skills = false

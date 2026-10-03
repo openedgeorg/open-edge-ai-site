@@ -1,0 +1,652 @@
+{
+  "acp_initialize": {
+    "agentCapabilities": {
+      "_meta": {
+        "x.ai/capabilities": {
+          "toolOverrides": {
+            "x_keyword_search": true,
+            "x_semantic_search": true,
+            "x_thread_fetch": false,
+            "x_user_search": false
+          }
+        },
+        "x.ai/fs_notify": true,
+        "x.ai/hooks": {
+          "blockingEvents": [
+            "pre_tool_use",
+            "stop",
+            "subagent_stop"
+          ],
+          "decisions": [
+            "deny",
+            "block"
+          ],
+          "stopSignals": [
+            "continue",
+            "stopReason",
+            "additionalContext"
+          ]
+        }
+      },
+      "auth": {},
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": true,
+        "image": false
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "authMethodIds": [
+      "grok.com"
+    ],
+    "meta": {
+      "agentVersion": "1.0.46",
+      "availableCommands": [
+        {
+          "description": "Compress conversation history to save context window",
+          "input": null,
+          "name": "compact"
+        },
+        {
+          "description": "Toggle always-approve mode (skip all permission prompts)",
+          "input": {
+            "hint": "on|off"
+          },
+          "name": "always-approve"
+        },
+        {
+          "description": "Show context window usage and session stats",
+          "input": null,
+          "name": "context"
+        },
+        {
+          "description": "Show session details (model, turns, context usage)",
+          "input": null,
+          "name": "session-info"
+        },
+        {
+          "description": "Research with bounded parallel agents, cross-check evidence, and write a cited report",
+          "input": {
+            "hint": "<query>"
+          },
+          "name": "deep-research"
+        },
+        {
+          "description": "Launch a saved workflow, list runs, or manage a run (pause, resume, stop, save)",
+          "input": {
+            "hint": "<name> [--agent-budget N] [--effort LEVEL] [args] | runs | pause|resume|stop|save [name]"
+          },
+          "name": "workflow"
+        },
+        {
+          "description": "Set, manage, or check an autonomous goal",
+          "input": {
+            "hint": "<objective> [--budget <tokens>] | status | pause | resume | clear"
+          },
+          "name": "goal"
+        }
+      ],
+      "cancelRewind": true,
+      "defaultAuthMethodId": null,
+      "feedbackTraceOffer": false,
+      "grokShell": true,
+      "mcpApps": false,
+      "mcpServers": [],
+      "metadata": null,
+      "modelState": {
+        "availableModels": [
+          {
+            "_meta": {
+              "agentType": "grok-build-plan",
+              "reasoningEffort": "high",
+              "reasoningEfforts": [
+                {
+                  "default": false,
+                  "description": "Highest effort and reasoning level",
+                  "id": "xhigh",
+                  "label": "Extra High Effort",
+                  "value": "xhigh"
+                },
+                {
+                  "default": true,
+                  "description": "Higher implementation quality with extensive reasoning",
+                  "id": "high",
+                  "label": "High Effort",
+                  "value": "high"
+                },
+                {
+                  "default": false,
+                  "description": "Balanced effort with standard implementation and testing",
+                  "id": "medium",
+                  "label": "Medium Effort",
+                  "value": "medium"
+                },
+                {
+                  "default": false,
+                  "description": "Quick, fast implementations",
+                  "id": "low",
+                  "label": "Low Effort",
+                  "value": "low"
+                }
+              ],
+              "supportsReasoningEffort": true,
+              "totalContextTokens": 500000
+            },
+            "description": "SpaceXAI's latest frontier model",
+            "modelId": "grok-4.6",
+            "name": "Grok 4.6"
+          },
+          {
+            "_meta": {
+              "agentType": "grok-build-plan",
+              "reasoningEffort": "high",
+              "reasoningEfforts": [
+                {
+                  "default": true,
+                  "description": "Highest implementation quality with extensive reasoning",
+                  "id": "high",
+                  "label": "High Effort",
+                  "value": "high"
+                },
+                {
+                  "default": false,
+                  "description": "Balanced effort with standard implementation and testing",
+                  "id": "medium",
+                  "label": "Medium Effort",
+                  "value": "medium"
+                },
+                {
+                  "default": false,
+                  "description": "Quick, fast implementations",
+                  "id": "low",
+                  "label": "Low Effort",
+                  "value": "low"
+                }
+              ],
+              "supportsReasoningEffort": true,
+              "totalContextTokens": 500000
+            },
+            "modelId": "grok-4.5",
+            "name": "Grok 4.5"
+          }
+        ],
+        "currentModelId": "grok-4.6"
+      },
+      "sessionRecap": true,
+      "voiceMode": true,
+      "x.ai/mcp/sdk": true,
+      "x.ai/pluginDirs": true
+    },
+    "notifications": [
+      "_x.ai/mcp/servers_updated"
+    ],
+    "protocolVersion": 1,
+    "provenance": "Observed 2026-10-03 during G0 from the installed build by an initialize-only ACP run (`grok agent --no-leader stdio` under unshare -rn, env -i, temporary HOME and GROK_HOME without configuration, no credentials, no session); transcribed from that run with host-identifying metadata withheld. Not re-observed by qualify inspect (that needs --acp-handshake).",
+    "withheld_meta_keys": [
+      "agentId",
+      "agentInstanceId",
+      "currentWorkingDirectory",
+      "hostname"
+    ]
+  },
+  "acp_v1": {
+    "agent_notifications": [
+      "session/update"
+    ],
+    "agent_requests": [
+      "session/request_permission",
+      "fs/read_text_file",
+      "fs/write_text_file",
+      "terminal/create"
+    ],
+    "client_notifications": [
+      "session/cancel"
+    ],
+    "client_requests": [
+      "initialize",
+      "authenticate",
+      "session/new",
+      "session/prompt",
+      "session/set_config_option",
+      "session/set_mode",
+      "session/load",
+      "session/resume",
+      "session/close",
+      "session/list"
+    ],
+    "protocol_version": 1,
+    "session_update_kinds": [
+      "user_message_chunk",
+      "agent_message_chunk",
+      "agent_thought_chunk",
+      "tool_call",
+      "tool_call_update",
+      "plan",
+      "available_commands_update",
+      "current_mode_update",
+      "config_option_update",
+      "session_info_update",
+      "usage_update"
+    ],
+    "shapes": {
+      "TextContent": {
+        "properties": [
+          "_meta",
+          "annotations",
+          "text",
+          "type"
+        ],
+        "required": [
+          "text",
+          "type"
+        ]
+      },
+      "initialize": {
+        "params": {
+          "properties": [
+            "_meta",
+            "clientCapabilities",
+            "clientInfo",
+            "protocolVersion"
+          ],
+          "required": [
+            "protocolVersion"
+          ]
+        },
+        "result": {
+          "properties": [
+            "_meta",
+            "agentCapabilities",
+            "agentInfo",
+            "authMethods",
+            "protocolVersion"
+          ],
+          "required": [
+            "protocolVersion"
+          ]
+        }
+      },
+      "session/cancel": {
+        "params": {
+          "properties": [
+            "_meta",
+            "sessionId"
+          ],
+          "required": [
+            "sessionId"
+          ]
+        }
+      },
+      "session/close": {
+        "params": {
+          "properties": [
+            "_meta",
+            "sessionId"
+          ],
+          "required": [
+            "sessionId"
+          ]
+        },
+        "result": {
+          "properties": [
+            "_meta"
+          ],
+          "required": []
+        }
+      },
+      "session/load": {
+        "params": {
+          "properties": [
+            "_meta",
+            "additionalDirectories",
+            "cwd",
+            "mcpServers",
+            "sessionId"
+          ],
+          "required": [
+            "cwd",
+            "mcpServers",
+            "sessionId"
+          ]
+        },
+        "result": {
+          "properties": [
+            "_meta",
+            "configOptions",
+            "models",
+            "modes"
+          ],
+          "required": []
+        }
+      },
+      "session/new": {
+        "params": {
+          "properties": [
+            "_meta",
+            "additionalDirectories",
+            "cwd",
+            "mcpServers"
+          ],
+          "required": [
+            "cwd",
+            "mcpServers"
+          ]
+        },
+        "result": {
+          "properties": [
+            "_meta",
+            "configOptions",
+            "models",
+            "modes",
+            "sessionId"
+          ],
+          "required": [
+            "sessionId"
+          ]
+        }
+      },
+      "session/prompt": {
+        "params": {
+          "properties": [
+            "_meta",
+            "messageId",
+            "prompt",
+            "sessionId"
+          ],
+          "required": [
+            "prompt",
+            "sessionId"
+          ]
+        },
+        "result": {
+          "properties": [
+            "_meta",
+            "stopReason",
+            "usage",
+            "userMessageId"
+          ],
+          "required": [
+            "stopReason"
+          ]
+        }
+      },
+      "session/resume": {
+        "params": {
+          "properties": [
+            "_meta",
+            "additionalDirectories",
+            "cwd",
+            "mcpServers",
+            "sessionId"
+          ],
+          "required": [
+            "cwd",
+            "sessionId"
+          ]
+        },
+        "result": {
+          "properties": [
+            "_meta",
+            "configOptions",
+            "models",
+            "modes"
+          ],
+          "required": []
+        }
+      },
+      "session/update": {
+        "params": {
+          "properties": [
+            "_meta",
+            "sessionId",
+            "update"
+          ],
+          "required": [
+            "sessionId",
+            "update"
+          ]
+        }
+      }
+    },
+    "source": "Agent Client Protocol version 1 as declared by the build at initialize; no machine-readable schema ships with the build; request types and messageId/userMessageId fields are corroborated by binary markers",
+    "stop_reasons": [
+      "end_turn",
+      "max_tokens",
+      "max_turn_requests",
+      "refusal",
+      "cancelled"
+    ]
+  },
+  "config_reflections": [
+    {
+      "observed_with": "initialize-only run with a draft configuration that set these keys to the same values as infra/runtime/grok/config.toml",
+      "reflected": {
+        "_meta.modelState.currentModelId": "esp-grok"
+      },
+      "settings": {
+        "model.esp-grok.api_backend": "chat_completions",
+        "models.default": "esp-grok"
+      }
+    },
+    {
+      "observed_with": "initialize-only run with a draft configuration that set these keys to the same values as infra/runtime/grok/config.toml",
+      "reflected": {
+        "_meta.modelState.availableModels[].modelId": [
+          "esp-grok"
+        ]
+      },
+      "settings": {
+        "models.disabled_models": [
+          "grok-4.6",
+          "grok-4.5"
+        ]
+      }
+    },
+    {
+      "observed_with": "initialize-only run with a draft configuration that set these keys to the same values as infra/runtime/grok/config.toml",
+      "reflected": {
+        "_meta.cancelRewind": false,
+        "_meta.sessionRecap": false,
+        "_meta.voiceMode": false
+      },
+      "settings": {
+        "features.cancel_rewind": false,
+        "features.session_recap": false,
+        "features.voice_mode": false
+      }
+    },
+    {
+      "observed_with": "initialize-only run with a draft configuration that set these keys to the same values as infra/runtime/grok/config.toml",
+      "reflected": {
+        "_meta.availableCommands[].name": [
+          "compact",
+          "always-approve",
+          "context",
+          "session-info"
+        ]
+      },
+      "settings": {
+        "goal.enabled": false,
+        "workflows.enabled": false
+      }
+    },
+    {
+      "observed_with": "initialize-only run with a draft configuration that set these keys to the same values as infra/runtime/grok/config.toml",
+      "reflected": {
+        "_x.ai/mcp/servers_updated.mcpServers": [
+          {
+            "name": "esp_knowledge",
+            "source": "local",
+            "type": "http",
+            "url": "http://127.0.0.1:8473/mcp"
+          }
+        ]
+      },
+      "settings": {
+        "mcp_servers.esp_knowledge.headers": {
+          "x-mcp-session-id": "{{session_id}}"
+        },
+        "mcp_servers.esp_knowledge.url": "http://127.0.0.1:8473/mcp"
+      }
+    }
+  ],
+  "esp_client_notifications": [
+    "session/cancel"
+  ],
+  "esp_operation_mapping": {
+    "create": "session/new",
+    "handshake": "initialize",
+    "history": "session/load",
+    "resume": "session/resume",
+    "submit": "session/prompt",
+    "unload": "session/close"
+  },
+  "format": "esp-grok-protocol-capture/1",
+  "g0_observations": [
+    {
+      "how": "initialize-only run, same isolation",
+      "observation": "Unknown configuration keys and sections are silently ignored: a draft configuration with an unknown feature key and an unknown section still completed the initialize handshake with its other settings applied."
+    },
+    {
+      "how": "initialize-only run, same isolation; the probe configuration contained a duplicate table",
+      "observation": "A TOML syntax error makes the build refuse to start (`Failed to load config`)."
+    },
+    {
+      "how": "grok inspect --json, same isolation",
+      "observation": "grok inspect --json loaded every permission rule of a probe configuration, including one naming a tool that does not exist (27 loaded, 0 skipped): rule tool names are not validated."
+    },
+    {
+      "how": "grok inspect --json, same isolation",
+      "observation": "grok inspect --json listed the esp_knowledge MCP server (transport http) from the user configuration layer."
+    },
+    {
+      "how": "files written into the isolated GROK_HOME",
+      "observation": "The build unpacks its user guide into $GROK_HOME/docs/user-guide on launch. It documents session/load replay, session/set_config_option, the {{session_id}} MCP header template, sandbox profiles and permission rules. Documentation is a declaration, not runtime evidence."
+    },
+    {
+      "how": "initialize-only run without configuration",
+      "observation": "The initialize result advertises X search tool overrides (x_keyword_search, x_semantic_search true) under agentCapabilities._meta; whether features.backend_tools = false removes them was not observed."
+    }
+  ],
+  "harness_build": "grok 1.0.46 (2765805b9442) sha256:41626a53292324140b92556b9d42ff5542e3dcd04aff85eafb8689dd4adb44fc",
+  "static": {
+    "generator": {
+      "help": [
+        "grok --help",
+        "grok agent --help",
+        "grok sessions --help"
+      ],
+      "isolation": "unshare -rn (new network namespace, no route out); env -i with temporary HOME and GROK_HOME; GROK_DISABLE_AUTOUPDATER=1; runtime configuration staged; no credentials; no agent process",
+      "markers": "byte-substring scan of the native binary file; nothing executed",
+      "version": "grok --version"
+    },
+    "help": {
+      "agent_modes": [
+        "stdio",
+        "headless",
+        "serve",
+        "leader",
+        "help"
+      ],
+      "sessions_commands": [
+        "list",
+        "search",
+        "delete",
+        "help"
+      ],
+      "top_level_commands": [
+        "agent",
+        "clone",
+        "completions",
+        "cursor-worker",
+        "dashboard",
+        "doctor",
+        "du",
+        "export",
+        "help",
+        "inspect",
+        "leader",
+        "login",
+        "logout",
+        "mcp",
+        "memory",
+        "models",
+        "plugin",
+        "sessions",
+        "setup",
+        "trace",
+        "update",
+        "usage",
+        "version",
+        "worktree",
+        "wrap"
+      ]
+    },
+    "markers": {
+      "agent_message_chunk": true,
+      "agent_thought_chunk": true,
+      "authenticate": true,
+      "configOptions": true,
+      "config_option_update": true,
+      "currentValue": true,
+      "end_turn": true,
+      "fs/read_text_file": true,
+      "fs/write_text_file": true,
+      "initialize": true,
+      "max_turn_requests": true,
+      "messageId": true,
+      "session/cancel": true,
+      "session/close": true,
+      "session/list": true,
+      "session/load": true,
+      "session/new": true,
+      "session/prompt": true,
+      "session/request_permission": true,
+      "session/resume": true,
+      "session/set_config_option": true,
+      "session/set_mode": true,
+      "session/update": true,
+      "stopReason": true,
+      "struct CancelNotification": true,
+      "struct CloseSessionRequest": true,
+      "struct InitializeRequest": true,
+      "struct ListSessionsRequest": true,
+      "struct LoadSessionRequest": true,
+      "struct LoadSessionResponse": true,
+      "struct NewSessionRequest": true,
+      "struct NewSessionResponse": true,
+      "struct PromptRequest": true,
+      "struct PromptResponse": true,
+      "struct RequestPermissionRequest": true,
+      "struct ResumeSessionRequest": true,
+      "struct SessionNotification": true,
+      "terminal/create": true,
+      "tool_call_update": true,
+      "userMessageId": true,
+      "user_message_chunk": true,
+      "x-grok-agent-id": true,
+      "x-grok-conv-id": true,
+      "x-grok-req-id": true,
+      "x-grok-session-id": true,
+      "x-grok-turn-idx": true,
+      "x-mcp-session-id": true,
+      "x.ai/compact_conversation": true,
+      "xai-grok-sampler/src/client.rs": true,
+      "{{session_id}}": true
+    },
+    "native_binary": {
+      "label": "grok-1.0.46-linux-x86_64",
+      "sha256": "41626a53292324140b92556b9d42ff5542e3dcd04aff85eafb8689dd4adb44fc"
+    },
+    "version": "grok 1.0.46 (2765805b9442)"
+  }
+}

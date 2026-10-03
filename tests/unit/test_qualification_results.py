@@ -12,6 +12,7 @@ import pytest
 from scripts.qualify import REQUIRED_G1_SCENARIOS, classify_qualification, record_qualification
 from tests.support.candidate_probe import QualificationCases
 from tests.support.codex_capture import write_observation
+from tests.support.grok_capture import write_grok_observation
 
 
 def test_missing_or_empty_evidence_cannot_qualify(qualification_cases: QualificationCases) -> None:
@@ -64,9 +65,12 @@ def test_cli_pending_and_invalidated_are_nonzero(tmp_path: Path) -> None:
     )
     assert pending.returncode != 0
     assert "pending" in pending.stdout
+    # Likewise for the installed Grok Build.
+    recorded_xai = ["--observation-file", str(write_grok_observation(tmp_path / "grok-observation.json"))]
     xai = subprocess.run(
-        [sys.executable, "scripts/qualify.py", "inspect", "--provider", "xai"],
+        [sys.executable, "scripts/qualify.py", "inspect", "--provider", "xai", *recorded_xai],
         cwd=root,
+        env=hermetic,
         capture_output=True,
         text=True,
         check=False,

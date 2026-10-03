@@ -19,6 +19,7 @@ members = [
     "esp-object-store",
     "esp-provider-openai",
     "esp-provider-shared",
+    "esp-provider-xai",
     "esp-site-tooling",
 ]
 
@@ -415,6 +416,23 @@ requires-dist = [
 ]
 
 [[package]]
+name = "esp-provider-xai"
+version = "0.1.0"
+source = { editable = "providers/xai" }
+dependencies = [
+    { name = "esp-contracts" },
+    { name = "esp-provider-shared" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "esp-contracts", editable = "packages/contracts" },
+    { name = "esp-provider-shared", editable = "providers/shared" },
+    { name = "pydantic", specifier = ">=2.10" },
+]
+
+[[package]]
 name = "esp-site-tooling"
 version = "0.1.0"
 source = { editable = "." }
@@ -430,6 +448,7 @@ dependencies = [
     { name = "esp-object-store" },
     { name = "esp-provider-openai" },
     { name = "esp-provider-shared" },
+    { name = "esp-provider-xai" },
 ]
 
 [package.dev-dependencies]
@@ -453,6 +472,7 @@ requires-dist = [
     { name = "esp-object-store", editable = "packages/object_store" },
     { name = "esp-provider-openai", editable = "providers/openai" },
     { name = "esp-provider-shared", editable = "providers/shared" },
+    { name = "esp-provider-xai", editable = "providers/xai" },
 ]
 
 [package.metadata.requires-dev]

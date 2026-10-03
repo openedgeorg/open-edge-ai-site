@@ -1,12 +1,12 @@
 {
   "design_assumption": "DA-01",
   "provider": "xai",
-  "harness_build": null,
+  "harness_build": "grok 1.0.46 (2765805b9442) sha256:41626a53292324140b92556b9d42ff5542e3dcd04aff85eafb8689dd4adb44fc",
   "runtime_image_digest": null,
   "transport_integration_digest": null,
   "storage_profile": null,
   "tool_policy_digest": null,
-  "configuration_digest": null,
+  "configuration_digest": "sha256:a25eb2cfa337191d9d76d692c162de644c8462a5e80803bfab7b1a51dbb8be39",
   "status": "pending",
   "validated_resident_session_limit": null,
   "validated_active_turn_limit": null,
@@ -15,5 +15,5 @@
   "failed_criteria": [],
   "review_owner": null,
   "reviewed_at": null,
-  "notes": "G0 inventory is incomplete. This file is not a validated Grok Build record. ACP persistence is not inferred from headless documentation."
+  "notes": "G0 inventory for the Grok Build ACP candidate (one long-lived `grok agent --no-leader stdio` process hosting many sessions); this file is not a validated Grok Build record. harness_build is the canonical exact-build identity: the isolated `grok --version` output plus the sha256 of the native binary grok-1.0.46-linux-x86_64, the same value the frozen capture, qualify inspect and the adapter factory use. Protocol capture providers/xai/integration/protocol-capabilities.json sha256:3243e0f96d21093724a97dd8fcafb28fcb8ff7c04e7f0e5af0ba6dc9ff106c50 holds the static facts qualify inspect regenerates (version and help under unshare -rn with an isolated HOME and GROK_HOME, plus a byte scan of the binary) and the ACP initialize facts of one isolated initialize-only G0 run, with host-identifying metadata withheld. The configuration digest is infra/runtime/grok/config.toml; the build has no strict configuration mode and silently ignores unknown keys, so only the settings reflected in the handshake were observed to apply. No session was created and no prompt or model request was made, so model access, the xAI model identifier and authentication-free use of a custom base_url are unobserved. Every required primitive is unproven: the build declares ACP protocol version 1 with loadSession and session resume, close and list capabilities, its binary carries PromptRequest.messageId and PromptResponse.userMessageId and the model-request header x-grok-session-id, and its documentation names the {{session_id}} MCP header template, but declarations are not runtime evidence. ACP persistence, resume, unload and history are not inferred from headless documentation, and a headless resume is not ACP recovery. ACP declares no per-turn status read, export or delete method. The tool policy is configured (deny rules, dontAsk, disabled features, strict sandbox, client without file-system or terminal capability) but not demonstrated. Runtime image, transport integration, storage profile and tool-policy digests are not yet built."
 }
