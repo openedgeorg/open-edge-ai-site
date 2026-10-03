@@ -19,6 +19,20 @@ Public eligibility then needs a released Brain and a matching validated record
 (`esp_contracts.eligibility.publicly_eligible`). Only an isolated qualification deployment holds a
 candidate policy; that recorded test-only policy may admit allowlisted pending candidates
 (`esp_contracts.eligibility.eligible`), never an invalidated one, and changes no record.
+
+Ineligible and unavailable are different answers. `ConversationIneligible` means an authority answered
+no: the release is withdrawn, unselected, absent or does not match its hashes, or the deployment does not
+qualify. `ReleaseStoreUnavailable` means the release store could not be read, so eligibility is unknown;
+callers answer `503 service_unavailable` (retryable) and never report the provider ineligible.
+
+Serialization. The eligibility reads are plain reads under READ COMMITTED. `esp_app` holds only SELECT
+on `brain_release` and `runtime_qualification`, so it cannot lock those rows, and `withdraw_release` and
+`disable_profile` fence only current mappings that already have an incarnation. A creation, or a first
+admission, that races a withdrawal or invalidation can therefore commit against eligibility that was
+withdrawn concurrently. That is not a safety gap: dispatch-time authorization is the backstop.
+`with_dispatch_authority` takes the shared dispatch fences and rereads the release and profile status
+(`authorize.assert_dispatchable`) before any provider request, and a mapping without an incarnation
+cannot dispatch until native setup gives it one. Creation and admission only decline early.
 """
 
 from __future__ import annotations
@@ -128,10 +142,45 @@ class ConversationNotFound(Exception):
 
 
 class ConversationIneligible(Exception):
+    """An authority answered no. Permanent for this release and deployment; not retryable."""
+
     def __init__(self, provider: Provider, reason: EligibilityReason) -> None:
         super().__init__(reason)
         self.provider: Provider = provider
         self.reason: EligibilityReason = reason
+
+
+class ReleaseStoreUnavailable(Exception):
+    """The Brain Registry or its object store could not be read, so eligibility is unknown.
+
+    A bound service that cannot be established: callers answer `503 service_unavailable` with
+    `retryable:true`, on creation, on `/providers` and on admission. `code` is a stable machine code
+    (`ReleaseError` code or `release_store_io_error`), never exception text.
+    """
+
+    def __init__(self, provider: Provider, code: str) -> None:
+        super().__init__(code)
+        self.provider: Provider = provider
+        self.code = code
+
+
+# The release authority's own answers about one release: withdrawn, unselected, absent, or not the
+# immutable bytes its manifest names. Every other failure (`object_store_unavailable`, an I/O error
+# or a code this module does not classify) means the answer could not be read.
+_RELEASE_REFUSALS: frozenset[str] = frozenset(
+    {
+        "release_withdrawn",
+        "release_unavailable",
+        "release_id_invalid",
+        "object_unavailable",
+        "object_version_mismatch",
+        "object_key_invalid",
+        "artifact_reference_invalid",
+        "pinned_brain_unavailable",
+        "pinned_behavior_unavailable",
+        "artifact_hash_mismatch",
+    }
+)
 
 
 class ConversationService:
@@ -244,7 +293,10 @@ class ConversationService:
         return [_view(row) for row in rows]
 
     async def eligibility(self, provider: Provider) -> ProviderEligibility:
-        """Whether a new conversation on `provider` may pin the currently selected release."""
+        """Whether a new conversation on `provider` may pin the currently selected release.
+
+        Raises `ReleaseStoreUnavailable` when the release store cannot be read: unknown is not refused.
+        """
         try:
             release = await self._resolve(provider, self._release_id)
         except ConversationIneligible as exc:
@@ -256,7 +308,9 @@ class ConversationService:
         """Resolve a conversation's own pinned release, before any reservation transaction opens.
 
         Object-store reads happen here, outside the transaction. A withdrawn or substituted release
-        is refused; nothing falls back to the currently selected release.
+        is refused (`ConversationIneligible`); nothing falls back to the currently selected release.
+        A release store that cannot be read raises `ReleaseStoreUnavailable`, which admission reports
+        as `service_unavailable`, never as ineligibility.
         """
         normalized = _uuid_or_none(conversation_id)
         if normalized is None:
@@ -278,6 +332,12 @@ class ConversationService:
 
         No remote I/O: `release` comes from `resolve_pinned_release`. Database eligibility is read
         again here so a withdrawal or invalidation committed since creation refuses admission.
+
+        These reads are not serialized against a concurrent withdrawal or invalidation (see the module
+        docstring); dispatch-time authorization under the dispatch fence is the backstop. If admission
+        must itself commit only against current eligibility, the caller has to serialize with the
+        eligibility mutations, for example a release- and qualification-scoped `esp_try_fence` taken
+        exclusive by `withdraw_release`/`disable_profile` and shared here. That fence does not exist yet.
         """
         normalized = _uuid_or_none(conversation_id)
         if normalized is None:
@@ -309,11 +369,18 @@ class ConversationService:
         )
 
     async def _resolve(self, provider: Provider, release_id: str) -> ResolvedRelease:
+        """Resolve through the registry, classifying a refusal apart from an unreadable store."""
         try:
             return await self._registry.resolve_release(release_id)
         except ReleaseError as exc:
-            withdrawn = bool(exc.args) and exc.args[0] == "release_withdrawn"
-            raise ConversationIneligible(provider, "release_withdrawn" if withdrawn else "release_unavailable") from exc
+            code = exc.args[0] if exc.args and isinstance(exc.args[0], str) else "release_error_uncoded"
+            if code not in _RELEASE_REFUSALS:
+                raise ReleaseStoreUnavailable(provider, code) from exc
+            raise ConversationIneligible(
+                provider, "release_withdrawn" if code == "release_withdrawn" else "release_unavailable"
+            ) from exc
+        except OSError as exc:
+            raise ReleaseStoreUnavailable(provider, "release_store_io_error") from exc
 
     async def _decide(self, tx: Transaction, provider: Provider, release: ResolvedRelease) -> ProviderEligibility:
         runtime = self._runtimes.get(provider)

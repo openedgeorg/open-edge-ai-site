@@ -4,6 +4,10 @@
 release or deployment, is a 400 before anything is read. Creation needs a released Brain and a matching
 validated deployment publicly, or the bound isolated-candidate policy in a qualification deployment; it
 allocates no native session. Another subject's conversation is indistinguishable from a missing one.
+
+An authority's refusal is `503 provider_not_eligible` (not retryable). An Application Database or release
+store that cannot be read is `503 service_unavailable` (retryable): eligibility is then unknown, so
+neither creation nor `/providers` reports the provider ineligible.
 """
 
 from __future__ import annotations
@@ -19,7 +23,12 @@ from esp_api.auth import require_csrf, require_same_origin, require_subject
 from esp_api.boundary import NO_STORE, ApiError, read_json_body
 from esp_contracts.api import STRICT, ConversationView, ProviderOption
 from esp_contracts.ids import Provider
-from esp_espcon.conversation import ConversationIneligible, ConversationNotFound, ConversationService
+from esp_espcon.conversation import (
+    ConversationIneligible,
+    ConversationNotFound,
+    ConversationService,
+    ReleaseStoreUnavailable,
+)
 
 router = APIRouter()
 
@@ -54,7 +63,7 @@ def _emit(request: Request, name: str, attributes: Mapping[str, str]) -> None:
 async def list_providers(request: Request) -> JSONResponse:
     try:
         options = await conversations_of(request).list_eligible_providers()
-    except psycopg.OperationalError as exc:
+    except (psycopg.OperationalError, ReleaseStoreUnavailable) as exc:
         raise _unavailable() from exc
     return JSONResponse(ProviderList(providers=options).model_dump(mode="json"), headers=NO_STORE)
 
@@ -76,6 +85,9 @@ async def create_conversation(request: Request) -> JSONResponse:
         raise ApiError(
             503, "provider_not_eligible", "This provider cannot start a new conversation right now."
         ) from exc
+    except ReleaseStoreUnavailable as exc:
+        _emit(request, "conversation.create_unavailable", {"provider": exc.provider, "reason": exc.code})
+        raise _unavailable() from exc
     except psycopg.OperationalError as exc:
         raise _unavailable() from exc
     _emit(request, "conversation.created", {"provider": view.provider, "conversation_id": view.id})

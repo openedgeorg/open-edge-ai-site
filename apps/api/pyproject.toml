@@ -8,7 +8,6 @@ dependencies = [
     "esp-db",
     "esp-espcon",
     "esp-execution-bindings",
-    "esp-object-store",
     "fastapi>=0.115",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.10",
@@ -19,7 +18,6 @@ esp-contracts = { workspace = true }
 esp-db = { workspace = true }
 esp-espcon = { workspace = true }
 esp-execution-bindings = { workspace = true }
-esp-object-store = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

@@ -10,7 +10,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 import psycopg
@@ -20,10 +20,11 @@ from psycopg import sql
 from esp_api.config import ConfigurationError, load_candidate_policy
 from esp_api.server import build_api
 from esp_contracts.api import ConversationView, ErrorResponse, ProviderOption
-from esp_espcon.conversation import ConversationIneligible
+from esp_contracts.release import ReleaseError
+from esp_espcon.conversation import ConversationIneligible, ReleaseStoreUnavailable
 from esp_execution_bindings.dispatch_fence import disable_profile, withdraw_release
 from scripts.migrate import migrate
-from tests.support.api_lab import ApiLab, close_api_lab, open_api_lab
+from tests.support.api_lab import ApiLab, Visitor, close_api_lab, open_api_lab
 from tests.support.database import APP_DSN
 from tests.support.policy_lab import policy_document
 
@@ -393,3 +394,123 @@ async def test_create_telemetry_is_payload_free(api_lab: ApiLab) -> None:
     assert created_events[-1] == {"provider": "openai", "conversation_id": created.id}
     refused = [attrs for name, attrs in api_lab.telemetry.events if name == "conversation.create_refused"]
     assert refused[-1] == {"provider": "xai", "reason": "not_allowlisted"}
+
+
+async def test_release_store_outage_is_a_retryable_service_unavailable(api_lab: ApiLab) -> None:
+    registry, store = api_lab.faulty_registry()
+    visitor = await api_lab.visitor(api_lab.build(registry=registry))
+    store.failure = lambda: ReleaseError("object_store_unavailable")
+    for response in (await visitor.create("openai"), await visitor.client.get("/providers")):
+        assert response.status_code == 503
+        body = ErrorResponse.model_validate(response.json())
+        assert body.error.code == "service_unavailable"
+        assert body.error.retryable is True
+        assert body.submitted is False
+    assert store.failed_reads > 0
+    assert await api_lab.owned_conversation_count(visitor.subject_id) == 0
+    names = [name for name, _ in api_lab.telemetry.events]
+    assert "conversation.create_refused" not in names
+    assert ("conversation.create_unavailable", {"provider": "openai", "reason": "object_store_unavailable"}) in [
+        (name, attributes) for name, attributes in api_lab.telemetry.events
+    ]
+
+    store.failure = None
+    assert (await visitor.create("openai")).status_code == 201
+    options = {item["provider"]: item for item in (await visitor.client.get("/providers")).json()["providers"]}
+    assert options["openai"]["eligible"] is True
+    assert api_lab.native_create_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("failure", "store_unavailable"),
+    [
+        (lambda: ReleaseError("object_store_unavailable"), True),
+        (lambda: TimeoutError("release store read timed out"), True),
+        (lambda: ReleaseError("a_code_this_service_does_not_classify"), True),
+        (lambda: ReleaseError("object_unavailable"), False),
+        (lambda: ReleaseError("object_version_mismatch"), False),
+    ],
+    ids=["store-unavailable", "store-io-error", "unclassified-code", "object-absent", "object-version-mismatch"],
+)
+async def test_release_store_failures_are_classified_not_reported_as_ineligibility(
+    api_lab: ApiLab, failure: Callable[[], Exception], store_unavailable: bool
+) -> None:
+    created = await api_lab.create_with_eligible_test_dependencies()
+    registry, store = api_lab.faulty_registry()
+    service = api_lab.service(registry=registry)
+    store.failure = failure
+    if store_unavailable:
+        with pytest.raises(ReleaseStoreUnavailable):
+            await service.eligibility("openai")
+        with pytest.raises(ReleaseStoreUnavailable):
+            await service.list_eligible_providers()
+        with pytest.raises(ReleaseStoreUnavailable):
+            await service.resolve_pinned_release(created.id)
+    else:
+        assert (await service.eligibility("openai")).reason == "release_unavailable"
+        assert not any(option.eligible for option in await service.list_eligible_providers())
+        with pytest.raises(ConversationIneligible) as refused:
+            await service.resolve_pinned_release(created.id)
+        assert refused.value.reason == "release_unavailable"
+    assert store.failed_reads > 0
+    store.failure = None
+    assert (await service.eligibility("openai")).eligible
+    assert (await service.resolve_pinned_release(created.id)).release_id == api_lab.release_id
+
+
+async def test_release_rollover_changes_only_future_selection(api_lab: ApiLab) -> None:
+    created = await api_lab.create_with_eligible_test_dependencies()
+    owner = api_lab.last_visitor
+    assert owner is not None
+    release_a = api_lab.release
+    release_b = await api_lab.publish_second_release()
+    assert release_b.canonical_brain_sha256 != release_a.canonical_brain_sha256
+    assert release_b.behavior_sha256 != release_a.behavior_sha256
+    rolled = {"ESP_BRAIN_RELEASE_ID": api_lab.second_release_id}
+
+    same_owner = api_lab.same_browser(owner, api_lab.build(overrides=rolled))
+    newer = await same_owner.create("openai")
+    assert newer.status_code == 201, newer.text
+    assert newer.json()["brain_release_id"] == api_lab.second_release_id
+    assert newer.json()["behavior_version"] == release_b.behavior_version
+
+    kept = ConversationView.model_validate((await same_owner.get(created.id)).json())
+    assert kept.brain_release_id == api_lab.release_id
+    assert kept.behavior_version == release_a.behavior_version
+    assert kept.corpus_release_id == release_a.corpus_release_id
+
+    resolved = await api_lab.service(overrides=rolled).resolve_pinned_release(created.id)
+    assert resolved.release_id == api_lab.release_id
+    assert resolved.manifest == release_a
+    pins = await api_lab.admission_pins(created.id, overrides=rolled)
+    assert pins.brain_release_id == api_lab.release_id
+    assert pins.brain_hash == release_a.canonical_brain_sha256
+    assert pins.behavior_version == release_a.behavior_version
+    assert pins.behavior_hash == release_a.behavior_sha256
+    assert pins.corpus_release_id == release_a.corpus_release_id
+    newer_pins = await api_lab.admission_pins(str(newer.json()["id"]), overrides=rolled)
+    assert newer_pins.brain_hash == release_b.canonical_brain_sha256
+    row = await api_lab.conversation_row(created.id)
+    assert row is not None
+    assert row["brain_release_id"] == api_lab.release_id
+    assert row["behavior_hash"] == release_a.behavior_sha256
+
+
+async def test_unexpected_errors_keep_the_clean_rejection_shape(api_lab: ApiLab) -> None:
+    registry, store = api_lab.faulty_registry()
+    app = api_lab.build(registry=registry)
+    visitor = await api_lab.visitor(app)
+    quiet = Visitor(
+        client=api_lab.client(app, cookies=visitor.client.cookies, raise_app_exceptions=False), csrf=visitor.csrf
+    )
+    store.failure = lambda: RuntimeError("canary-unexpected-fault-7f3a")
+    for response in (await quiet.create("openai"), await quiet.client.get("/providers")):
+        assert response.status_code == 500
+        body = ErrorResponse.model_validate(response.json())
+        assert body.error.code == "internal_error"
+        assert body.error.retryable is False
+        assert body.submitted is False
+        assert "canary" not in response.text
+        assert response.headers["cache-control"] == "no-store"
+    assert store.failed_reads > 0
+    assert await api_lab.owned_conversation_count(visitor.subject_id) == 0

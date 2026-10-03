@@ -10,6 +10,9 @@ privileges. Seeding uses the disposable database owner.
 
 `provider_capacity` is one row per provider, shared by every test. The lab snapshots both rows before
 it marks the providers healthy and restores the snapshot when it closes.
+
+`FaultyObjectStore` wraps the lab's real store and fails reads on demand. It stands in for a release
+store outage or a permanently absent object; it never changes a stored object.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import json
 import os
 import secrets
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,7 +46,7 @@ from esp_db.client import Db, open_db, transaction
 from esp_espcon.brain_registry import BrainRegistry
 from esp_espcon.conversation import AdmissionPins, ConversationService, ProviderEligibility
 from esp_execution_bindings.binding import TokenSigner
-from esp_object_store.store import FileObjectStore
+from esp_object_store.store import FileObjectStore, ObjectReceipt
 from knowledge.release.publish import publish_candidate
 from tests.support.database import APP_DSN
 from tests.support.policy_lab import CLUSTER_UID, policy_document, synthetic_profile
@@ -92,6 +95,24 @@ class CountingRuntime:
     async def create_session(self, reservation: SessionReservation) -> SessionHandle:
         self.create_calls += 1
         raise RuntimeError("conversation creation must not allocate a native session")
+
+
+class FaultyObjectStore:
+    """The lab's real object store, whose reads raise `failure()` while a failure is set."""
+
+    def __init__(self, inner: FileObjectStore) -> None:
+        self.inner = inner
+        self.failure: Callable[[], Exception] | None = None
+        self.failed_reads = 0
+
+    async def put_immutable(self, key: str, body: bytes, metadata: dict[str, str]) -> ObjectReceipt:
+        return await self.inner.put_immutable(key, body, metadata)
+
+    async def get(self, key: str, version_id: str | None = None) -> bytes:
+        if self.failure is not None:
+            self.failed_reads += 1
+            raise self.failure()
+        return await self.inner.get(key, version_id)
 
 
 class RecordingTelemetry:
@@ -198,6 +219,8 @@ class ApiLab:
         self.telemetry = RecordingTelemetry()
         self.clock = MutableClock()
         self.manifest: ReleaseManifest | None = None
+        self.second_release_id = f"test-api-draft-b-{suffix}"
+        self.second_manifest: ReleaseManifest | None = None
         self.policy_path = tmp_path / "candidate-policy.json"
         self.profiles_path = tmp_path / "runtime-profiles.json"
         self.foreign_db: Db | None = None
@@ -216,9 +239,14 @@ class ApiLab:
             FIXTURES / "release_a", draft, registry=self.registry, release_id=self.release_id
         )
         self.write_profiles(self.profiles_path, self.profiles)
+        self._write_policy([self.manifest])
+        await self._seed()
+
+    def _write_policy(self, manifests: Sequence[ReleaseManifest]) -> None:
+        """The recorded test-only policy, bound to the lab's isolated deployment, allowlisting `manifests`."""
         policy = policy_document(
             self.profiles["openai"],
-            self.manifest,
+            manifests[0],
             deployment={
                 "environment": "isolated-qualification",
                 "namespace": "esp-qualification",
@@ -227,33 +255,39 @@ class ApiLab:
                 "public_ingress": False,
             },
         )
+        policy["content"] = [
+            {
+                "brain_version": manifest.brain_version,
+                "canonical_brain_sha256": manifest.canonical_brain_sha256,
+                "behavior_version": manifest.behavior_version,
+                "behavior_sha256": manifest.behavior_sha256,
+                "corpus_release_id": manifest.corpus_release_id,
+            }
+            for manifest in manifests
+        ]
         self.policy_path.write_text(json.dumps(policy), encoding="utf-8")
-        await self._seed()
+
+    async def publish_second_release(self) -> ReleaseManifest:
+        """Publish fixture release B as another draft, record it, and allowlist A and B in the policy.
+
+        Selecting B is a configuration change (`ESP_BRAIN_RELEASE_ID`) for applications built afterwards.
+        """
+        brain = (FIXTURES / "release_b" / "canonical_brain.md").read_bytes()
+        behavior = (FIXTURES / "release_b" / "behavior.md").read_bytes()
+        draft = manifest_for(self.second_release_id, brain, behavior)
+        self.second_manifest = await publish_candidate(
+            FIXTURES / "release_b", draft, registry=self.registry, release_id=self.second_release_id
+        )
+        async with self.admin.pool.connection() as connection:
+            await _record_release(connection, self.second_release_id, self.second_manifest)
+        self._write_policy([self.release, self.second_manifest])
+        return self.second_manifest
 
     async def _seed(self) -> None:
-        manifest = self.release
         now = datetime.now(UTC)
         async with self.admin.pool.connection() as connection:
             async with connection.transaction():
-                await connection.execute(
-                    """
-                    INSERT INTO brain_release (
-                        version, sha256, behavior_version, behavior_sha256, source_revision,
-                        artifact_ref, behavior_artifact_ref, corpus_release_id, status, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'draft', %s)
-                    """,
-                    (
-                        self.release_id,
-                        manifest.canonical_brain_sha256,
-                        manifest.behavior_version,
-                        manifest.behavior_sha256,
-                        manifest.source_revision,
-                        manifest.brain_artifact_ref,
-                        manifest.behavior_artifact_ref,
-                        manifest.corpus_release_id,
-                        now,
-                    ),
-                )
+                await _record_release(connection, self.release_id, self.release)
                 for provider, profile in self.profiles.items():
                     await connection.execute(
                         """
@@ -387,6 +421,7 @@ class ApiLab:
         overrides: Mapping[str, str | None] | None = None,
         *,
         db: Db | None = None,
+        registry: BrainRegistry | None = None,
     ) -> ApiDependencies:
         settings = self.settings(environment, overrides)
         signer, _ = TokenSigner.generate()
@@ -395,7 +430,7 @@ class ApiLab:
             db=self.app_db if db is None else db,
             settings=settings,
             identity=SubjectIdentity.from_settings(settings, clock=self.clock),
-            releases=self.registry,
+            releases=self.registry if registry is None else registry,
             runtimes=load_runtime_profiles(settings),
             adapters=adapters,
             candidate_policy=load_candidate_policy(settings),
@@ -410,8 +445,9 @@ class ApiLab:
         overrides: Mapping[str, str | None] | None = None,
         *,
         db: Db | None = None,
+        registry: BrainRegistry | None = None,
     ) -> FastAPI:
-        return build_api(self.dependencies(environment, overrides, db=db))
+        return build_api(self.dependencies(environment, overrides, db=db, registry=registry))
 
     @property
     def app(self) -> FastAPI:
@@ -420,9 +456,13 @@ class ApiLab:
         return self._default_app
 
     def service(
-        self, environment: str = "qualification", overrides: Mapping[str, str | None] | None = None
+        self,
+        environment: str = "qualification",
+        overrides: Mapping[str, str | None] | None = None,
+        *,
+        registry: BrainRegistry | None = None,
     ) -> ConversationService:
-        deps = self.dependencies(environment, overrides)
+        deps = self.dependencies(environment, overrides, registry=registry)
         return ConversationService(
             deps.db,
             deps.releases,
@@ -431,10 +471,21 @@ class ApiLab:
             candidate_policy=deps.candidate_policy,
         )
 
+    def faulty_registry(self) -> tuple[BrainRegistry, FaultyObjectStore]:
+        """The lab's registry selections over a store that fails on demand, with a cold release cache."""
+        store = FaultyObjectStore(self.store)
+        return BrainRegistry(store, self.registry.registry_dir), store
+
     def client(
-        self, app: FastAPI | None = None, *, origin: str = ORIGIN, cookies: httpx.Cookies | None = None
+        self,
+        app: FastAPI | None = None,
+        *,
+        origin: str = ORIGIN,
+        cookies: httpx.Cookies | None = None,
+        raise_app_exceptions: bool = True,
     ) -> httpx.AsyncClient:
-        transport = httpx.ASGITransport(app=app or self.app)
+        """`raise_app_exceptions=False` shows the response a server sends after an unexpected exception."""
+        transport = httpx.ASGITransport(app=app or self.app, raise_app_exceptions=raise_app_exceptions)
         client = httpx.AsyncClient(transport=transport, base_url=origin, cookies=cookies)
         self._clients.append(client)
         return client
@@ -548,9 +599,11 @@ class ApiLab:
     ) -> ProviderEligibility:
         return await self.service(environment, overrides).eligibility(provider)
 
-    async def admission_pins(self, conversation_id: str) -> AdmissionPins:
+    async def admission_pins(
+        self, conversation_id: str, overrides: Mapping[str, str | None] | None = None
+    ) -> AdmissionPins:
         """Resolve the pinned release outside the transaction, then select inside it, as admission must."""
-        service = self.service()
+        service = self.service(overrides=overrides)
         release = await service.resolve_pinned_release(conversation_id)
         async with transaction(self.app_db) as tx:
             return await service.select_admission_pins(tx, conversation_id, release)
@@ -584,6 +637,29 @@ class ApiLab:
                 ),
             )
         return pins
+
+
+async def _record_release(connection: AsyncConnection[Any], release_id: str, manifest: ReleaseManifest) -> None:
+    """Record a published draft release in the Application Database, as the publisher role would."""
+    await connection.execute(
+        """
+        INSERT INTO brain_release (
+            version, sha256, behavior_version, behavior_sha256, source_revision,
+            artifact_ref, behavior_artifact_ref, corpus_release_id, status, created_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'draft', %s)
+        """,
+        (
+            release_id,
+            manifest.canonical_brain_sha256,
+            manifest.behavior_version,
+            manifest.behavior_sha256,
+            manifest.source_revision,
+            manifest.brain_artifact_ref,
+            manifest.behavior_artifact_ref,
+            manifest.corpus_release_id,
+            datetime.now(UTC),
+        ),
+    )
 
 
 async def open_api_lab(tmp_path: Path) -> ApiLab:

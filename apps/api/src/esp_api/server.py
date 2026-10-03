@@ -8,6 +8,10 @@ adapter. There are no hidden global dependencies.
 `/livez` and `/readyz` are internal probes; the public edge must not route them. Readiness depends only
 on the Application Database, which status and history need. A provider outage or an unavailable rate
 counter store rejects new input elsewhere and never makes the backend unready.
+
+Every response keeps the clean rejection shape. An unexpected exception becomes a fixed-text
+`500 internal_error` that echoes nothing from the exception; the exception still propagates to the
+server so it is logged there, not in the response.
 """
 
 from __future__ import annotations
@@ -103,7 +107,11 @@ def build_api(deps: ApiDependencies) -> FastAPI:
             raise exc
         return error_response(exc)
 
+    async def unexpected_error(request: Request, exc: Exception) -> Response:
+        return error_response(ApiError(500, "internal_error", "The request could not be completed."))
+
     app.add_exception_handler(ApiError, api_error)
+    app.add_exception_handler(Exception, unexpected_error)
     app.include_router(identity_router)
     app.include_router(conversations_router)
 

@@ -384,12 +384,64 @@ def test_policy_loader_rejects_duplicate_keys(tmp_path: Path) -> None:
     assert load_candidate_policy(load_settings(environ)) is not None
 
 
-def test_serve_refuses_insecure_production_configuration_before_listening() -> None:
-    insecure = dict(PRODUCTION, ESP_PUBLIC_ORIGIN="http://esp.example")
-    with pytest.raises(SystemExit) as refused:
-        serve(insecure)
-    assert "refused" in str(refused.value.code)
-    assert PRODUCTION_KEY not in str(refused.value.code)
-    with pytest.raises(SystemExit) as pending:
-        serve(PRODUCTION)
-    assert "pending" in str(pending.value.code)
+def _profiles_file(tmp_path: Path) -> Path:
+    path = tmp_path / "runtime-profiles.json"
+    document = {
+        "profiles_format": "esp-runtime-profiles/1",
+        "runtimes": [
+            {
+                "provider": "openai",
+                "deployment_ref": "deployment-selected-by-owner",
+                "profile": synthetic_profile().model_dump(mode="json"),
+            }
+        ],
+    }
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def _serve_outcome(environ: dict[str, str]) -> str:
+    with pytest.raises(SystemExit) as stopped:
+        serve(environ)
+    return str(stopped.value.code)
+
+
+def test_serve_refuses_insecure_production_configuration_before_listening(tmp_path: Path) -> None:
+    production = dict(PRODUCTION, ESP_RUNTIME_PROFILES_PATH=str(_profiles_file(tmp_path)))
+    refused = _serve_outcome(dict(production, ESP_PUBLIC_ORIGIN="http://esp.example"))
+    assert "refused" in refused
+    assert PRODUCTION_KEY not in refused
+    assert "pending" in _serve_outcome(production)
+
+
+def test_serve_loads_runtime_profiles_and_the_bound_policy_before_declaring_pending(tmp_path: Path) -> None:
+    profiles = _profiles_file(tmp_path)
+    production = dict(PRODUCTION, ESP_RUNTIME_PROFILES_PATH=str(profiles))
+    assert "pending" in _serve_outcome(production)
+
+    unreadable = _serve_outcome(dict(production, ESP_RUNTIME_PROFILES_PATH=str(tmp_path / "absent.json")))
+    assert unreadable.startswith("api configuration refused")
+    assert "ESP_RUNTIME_PROFILES_PATH cannot be read" in unreadable
+    malformed = tmp_path / "malformed-profiles.json"
+    malformed.write_text('{"profiles_format": "esp-runtime-profiles/1", "runtimes": [', encoding="utf-8")
+    assert "runtime profiles are not strict JSON" in _serve_outcome(
+        dict(production, ESP_RUNTIME_PROFILES_PATH=str(malformed))
+    )
+
+    document = policy_document(synthetic_profile(), synthetic_release())
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps(document), encoding="utf-8")
+    qualification = dict(
+        production,
+        ESP_ENVIRONMENT="qualification",
+        ESP_CANDIDATE_POLICY_PATH=str(policy),
+        ESP_QUALIFICATION_CLUSTER_UID=CLUSTER_UID,
+        ESP_QUALIFICATION_DEPLOYMENT_REF=str(document["deployment"]["deployment_ref"]),
+    )
+    assert "pending" in _serve_outcome(qualification)
+    elsewhere = _serve_outcome(dict(qualification, ESP_QUALIFICATION_DEPLOYMENT_REF="qual-deployment-elsewhere"))
+    assert elsewhere.startswith("api configuration refused")
+    assert "candidate policy is bound to another deployment" in elsewhere
+    absent = _serve_outcome(dict(qualification, ESP_CANDIDATE_POLICY_PATH=str(tmp_path / "absent-policy.json")))
+    assert "ESP_CANDIDATE_POLICY_PATH cannot be read" in absent
+    assert PRODUCTION_KEY not in unreadable + elsewhere + absent
