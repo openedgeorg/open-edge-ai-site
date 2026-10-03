@@ -147,6 +147,19 @@ class NativeRpcClient:
             raise
         return await future
 
+    async def notify(self, method: str, params: object | None = None) -> None:
+        """Send a client notification. It has no id, so no response is paired with it."""
+        message: dict[str, object] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            message["params"] = params
+        body = json.dumps(message).encode()
+        if len(body) > FRAME_LIMIT_BYTES:
+            raise FrameTooLarge(len(body))
+        async with self._lock:
+            if self._terminal is not None:
+                raise _clone(self._terminal)
+        await self._transport.send_frame(body)
+
     async def notifications(self) -> AsyncIterator[object]:
         async with self._lock:
             if self._terminal is None:

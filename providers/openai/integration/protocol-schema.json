@@ -1,0 +1,1345 @@
+{
+  "bundle_sha256": "9dec03ab74e2e8a8e3b2948594c7183ee0565c3df33c792ea78d387e6824e093",
+  "client_notifications": [
+    "initialized"
+  ],
+  "client_requests": [
+    "account/gatewayOAuth/cancel",
+    "account/gatewayOAuth/login",
+    "account/gatewayOAuth/read",
+    "account/login/cancel",
+    "account/login/start",
+    "account/logout",
+    "account/rateLimitResetCredit/consume",
+    "account/rateLimits/read",
+    "account/read",
+    "account/sendAddCreditsNudgeEmail",
+    "account/usage/read",
+    "account/workspaceMessages/read",
+    "app/installed",
+    "app/list",
+    "app/read",
+    "command/exec",
+    "command/exec/resize",
+    "command/exec/terminate",
+    "command/exec/write",
+    "config/batchWrite",
+    "config/mcpServer/reload",
+    "config/read",
+    "config/value/write",
+    "configRequirements/read",
+    "experimentalFeature/enablement/set",
+    "experimentalFeature/list",
+    "externalAgentConfig/detect",
+    "externalAgentConfig/import",
+    "externalAgentConfig/import/readHistories",
+    "externalAgentConfig/import/recordHistory",
+    "feedback/upload",
+    "fs/copy",
+    "fs/createDirectory",
+    "fs/getMetadata",
+    "fs/readDirectory",
+    "fs/readFile",
+    "fs/remove",
+    "fs/unwatch",
+    "fs/watch",
+    "fs/writeFile",
+    "fuzzyFileSearch",
+    "hooks/list",
+    "initialize",
+    "marketplace/add",
+    "marketplace/remove",
+    "marketplace/upgrade",
+    "mcpServer/oauth/login",
+    "mcpServer/resource/read",
+    "mcpServer/tool/call",
+    "mcpServerStatus/list",
+    "model/list",
+    "modelProvider/capabilities/read",
+    "permissionProfile/list",
+    "plugin/install",
+    "plugin/installed",
+    "plugin/list",
+    "plugin/read",
+    "plugin/reconcile",
+    "plugin/share/checkout",
+    "plugin/share/delete",
+    "plugin/share/list",
+    "plugin/share/save",
+    "plugin/share/updateTargets",
+    "plugin/skill/read",
+    "plugin/uninstall",
+    "review/start",
+    "skills/config/write",
+    "skills/extraRoots/set",
+    "skills/list",
+    "thread/approveGuardianDeniedAction",
+    "thread/archive",
+    "thread/attachment/add",
+    "thread/attachment/list",
+    "thread/attachment/remove",
+    "thread/compact/start",
+    "thread/delete",
+    "thread/fork",
+    "thread/goal/clear",
+    "thread/goal/get",
+    "thread/goal/set",
+    "thread/inject_items",
+    "thread/items/list",
+    "thread/list",
+    "thread/loaded/list",
+    "thread/metadata/update",
+    "thread/name/set",
+    "thread/read",
+    "thread/resume",
+    "thread/revert",
+    "thread/section/move",
+    "thread/shellCommand",
+    "thread/start",
+    "thread/turns/list",
+    "thread/unarchive",
+    "thread/unsubscribe",
+    "threadSection/create",
+    "threadSection/delete",
+    "threadSection/list",
+    "threadSection/update",
+    "turn/interrupt",
+    "turn/start",
+    "turn/steer",
+    "windowsSandbox/readiness",
+    "windowsSandbox/setupStart"
+  ],
+  "declarations": {
+    "Thread.ephemeral": "Whether the thread is ephemeral and should not be materialized on disk.",
+    "thread/read.includeTurns": "When true, include turns and their items from rollout history. Full-history hydration is deprecated for paginated threads; prefer a metadata-only read and page with `thread/turns/list` and `thread/items/list`.",
+    "turn/start.responsesapiClientMetadata": "Optional metadata to enrich Codex's ResponsesAPI turn metadata.\n\nEntries are flattened into the JSON string sent as `client_metadata[\"x-codex-turn-metadata\"]` on ResponsesAPI HTTP and websocket requests.\n\nThey are not sent as top-level ResponsesAPI `client_metadata` keys, and reserved keys such as `session_id`, `thread_id`, `turn_id`, and `window_id` cannot be overridden."
+  },
+  "definitions": {
+    "SandboxMode": {
+      "enum": [
+        "read-only",
+        "workspace-write",
+        "danger-full-access"
+      ]
+    },
+    "SandboxPolicy": {
+      "variants": {
+        "dangerFullAccess": {
+          "properties": [
+            "type"
+          ],
+          "required": [
+            "type"
+          ]
+        },
+        "externalSandbox": {
+          "properties": [
+            "networkAccess",
+            "type"
+          ],
+          "required": [
+            "type"
+          ]
+        },
+        "readOnly": {
+          "properties": [
+            "networkAccess",
+            "type"
+          ],
+          "required": [
+            "type"
+          ]
+        },
+        "workspaceWrite": {
+          "properties": [
+            "excludeSlashTmp",
+            "excludeTmpdirEnvVar",
+            "networkAccess",
+            "type",
+            "writableRoots"
+          ],
+          "required": [
+            "type"
+          ]
+        }
+      }
+    },
+    "SortDirection": {
+      "enum": [
+        "asc",
+        "desc"
+      ]
+    },
+    "Thread": {
+      "properties": [
+        "agentNickname",
+        "agentRole",
+        "cliVersion",
+        "createdAt",
+        "cwd",
+        "ephemeral",
+        "forkedFromId",
+        "gitInfo",
+        "historyMode",
+        "id",
+        "model",
+        "modelProvider",
+        "name",
+        "originator",
+        "parentThreadId",
+        "path",
+        "preview",
+        "projectId",
+        "reasoningEffort",
+        "recencyAt",
+        "section",
+        "sectionEnteredAt",
+        "sessionId",
+        "source",
+        "status",
+        "threadSource",
+        "turns",
+        "updatedAt"
+      ],
+      "required": [
+        "cliVersion",
+        "createdAt",
+        "cwd",
+        "ephemeral",
+        "id",
+        "modelProvider",
+        "preview",
+        "projectId",
+        "sessionId",
+        "source",
+        "status",
+        "turns",
+        "updatedAt"
+      ]
+    },
+    "ThreadItem": {
+      "variants": {
+        "agentMessage": {
+          "properties": [
+            "delivery",
+            "id",
+            "memoryCitation",
+            "phase",
+            "questions",
+            "text",
+            "type"
+          ],
+          "required": [
+            "id",
+            "text",
+            "type"
+          ]
+        },
+        "collabAgentToolCall": {
+          "properties": [
+            "agentsStates",
+            "id",
+            "model",
+            "prompt",
+            "reasoningEffort",
+            "receiverThreadIds",
+            "senderThreadId",
+            "status",
+            "tool",
+            "type"
+          ],
+          "required": [
+            "agentsStates",
+            "id",
+            "receiverThreadIds",
+            "senderThreadId",
+            "status",
+            "tool",
+            "type"
+          ]
+        },
+        "commandExecution": {
+          "properties": [
+            "aggregatedOutput",
+            "command",
+            "commandActions",
+            "cwd",
+            "durationMs",
+            "exitCode",
+            "id",
+            "pluginId",
+            "processId",
+            "scriptPath",
+            "source",
+            "status",
+            "type"
+          ],
+          "required": [
+            "command",
+            "commandActions",
+            "cwd",
+            "id",
+            "status",
+            "type"
+          ]
+        },
+        "contextCompaction": {
+          "properties": [
+            "id",
+            "type"
+          ],
+          "required": [
+            "id",
+            "type"
+          ]
+        },
+        "dynamicToolCall": {
+          "properties": [
+            "arguments",
+            "contentItems",
+            "durationMs",
+            "id",
+            "namespace",
+            "status",
+            "success",
+            "tool",
+            "type"
+          ],
+          "required": [
+            "arguments",
+            "id",
+            "status",
+            "tool",
+            "type"
+          ]
+        },
+        "enteredReviewMode": {
+          "properties": [
+            "id",
+            "review",
+            "type"
+          ],
+          "required": [
+            "id",
+            "review",
+            "type"
+          ]
+        },
+        "exitedReviewMode": {
+          "properties": [
+            "id",
+            "review",
+            "type"
+          ],
+          "required": [
+            "id",
+            "review",
+            "type"
+          ]
+        },
+        "fileChange": {
+          "properties": [
+            "changes",
+            "id",
+            "status",
+            "type"
+          ],
+          "required": [
+            "changes",
+            "id",
+            "status",
+            "type"
+          ]
+        },
+        "functionCallOutput": {
+          "properties": [
+            "id",
+            "name",
+            "namespace",
+            "output",
+            "type"
+          ],
+          "required": [
+            "id",
+            "name",
+            "output",
+            "type"
+          ]
+        },
+        "hookPrompt": {
+          "properties": [
+            "fragments",
+            "id",
+            "type"
+          ],
+          "required": [
+            "fragments",
+            "id",
+            "type"
+          ]
+        },
+        "imageGeneration": {
+          "properties": [
+            "failure",
+            "id",
+            "result",
+            "revisedPrompt",
+            "savedPath",
+            "status",
+            "transparentBackground",
+            "type"
+          ],
+          "required": [
+            "id",
+            "result",
+            "status",
+            "type"
+          ]
+        },
+        "imageView": {
+          "properties": [
+            "id",
+            "path",
+            "type"
+          ],
+          "required": [
+            "id",
+            "path",
+            "type"
+          ]
+        },
+        "mcpToolCall": {
+          "properties": [
+            "appContext",
+            "arguments",
+            "durationMs",
+            "error",
+            "id",
+            "mcpAppResourceUri",
+            "mcpAppUi",
+            "pluginId",
+            "readOnlyHint",
+            "result",
+            "server",
+            "status",
+            "tool",
+            "type"
+          ],
+          "required": [
+            "arguments",
+            "id",
+            "server",
+            "status",
+            "tool",
+            "type"
+          ]
+        },
+        "plan": {
+          "properties": [
+            "id",
+            "text",
+            "type"
+          ],
+          "required": [
+            "id",
+            "text",
+            "type"
+          ]
+        },
+        "reasoning": {
+          "properties": [
+            "content",
+            "id",
+            "summary",
+            "type"
+          ],
+          "required": [
+            "id",
+            "type"
+          ]
+        },
+        "sleep": {
+          "properties": [
+            "durationMs",
+            "id",
+            "type"
+          ],
+          "required": [
+            "durationMs",
+            "id",
+            "type"
+          ]
+        },
+        "subAgentActivity": {
+          "properties": [
+            "agentPath",
+            "agentThreadId",
+            "id",
+            "kind",
+            "type"
+          ],
+          "required": [
+            "agentPath",
+            "agentThreadId",
+            "id",
+            "kind",
+            "type"
+          ]
+        },
+        "userMessage": {
+          "properties": [
+            "clientId",
+            "content",
+            "id",
+            "type"
+          ],
+          "required": [
+            "content",
+            "id",
+            "type"
+          ]
+        },
+        "webSearch": {
+          "properties": [
+            "action",
+            "id",
+            "query",
+            "results",
+            "type"
+          ],
+          "required": [
+            "id",
+            "query",
+            "type"
+          ]
+        }
+      }
+    },
+    "ThreadItemEntry": {
+      "properties": [
+        "completedAtMs",
+        "item",
+        "startedAtMs",
+        "turnId"
+      ],
+      "required": [
+        "item",
+        "turnId"
+      ]
+    },
+    "ThreadStatus": {
+      "variants": {
+        "active": {
+          "properties": [
+            "activeFlags",
+            "type"
+          ],
+          "required": [
+            "activeFlags",
+            "type"
+          ]
+        },
+        "idle": {
+          "properties": [
+            "type"
+          ],
+          "required": [
+            "type"
+          ]
+        },
+        "notLoaded": {
+          "properties": [
+            "type"
+          ],
+          "required": [
+            "type"
+          ]
+        },
+        "systemError": {
+          "properties": [
+            "type"
+          ],
+          "required": [
+            "type"
+          ]
+        }
+      }
+    },
+    "ThreadTokenUsage": {
+      "properties": [
+        "last",
+        "modelContextWindow",
+        "total"
+      ],
+      "required": [
+        "last",
+        "total"
+      ]
+    },
+    "ThreadUnsubscribeStatus": {
+      "enum": [
+        "notLoaded",
+        "notSubscribed",
+        "unsubscribed"
+      ]
+    },
+    "TokenUsageBreakdown": {
+      "properties": [
+        "cacheWriteInputTokens",
+        "cachedInputTokens",
+        "inputTokens",
+        "outputTokens",
+        "reasoningOutputTokens",
+        "totalTokens"
+      ],
+      "required": [
+        "cachedInputTokens",
+        "inputTokens",
+        "outputTokens",
+        "reasoningOutputTokens",
+        "totalTokens"
+      ]
+    },
+    "Turn": {
+      "properties": [
+        "completedAt",
+        "durationMs",
+        "error",
+        "id",
+        "items",
+        "itemsView",
+        "startedAt",
+        "status"
+      ],
+      "required": [
+        "id",
+        "items",
+        "status"
+      ]
+    },
+    "TurnError": {
+      "properties": [
+        "additionalDetails",
+        "codexErrorInfo",
+        "message",
+        "misalignment"
+      ],
+      "required": [
+        "message"
+      ]
+    },
+    "TurnItemsView": {
+      "enum": [
+        "notLoaded",
+        "summary",
+        "full"
+      ]
+    },
+    "TurnStatus": {
+      "enum": [
+        "completed",
+        "interrupted",
+        "failed",
+        "inProgress"
+      ]
+    },
+    "UserInput": {
+      "variants": {
+        "audio": {
+          "properties": [
+            "type",
+            "url"
+          ],
+          "required": [
+            "type",
+            "url"
+          ]
+        },
+        "image": {
+          "properties": [
+            "detail",
+            "type"
+          ],
+          "required": [
+            "type"
+          ]
+        },
+        "localAudio": {
+          "properties": [
+            "path",
+            "type"
+          ],
+          "required": [
+            "path",
+            "type"
+          ]
+        },
+        "localImage": {
+          "properties": [
+            "detail",
+            "path",
+            "type"
+          ],
+          "required": [
+            "path",
+            "type"
+          ]
+        },
+        "mention": {
+          "properties": [
+            "name",
+            "path",
+            "type"
+          ],
+          "required": [
+            "name",
+            "path",
+            "type"
+          ]
+        },
+        "skill": {
+          "properties": [
+            "name",
+            "path",
+            "type"
+          ],
+          "required": [
+            "name",
+            "path",
+            "type"
+          ]
+        },
+        "text": {
+          "properties": [
+            "text",
+            "text_elements",
+            "type"
+          ],
+          "required": [
+            "text",
+            "type"
+          ]
+        }
+      }
+    }
+  },
+  "esp_client_notifications": [
+    "initialized"
+  ],
+  "esp_operation_mapping": {
+    "cancel": "turn/interrupt",
+    "compact": "thread/compact/start",
+    "create": "thread/start",
+    "delete": "thread/delete",
+    "handshake": "initialize",
+    "history": "thread/turns/list",
+    "items": "thread/items/list",
+    "loaded": "thread/loaded/list",
+    "resume": "thread/resume",
+    "status": "thread/read",
+    "submit": "turn/start",
+    "unload": "thread/unsubscribe"
+  },
+  "experimental_bundle_sha256": "b2e4fc9780cd9012e8c0353a0b2907395ff05504f6295f02664520cc1f6dc34e",
+  "experimental_client_requests": [
+    "account/bedrock/discover",
+    "account/bedrock/setup",
+    "collaborationMode/list",
+    "environment/add",
+    "environment/info",
+    "environment/status",
+    "fuzzyFileSearch/sessionStart",
+    "fuzzyFileSearch/sessionStop",
+    "fuzzyFileSearch/sessionUpdate",
+    "mcpServer/event/stream/start",
+    "mcpServer/event/stream/stop",
+    "memory/reset",
+    "memory/status",
+    "mock/experimentalMethod",
+    "plugin/search",
+    "process/kill",
+    "process/resizePty",
+    "process/spawn",
+    "process/writeStdin",
+    "project/create",
+    "project/delete",
+    "project/import",
+    "project/list",
+    "project/move",
+    "project/read",
+    "project/update",
+    "remoteControl/client/list",
+    "remoteControl/client/revoke",
+    "remoteControl/disable",
+    "remoteControl/enable",
+    "remoteControl/pairing/start",
+    "remoteControl/pairing/status",
+    "remoteControl/status/read",
+    "rollout/compress",
+    "server/diagnostics",
+    "thread/backgroundTerminals/clean",
+    "thread/backgroundTerminals/list",
+    "thread/backgroundTerminals/terminate",
+    "thread/decrement_elicitation",
+    "thread/increment_elicitation",
+    "thread/memoryMode/set",
+    "thread/queue/add",
+    "thread/queue/delete",
+    "thread/queue/list",
+    "thread/queue/reorder",
+    "thread/queue/start",
+    "thread/queue/update",
+    "thread/realtime/appendAudio",
+    "thread/realtime/appendSpeech",
+    "thread/realtime/appendText",
+    "thread/realtime/listVoices",
+    "thread/realtime/start",
+    "thread/realtime/stop",
+    "thread/search",
+    "thread/searchOccurrences",
+    "thread/settings/update",
+    "thread/timeline/list",
+    "turn/settings/update",
+    "userVerification/cancel",
+    "userVerification/delete",
+    "userVerification/enroll",
+    "userVerification/status",
+    "userVerification/verify"
+  ],
+  "format": "esp-codex-protocol-capture/1",
+  "generator": {
+    "experimental": "codex app-server generate-json-schema --experimental --out <isolated tmp>",
+    "isolation": "env -i with temporary HOME and CODEX_HOME; no credentials; no model request",
+    "stable": "codex app-server generate-json-schema --out <isolated tmp>"
+  },
+  "harness_build": "codex-cli 0.159.3",
+  "native_binary": {
+    "package_path": "@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+    "sha256": "8bf204b36a2f6dd0dab73aa2f639892e67ef9ac8befccb4a05b1496ebf25c479"
+  },
+  "notification_shapes": {
+    "error": {
+      "properties": [
+        "error",
+        "threadId",
+        "turnId",
+        "willRetry"
+      ],
+      "required": [
+        "error",
+        "threadId",
+        "turnId",
+        "willRetry"
+      ]
+    },
+    "item/agentMessage/delta": {
+      "properties": [
+        "delta",
+        "itemId",
+        "threadId",
+        "turnId"
+      ],
+      "required": [
+        "delta",
+        "itemId",
+        "threadId",
+        "turnId"
+      ]
+    },
+    "item/completed": {
+      "properties": [
+        "completedAtMs",
+        "item",
+        "threadId",
+        "turnId"
+      ],
+      "required": [
+        "completedAtMs",
+        "item",
+        "threadId",
+        "turnId"
+      ]
+    },
+    "item/started": {
+      "properties": [
+        "item",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ],
+      "required": [
+        "item",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ]
+    },
+    "model/rerouted": {
+      "properties": [
+        "fromModel",
+        "reason",
+        "threadId",
+        "toModel",
+        "turnId"
+      ],
+      "required": [
+        "fromModel",
+        "reason",
+        "threadId",
+        "toModel",
+        "turnId"
+      ]
+    },
+    "thread/closed": {
+      "properties": [
+        "threadId"
+      ],
+      "required": [
+        "threadId"
+      ]
+    },
+    "thread/compacted": {
+      "properties": [
+        "threadId",
+        "turnId"
+      ],
+      "required": [
+        "threadId",
+        "turnId"
+      ]
+    },
+    "thread/tokenUsage/updated": {
+      "properties": [
+        "threadId",
+        "tokenUsage",
+        "turnId"
+      ],
+      "required": [
+        "threadId",
+        "tokenUsage",
+        "turnId"
+      ]
+    },
+    "turn/completed": {
+      "properties": [
+        "threadId",
+        "turn"
+      ],
+      "required": [
+        "threadId",
+        "turn"
+      ]
+    },
+    "turn/started": {
+      "properties": [
+        "threadId",
+        "turn"
+      ],
+      "required": [
+        "threadId",
+        "turn"
+      ]
+    }
+  },
+  "server_notifications": [
+    "account/gatewayOAuth/changed",
+    "account/login/completed",
+    "account/rateLimits/updated",
+    "account/updated",
+    "app/list/updated",
+    "autoApprovalReview/strictReviewRequired",
+    "command/exec/outputDelta",
+    "configWarning",
+    "deprecationNotice",
+    "error",
+    "externalAgentConfig/import/completed",
+    "externalAgentConfig/import/progress",
+    "fs/changed",
+    "fuzzyFileSearch/sessionCompleted",
+    "fuzzyFileSearch/sessionUpdated",
+    "guardianWarning",
+    "hook/completed",
+    "hook/started",
+    "item/agentMessage/delta",
+    "item/autoApprovalReview/completed",
+    "item/autoApprovalReview/started",
+    "item/commandExecution/outputDelta",
+    "item/commandExecution/terminalInteraction",
+    "item/completed",
+    "item/fileChange/outputDelta",
+    "item/fileChange/patchUpdated",
+    "item/mcpToolCall/progress",
+    "item/plan/delta",
+    "item/reasoning/summaryPartAdded",
+    "item/reasoning/summaryTextDelta",
+    "item/reasoning/textDelta",
+    "item/started",
+    "mcpServer/event/stream/notification",
+    "mcpServer/oauthLogin/completed",
+    "mcpServer/startupStatus/updated",
+    "model/rerouted",
+    "model/safetyBuffering/updated",
+    "model/verification",
+    "modelProvider/authRecoveryCompleted",
+    "modelProvider/authRecoveryStarted",
+    "process/exited",
+    "process/outputDelta",
+    "project/changed",
+    "remoteControl/status/changed",
+    "serverRequest/resolved",
+    "skills/changed",
+    "thread/archived",
+    "thread/attachment/updated",
+    "thread/closed",
+    "thread/compacted",
+    "thread/deleted",
+    "thread/environment/connected",
+    "thread/environment/disconnected",
+    "thread/goal/cleared",
+    "thread/goal/updated",
+    "thread/name/updated",
+    "thread/project/updated",
+    "thread/queue/changed",
+    "thread/realtime/closed",
+    "thread/realtime/error",
+    "thread/realtime/item/completed",
+    "thread/realtime/item/started",
+    "thread/realtime/item/transcript/delta",
+    "thread/realtime/itemAdded",
+    "thread/realtime/outputAudio/delta",
+    "thread/realtime/sdp",
+    "thread/realtime/started",
+    "thread/realtime/transcript/delta",
+    "thread/realtime/transcript/done",
+    "thread/reverted",
+    "thread/settings/updated",
+    "thread/started",
+    "thread/status/changed",
+    "thread/tokenUsage/updated",
+    "thread/unarchived",
+    "turn/completed",
+    "turn/diff/updated",
+    "turn/moderationMetadata",
+    "turn/plan/updated",
+    "turn/started",
+    "warning",
+    "windows/worldWritableWarning",
+    "windowsSandbox/setupCompleted"
+  ],
+  "server_requests": [
+    "account/chatgptAuthTokens/refresh",
+    "applyPatchApproval",
+    "attestation/generate",
+    "execCommandApproval",
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+    "item/permissions/requestApproval",
+    "item/tool/call",
+    "item/tool/requestUserInput",
+    "mcpServer/elicitation/request"
+  ],
+  "shapes": {
+    "initialize": {
+      "params": {
+        "properties": [
+          "capabilities",
+          "clientInfo"
+        ],
+        "required": [
+          "clientInfo"
+        ]
+      },
+      "result": {
+        "properties": [
+          "codexHome",
+          "platformFamily",
+          "platformOs",
+          "userAgent"
+        ],
+        "required": [
+          "codexHome",
+          "platformFamily",
+          "platformOs",
+          "userAgent"
+        ]
+      }
+    },
+    "thread/compact/start": {
+      "params": {
+        "properties": [
+          "threadId"
+        ],
+        "required": [
+          "threadId"
+        ]
+      },
+      "result": {
+        "properties": [],
+        "required": []
+      }
+    },
+    "thread/delete": {
+      "params": {
+        "properties": [
+          "threadId"
+        ],
+        "required": [
+          "threadId"
+        ]
+      },
+      "result": {
+        "properties": [],
+        "required": []
+      }
+    },
+    "thread/items/list": {
+      "params": {
+        "properties": [
+          "cursor",
+          "limit",
+          "sortDirection",
+          "threadId",
+          "turnId"
+        ],
+        "required": [
+          "threadId"
+        ]
+      },
+      "result": {
+        "properties": [
+          "backwardsCursor",
+          "data",
+          "nextCursor"
+        ],
+        "required": [
+          "data"
+        ]
+      }
+    },
+    "thread/loaded/list": {
+      "params": {
+        "properties": [
+          "cursor",
+          "limit"
+        ],
+        "required": []
+      },
+      "result": {
+        "properties": [
+          "data",
+          "nextCursor"
+        ],
+        "required": [
+          "data"
+        ]
+      }
+    },
+    "thread/read": {
+      "params": {
+        "properties": [
+          "includeTurns",
+          "threadId"
+        ],
+        "required": [
+          "threadId"
+        ]
+      },
+      "result": {
+        "properties": [
+          "thread"
+        ],
+        "required": [
+          "thread"
+        ]
+      }
+    },
+    "thread/resume": {
+      "params": {
+        "properties": [
+          "approvalPolicy",
+          "approvalsReviewer",
+          "baseInstructions",
+          "config",
+          "cwd",
+          "developerInstructions",
+          "excludeTurns",
+          "model",
+          "modelProvider",
+          "personality",
+          "sandbox",
+          "serviceTier",
+          "threadId"
+        ],
+        "required": [
+          "threadId"
+        ]
+      },
+      "result": {
+        "properties": [
+          "approvalPolicy",
+          "approvalsReviewer",
+          "collaborationMode",
+          "cwd",
+          "disabledPluginIds",
+          "instructionSources",
+          "itemsBackwardsCursor",
+          "model",
+          "modelProvider",
+          "reasoningEffort",
+          "sandbox",
+          "serviceTier",
+          "thread",
+          "turnsBackwardsCursor"
+        ],
+        "required": [
+          "approvalPolicy",
+          "approvalsReviewer",
+          "cwd",
+          "model",
+          "modelProvider",
+          "sandbox",
+          "thread"
+        ]
+      }
+    },
+    "thread/start": {
+      "params": {
+        "properties": [
+          "approvalPolicy",
+          "approvalsReviewer",
+          "baseInstructions",
+          "config",
+          "cwd",
+          "developerInstructions",
+          "ephemeral",
+          "model",
+          "modelProvider",
+          "personality",
+          "sandbox",
+          "serviceName",
+          "serviceTier",
+          "sessionStartSource",
+          "threadSource"
+        ],
+        "required": []
+      },
+      "result": {
+        "properties": [
+          "approvalPolicy",
+          "approvalsReviewer",
+          "cwd",
+          "disabledPluginIds",
+          "instructionSources",
+          "model",
+          "modelProvider",
+          "reasoningEffort",
+          "sandbox",
+          "serviceTier",
+          "thread"
+        ],
+        "required": [
+          "approvalPolicy",
+          "approvalsReviewer",
+          "cwd",
+          "model",
+          "modelProvider",
+          "sandbox",
+          "thread"
+        ]
+      }
+    },
+    "thread/turns/list": {
+      "params": {
+        "properties": [
+          "cursor",
+          "itemsView",
+          "limit",
+          "sortDirection",
+          "threadId"
+        ],
+        "required": [
+          "threadId"
+        ]
+      },
+      "result": {
+        "properties": [
+          "backwardsCursor",
+          "data",
+          "nextCursor"
+        ],
+        "required": [
+          "data"
+        ]
+      }
+    },
+    "thread/unsubscribe": {
+      "params": {
+        "properties": [
+          "threadId"
+        ],
+        "required": [
+          "threadId"
+        ]
+      },
+      "result": {
+        "properties": [
+          "status"
+        ],
+        "required": [
+          "status"
+        ]
+      }
+    },
+    "turn/interrupt": {
+      "params": {
+        "properties": [
+          "threadId",
+          "turnId"
+        ],
+        "required": [
+          "threadId",
+          "turnId"
+        ]
+      },
+      "result": {
+        "properties": [],
+        "required": []
+      }
+    },
+    "turn/start": {
+      "params": {
+        "properties": [
+          "approvalPolicy",
+          "approvalsReviewer",
+          "clientUserMessageId",
+          "cwd",
+          "disabledPluginIds",
+          "effort",
+          "input",
+          "model",
+          "outputSchema",
+          "personality",
+          "sandboxPolicy",
+          "serviceTier",
+          "serviceTierForTurn",
+          "summary",
+          "threadId",
+          "toolOutput",
+          "turnTrigger"
+        ],
+        "required": [
+          "input",
+          "threadId"
+        ]
+      },
+      "result": {
+        "properties": [
+          "turn"
+        ],
+        "required": [
+          "turn"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,87 @@
+# ESP Codex App Server candidate profile for codex-cli 0.159.3 (G0, status pending).
+#
+# Every key below was accepted by that exact build under `codex app-server --strict-config`
+# (unknown keys make the build exit). Acceptance is not enforcement: G0 discovery observed
+# that the build still reports `unified_exec` enabled although it is disabled here, so the
+# tool policy remains unproven until request capture shows no exec tool is offered.
+#
+# Model traffic goes to the supervisor-local attribution relay on loopback. The relay reads
+# the thread and turn ids the build writes into client_metadata["x-codex-turn-metadata"]
+# and attaches that thread's bound inference scope before forwarding to the ESP Inference
+# Gateway. No static header, environment key or bearer token identifies a session here.
+
+# Candidate identifier only; account and build access are unverified.
+model = "gpt-6-astra"
+model_provider = "esp_gateway"
+approval_policy = "never"
+sandbox_mode = "read-only"
+web_search = "disabled"
+model_reasoning_summary = "none"
+hide_agent_reasoning = true
+project_doc_max_bytes = 0
+check_for_update_on_startup = false
+allow_login_shell = false
+experimental_use_unified_exec_tool = false
+include_environment_context = false
+include_permissions_instructions = false
+include_apps_instructions = false
+include_collaboration_mode_instructions = false
+# Unload as soon as the supervisor unsubscribes; ESP owns the idle-unload policy.
+thread_unload_delay_secs = 0
+
+[model_providers.esp_gateway]
+name = "ESP Inference Gateway relay"
+base_url = "http://127.0.0.1:8471/openai/v1"
+wire_api = "responses"
+# The gateway never retries and the harness must not replay a request on its own either.
+request_max_retries = 0
+stream_max_retries = 0
+supports_websockets = false
+
+# The cross-thread prompt history file would be an application-level transcript. Native
+# per-thread rollout history is separate and is the only history ESP reads.
+[history]
+persistence = "none"
+
+[shell_environment_policy]
+inherit = "none"
+
+[analytics]
+enabled = false
+
+[features]
+shell_tool = false
+unified_exec = false
+unified_exec_tty = false
+shell_snapshot = false
+view_image = false
+sleep_tool = false
+code_mode_host = false
+web_search_request = false
+multi_agent = false
+multi_agent_v2 = false
+memories = false
+plugins = false
+remote_plugin = false
+plugin_sharing = false
+apps = false
+tool_suggest = false
+image_generation = false
+browser_use = false
+computer_use = false
+skill_mcp_dependency_install = false
+skill_search = false
+guardian_approval = false
+goals = false
+hooks = false
+tool_call_mcp_elicitation = false
+auth_elicitation = false
+realtime_conversation = false
+worktrees = false
+write_stdin_approval = false
+daemon_auto_start = false
+enable_request_compression = false
+unbounded_connection_retries = false
+system_proxy_fallback = false
+fast_mode = false
+workspace_dependencies = false

@@ -13,6 +13,7 @@ dependencies = [
     "esp-inference-gateway",
     "esp-mcp",
     "esp-object-store",
+    "esp-provider-openai",
     "esp-provider-shared",
 ]
 
@@ -34,6 +35,7 @@ esp-embeddings = { workspace = true }
 esp-inference-gateway = { workspace = true }
 esp-mcp = { workspace = true }
 esp-object-store = { workspace = true }
+esp-provider-openai = { workspace = true }
 esp-provider-shared = { workspace = true }
 
 [tool.uv.workspace]
@@ -47,6 +49,7 @@ members = [
     "services/esp_embeddings",
     "services/esp_inference_gateway",
     "services/esp_mcp",
+    "providers/openai",
     "providers/shared",
 ]
 

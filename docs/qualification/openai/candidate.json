@@ -1,12 +1,12 @@
 {
   "design_assumption": "DA-01",
   "provider": "openai",
-  "harness_build": null,
+  "harness_build": "codex-cli 0.159.3 (@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex sha256:8bf204b36a2f6dd0dab73aa2f639892e67ef9ac8befccb4a05b1496ebf25c479)",
   "runtime_image_digest": null,
   "transport_integration_digest": null,
   "storage_profile": null,
   "tool_policy_digest": null,
-  "configuration_digest": null,
+  "configuration_digest": "sha256:0e2c2cce8f3208bfccb9178f4aaf6b1d689136d32cadf4ccc8d25073ff7b70ea",
   "status": "pending",
   "validated_resident_session_limit": null,
   "validated_active_turn_limit": null,
@@ -15,5 +15,5 @@
   "failed_criteria": [],
   "review_owner": null,
   "reviewed_at": null,
-  "notes": "G0 inventory is incomplete. This file is not a validated Codex record."
+  "notes": "G0 inventory for the Codex App Server candidate; this file is not a validated Codex record. Protocol capture providers/openai/integration/protocol-schema.json sha256:4729995c21e167ecc14f03879d52ec8dd2a5f9965de93626763ced1f5f73db9c was generated from the installed build with an isolated HOME and CODEX_HOME and no credentials. The configuration digest is infra/runtime/codex/config.toml, which that build accepted under --strict-config. No model request was made, so model access and the candidate model identifier are unobserved. Every required primitive is unproven: the build declares the mapped thread/turn methods, clientUserMessageId correlation and per-request turn metadata, but declarations are not runtime evidence. The build reports unified_exec enabled although the configuration disables it, so the tool policy is not demonstrated. No separate compaction endpoint was found; no MCP per-call identity is declared. No hook patch is used, so there is no hook digest. Runtime image, transport integration, storage profile and tool-policy digests are not yet built."
 }
