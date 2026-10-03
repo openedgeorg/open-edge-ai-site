@@ -5,12 +5,14 @@ description = "ESP Conversation release pins. Selection metadata is separate fro
 requires-python = ">=3.12"
 dependencies = [
     "esp-contracts",
+    "esp-db",
     "esp-object-store",
     "pydantic>=2.10",
 ]
 
 [tool.uv.sources]
 esp-contracts = { workspace = true }
+esp-db = { workspace = true }
 esp-object-store = { workspace = true }
 
 [build-system]

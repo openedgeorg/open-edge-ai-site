@@ -1,0 +1,32 @@
+[project]
+name = "esp-api"
+version = "0.1.0"
+description = "ESP Application Backend HTTP boundary: browser identity, ownership and conversation metadata."
+requires-python = ">=3.12"
+dependencies = [
+    "esp-contracts",
+    "esp-db",
+    "esp-espcon",
+    "esp-execution-bindings",
+    "esp-object-store",
+    "fastapi>=0.115",
+    "psycopg[binary,pool]>=3.2",
+    "pydantic>=2.10",
+]
+
+[tool.uv.sources]
+esp-contracts = { workspace = true }
+esp-db = { workspace = true }
+esp-espcon = { workspace = true }
+esp-execution-bindings = { workspace = true }
+esp-object-store = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/esp_api"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
