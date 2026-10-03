@@ -17,6 +17,8 @@ dependencies = [
     "esp-provider-openai",
     "esp-provider-shared",
     "esp-provider-xai",
+    "esp-request-admission",
+    "esp-runtime-placement",
     "jsonschema>=4.23",
     "pyyaml>=6.0.2",
 ]
@@ -44,6 +46,8 @@ esp-object-store = { workspace = true }
 esp-provider-openai = { workspace = true }
 esp-provider-shared = { workspace = true }
 esp-provider-xai = { workspace = true }
+esp-request-admission = { workspace = true }
+esp-runtime-placement = { workspace = true }
 
 [tool.uv.workspace]
 members = [
@@ -54,6 +58,8 @@ members = [
     "packages/event_protocol",
     "packages/execution_bindings",
     "packages/object_store",
+    "packages/request_admission",
+    "packages/runtime_placement",
     "services/esp_embeddings",
     "services/esp_inference_gateway",
     "services/esp_mcp",
