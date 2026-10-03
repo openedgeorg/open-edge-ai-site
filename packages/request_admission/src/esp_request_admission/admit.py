@@ -15,18 +15,26 @@ Protocol (Shared Contracts §3), in order:
 4. One transaction with bounded connection acquisition, lock wait and statement time:
    `FOR UPDATE NOWAIT` on the conversation guard, then on the current mapping; recheck the duplicate,
    guard and run state; recheck eligibility and pins (`select_admission_pins`); claim resident, active
-   and provider slots with `SKIP LOCKED` (`choose_compatible_slots`); create or update the
-   nullable-native-ID mapping with a fresh run, request, epoch, lease and deadline; set the guard.
-   Any failure rolls the whole transaction back, so no partial claim survives.
+   and provider slots with `SKIP LOCKED`, then take the non-waiting shared fence on the chosen Process
+   Incarnation (ProInc) and re-read that its instance is still ready on it (`choose_compatible_slots`);
+   create or update the nullable-native-ID mapping with a fresh run, request, epoch, lease and
+   deadline; set the guard. Any failure rolls the whole transaction back, so no partial claim survives.
+   The fence, held to commit, orders admission against whole-process revocation (`revoke_incarnation`):
+   the admitted run is in the revocation's inventory, or admission is refused (`incarnation_fenced`,
+   `incarnation_unavailable`).
 5. After a rollback for contention, a bounded committed re-read decides: duplicate (status), confirmed
    conflicting guard (busy) or committed exhaustion (capacity). Otherwise `service_unavailable`.
    A lock failure or an empty `SKIP LOCKED` result is never by itself busy or exhaustion.
 
 `release_unsubmitted` clears one reservation only when the caller has proven non-submission and the
-current mapping still carries that exact run, epoch and guard with no native work recorded. On any
-failure it returns `False` and changes nothing: ownership and accounting stay conservative until a
-conditional clear succeeds. It releases active and provider capacity; resident capacity stays with
-the mapping (native state may be loaded) until the supervisor confirms an unload.
+current mapping still carries that exact run, epoch and guard with no native work recorded. `True`
+means this call committed the release. `False` means this call cannot show that it released anything:
+the conditions did not hold (contended, stale, native work recorded, or already released by an earlier
+call), the database was unreachable, or the commit acknowledgement was lost after the release had
+committed. A `False` is therefore not "nothing changed": the caller keeps treating the reservation as
+held and leaves it to the metadata-only reconciler (Task 17), which settles it by conditional updates
+and never replays input. It releases active and provider capacity; resident capacity stays with the
+mapping (native state may be loaded) until the supervisor confirms an unload.
 
 A matching `current_request_id` is a duplicate whether or not the run is still active, so a retry of a
 finished request cannot submit again. `release_unsubmitted` clears it, because the input provably
@@ -266,7 +274,14 @@ class AdmissionController:
         return await self._reserve(subject_id, conversation, client_request_id, release)
 
     async def release_unsubmitted(self, authority: AdmissionAuthority) -> bool:
-        """Release a reservation whose input provably never reached the harness. `False` changes nothing."""
+        """Release a reservation whose input provably never reached the harness.
+
+        `True`: this call committed the release. `False`: this call cannot show that it released anything.
+        Its conditions did not hold, or the database failed. If the commit acknowledgement was lost, the
+        release may still have committed, and a retry then also answers `False` because the epoch moved.
+        Callers never read `False` as "nothing changed". They keep the reservation counted as held and
+        hand it to the metadata-only reconciler (Task 17).
+        """
         try:
             async with _bounded(self._db) as tx:
                 if not await _release_unsubmitted(tx, authority):

@@ -148,6 +148,27 @@ async def compatible_instances(
     return [_instance(row) for row in rows]
 
 
+async def incarnation_is_ready(tx: Transaction, instance_id: str, incarnation_id: str) -> bool:
+    """Whether the instance is still ready, heartbeat-fresh and running exactly this incarnation.
+
+    The same health predicate as `compatible_instances`. Placement re-reads it after taking the shared
+    incarnation fence, so a whole-process revocation committed in between is seen.
+    """
+    row = await tx.execute_one(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM harness_instance
+            WHERE id = %s::uuid
+              AND process_incarnation_id = %s::uuid
+              AND lifecycle_status = 'ready'
+              AND last_heartbeat_at > transaction_timestamp() - make_interval(secs => %s)
+        ) AS ready
+        """,
+        (instance_id, incarnation_id, INSTANCE_HEARTBEAT_LEASE_SECONDS),
+    )
+    return row is not None and row["ready"] is True
+
+
 async def provider_budget(tx: Transaction, provider: Provider) -> ProviderBudget | None:
     row = await tx.execute_one(_PROVIDER, (provider,))
     if row is None:

@@ -4,15 +4,25 @@
 resident -> active -> provider: a resident slot for new or unloaded native state, an active slot on the
 same Shared Harness Instance (ShaHarIns), and a provider slot. It answers one of three outcomes:
 
-- `acquired`: every needed slot is held by the mapping at the reservation epoch;
+- `acquired`: every needed slot is held by the mapping at the reservation epoch, and the caller's
+  transaction holds the shared fence on the chosen instance's Process Incarnation (ProInc);
 - `exhausted`: committed holders fill a needed budget on every compatible instance, or the provider budget;
 - `inconclusive`: capacity could not be established. Committed capacity existed but the rows were locked
-  by other transactions or never provisioned, the provider is unhealthy, or no ready compatible
-  instance (or not the instance holding the mapping's resident slot) exists. Callers report
-  `service_unavailable`, never busy and never exhaustion.
+  by other transactions or never provisioned, the provider is unhealthy, no ready compatible instance
+  (or not the instance holding the mapping's resident slot) exists, or the chosen incarnation is being
+  revoked. Callers report `service_unavailable`, never busy and never exhaustion.
 
-A non-acquired outcome rolls back its own claims (savepoint), so no partial reservation survives in the
-caller's transaction. Placement does no remote I/O, takes no provider-wide lock and never retries.
+Ordering against whole-process revocation: after the claims, placement takes the non-waiting shared fence
+`esp_try_fence(incarnation, mapping, false)` and then re-reads that the instance is still ready on that
+incarnation. The fence stays held until the caller's transaction ends. Revocation marks the instance
+first and only then takes the exclusive incarnation fence and inventories the incarnation's mappings.
+An admitted run is therefore either committed before that inventory, which revokes it, or refused here:
+the fence is unavailable while a revocation holds or awaits it, and once a revocation has committed, the
+re-read sees its mark.
+
+A non-acquired outcome rolls back its own claims and fence (savepoint), so no partial reservation
+survives in the caller's transaction. Placement does no remote I/O, takes no provider-wide lock and
+never retries.
 
 Fair use across instances: candidates are tried in order of most free committed active capacity, then
 most free resident capacity, then instance ID. A contended instance is skipped for the next, so free
@@ -31,9 +41,11 @@ from esp_db.client import Transaction
 from esp_runtime_placement.capacity import (
     ClaimedSlot,
     InstanceCapacity,
+    ProviderBudget,
     SlotScope,
     claim_slot,
     compatible_instances,
+    incarnation_is_ready,
     provider_budget,
 )
 
@@ -43,6 +55,8 @@ InconclusiveReason = Literal[
     "provider_unavailable",
     "no_ready_instance",
     "resident_instance_unavailable",
+    "incarnation_fenced",
+    "incarnation_unavailable",
 ]
 
 
@@ -134,10 +148,11 @@ async def choose_compatible_slots(tx: Transaction, request: PlacementRequest) ->
     )
     if provider_slot is None:
         await _undo(tx, _PLACEMENT)
-        current = await provider_budget(tx, request.provider)
-        if current is not None and current.budget.free <= 0:
-            return SlotsExhausted(outcome="exhausted", scope="provider")
-        return SlotsInconclusive(outcome="inconclusive", reason="slots_locked")
+        return _provider_failure(await provider_budget(tx, request.provider))
+    unsettled = await _hold_incarnation(tx, request, instance)
+    if unsettled is not None:
+        await _undo(tx, _PLACEMENT)
+        return unsettled
     await tx.execute(f"RELEASE SAVEPOINT {_PLACEMENT}")
     return SlotsAcquired(
         outcome="acquired",
@@ -210,6 +225,32 @@ async def _claim_instance(
             return instance, slots
         await _undo(tx, _INSTANCE)
     return None
+
+
+async def _hold_incarnation(
+    tx: Transaction, request: PlacementRequest, instance: InstanceCapacity
+) -> SlotsInconclusive | None:
+    """Take the shared incarnation fence without waiting, then re-read the instance under it."""
+    fenced = await tx.execute_one(
+        "SELECT esp_try_fence(%s, %s, false) AS locked",
+        (instance.runtime_incarnation_id, request.provider_session_id),
+    )
+    if fenced is None or fenced["locked"] is not True:
+        return SlotsInconclusive(outcome="inconclusive", reason="incarnation_fenced")
+    if not await incarnation_is_ready(tx, instance.harness_instance_id, instance.runtime_incarnation_id):
+        return SlotsInconclusive(outcome="inconclusive", reason="incarnation_unavailable")
+    return None
+
+
+def _provider_failure(current: ProviderBudget | None) -> SlotsExhausted | SlotsInconclusive:
+    """Why no provider row could be claimed, from the committed re-read after rollback."""
+    if current is None or not current.healthy:
+        return SlotsInconclusive(outcome="inconclusive", reason="provider_unavailable")
+    if current.budget.free <= 0:
+        return SlotsExhausted(outcome="exhausted", scope="provider")
+    if current.budget.free_rows == 0:
+        return SlotsInconclusive(outcome="inconclusive", reason="slots_unprovisioned")
+    return SlotsInconclusive(outcome="inconclusive", reason="slots_locked")
 
 
 def _instance_failure(instances: list[InstanceCapacity], needs_resident: bool) -> SlotsExhausted | SlotsInconclusive:

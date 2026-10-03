@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
+from psycopg import errors as pg_errors
+
 from esp_contracts.runtime import DispatchTicket, RunBinding
 from esp_db.client import Db, Transaction, transaction
 from esp_execution_bindings.authorize import assert_dispatchable, read_authority, read_eligibility
 from esp_execution_bindings.binding import AuthorizationError
+
+# Bounded wait for the exclusive incarnation fence in whole-process revocation. Shared holders are
+# dispatches inside their bounded transport start and admissions inside their bounded transaction.
+REVOCATION_LOCK_TIMEOUT = "2s"
 
 
 async def with_dispatch_authority(
@@ -49,8 +55,40 @@ async def revoke_mapping(db: Db, mapping_id: str, expected_epoch: int) -> bool:
 
 
 async def revoke_incarnation(db: Db, instance_id: str, incarnation_id: str) -> list[str]:
+    """Revoke a whole Process Incarnation (ProInc) and every current mapping on it (P §12.6 step 1).
+
+    1. Mark the instance `failed` for this incarnation and commit, so placement stops choosing it at
+       once, even while the fence below is unavailable. The mark is conditional on the incarnation, so
+       it never touches a replacement process, and repeating it changes nothing.
+    2. Take the exclusive incarnation fence, waiting at most `REVOCATION_LOCK_TIMEOUT`. While this
+       request is queued PostgreSQL grants no later conflicting one, so new shared dispatch and
+       admission fences on the incarnation fail at once instead of starving the revocation.
+    3. Only then inventory the incarnation's current mappings. Admission writes a mapping onto an
+       incarnation only while it holds the shared fence and after it has re-read that the instance is
+       still ready on that incarnation. Every mapping admission can still commit there is therefore in
+       this inventory, or admission refuses it.
+    4. Fence and revoke each mapping: epoch + 1, state `unavailable`.
+
+    Returns the revoked mapping IDs. An empty list means no current mapping was on the incarnation.
+    Raises `AuthorizationError` when the revocation could not complete, because a fence stayed
+    unavailable or a mapping changed underneath it. A database outage propagates its own error. Either
+    way, at most the mark from step 1 persists, and the caller retries. A failure is never reported as
+    an empty inventory.
+    """
+    async with transaction(db) as tx:
+        await tx.execute(
+            """
+            UPDATE harness_instance SET lifecycle_status = 'failed'
+            WHERE id = %s::uuid
+              AND process_incarnation_id = %s::uuid
+              AND lifecycle_status IN ('starting', 'ready', 'draining', 'suspect')
+            """,
+            (instance_id, incarnation_id),
+        )
     try:
         async with transaction(db) as tx:
+            await tx.execute("SELECT set_config('lock_timeout', %s, true) AS lock_timeout", (REVOCATION_LOCK_TIMEOUT,))
+            await tx.execute("SELECT esp_await_incarnation_fence(%s) AS locked", (incarnation_id,))
             rows = await tx.execute(
                 """
                 SELECT id::text AS id
@@ -80,8 +118,8 @@ async def revoke_incarnation(db: Db, instance_id: str, incarnation_id: str) -> l
                 if updated is None:
                     raise AuthorizationError("epoch_mismatch")
                 revoked.append(str(updated["id"]))
-    except AuthorizationError:
-        return []
+    except (pg_errors.LockNotAvailable, pg_errors.QueryCanceled) as exc:
+        raise AuthorizationError("fence_unavailable") from exc
     return revoked
 
 

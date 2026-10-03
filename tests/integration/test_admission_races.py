@@ -8,18 +8,25 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections import Counter
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from esp_request_admission.admit import Admitted, DuplicateActive, Rejected
-from esp_request_admission.rate_limits import RatePolicy
+from esp_execution_bindings import dispatch_fence
+from esp_execution_bindings.binding import AuthorizationError
+from esp_execution_bindings.dispatch_fence import revoke_incarnation
+from esp_request_admission.admit import AdmissionResult, Admitted, DuplicateActive, Rejected
+from esp_request_admission.rate_limits import RatePolicy, open_counter_client
+from esp_runtime_placement.capacity import SlotScope
 from scripts.migrate import migrate
 from tests.support.admission import (
     UNREACHABLE_DSN,
     UNREACHABLE_VALKEY_URL,
+    VALKEY_URL,
     AdmissionLab,
     close_admission_lab,
     open_admission_lab,
@@ -65,11 +72,14 @@ async def test_rejections_carry_the_documented_status_and_retry_disposition(admi
     contended = await admission_lab.contended_guard_without_owner()
     busy = await admission_lab.confirmed_conflicting_guard()
     full = await admission_lab.all_compatible_slots_committed_full()
+    locked = await admission_lab.locked_slots_with_free_capacity()
     assert (contended.http_status, contended.retryable, contended.retry_after) == (503, True, None)
     assert (busy.http_status, busy.retryable) == (409, False)
     assert (full.http_status, full.retryable) == (503, True)
+    assert (locked.http_status, locked.retryable, locked.retry_after) == (503, True, None)
     assert contended.reason == "guard_contended"
     assert full.reason == "active_exhausted"
+    assert locked.reason == "slots_locked"
 
 
 async def test_admission_claims_guard_mapping_and_every_slot_in_one_transaction(admission_lab: AdmissionLab) -> None:
@@ -192,9 +202,10 @@ async def test_resident_active_and_provider_caps_are_independent(admission_lab: 
         assert {slot.holder for slot in before} == {holder.reservation.provider_session_id}
 
 
-async def test_missing_slot_rows_are_not_exhaustion(admission_lab: AdmissionLab) -> None:
+@pytest.mark.parametrize("scope", ["active", "provider"])
+async def test_missing_slot_rows_are_not_exhaustion(admission_lab: AdmissionLab, scope: SlotScope) -> None:
     (instance,) = await admission_lab.fresh_pool([(2, 2)], provider_limit=4)
-    await admission_lab.drop_unheld_slots(instance, "active")
+    await admission_lab.drop_unheld_slots("openai" if scope == "provider" else instance, scope)
     conv = await admission_lab.conversation()
     refused = rejected(await admission_lab.admit(conv))
     assert (refused.code, refused.reason) == ("service_unavailable", "slots_unprovisioned")
@@ -285,6 +296,124 @@ async def test_failure_after_slot_claims_rolls_back_every_claim(admission_lab: A
     assert await admission_lab.guard(released) is None
     mapping = await admission_lab.mapping(released)
     assert mapping is not None and mapping["active_agent_run_id"] is None
+
+
+def assert_never_current_on_revoked(mapping: dict[str, Any] | None, result: AdmissionResult, revoked: str) -> None:
+    """Admission and whole-process revocation may interleave in any order, but never leave live authority.
+
+    Either the admission was refused and wrote nothing, or the revocation inventoried and revoked the run
+    it admitted. A mapping that is current on the revoked incarnation with the admitted epoch is the
+    stale-dispatch / second-writer hazard (D4).
+    """
+    if isinstance(result, Rejected):
+        assert result.code == "service_unavailable"
+        assert mapping is None
+        return
+    admitted_run = admitted(result)
+    assert mapping is not None
+    if mapping["runtime_incarnation_id"] == revoked:
+        assert mapping["ownership_epoch"] > admitted_run.authority.ownership_epoch
+        assert mapping["runtime_state"] == "unavailable"
+
+
+async def test_revocation_waits_for_and_revokes_an_admission_past_its_incarnation_fence(
+    admission_lab: AdmissionLab,
+) -> None:
+    (instance,) = await admission_lab.fresh_pool([(2, 2)], provider_limit=4)
+    incarnation = await admission_lab.incarnation(instance)
+    conv = await admission_lab.conversation()
+    async with admission_lab.slow_mapping_write(conv, seconds=0.8):
+        admission = asyncio.create_task(admission_lab.admit(conv, "req-straddled"))
+        await admission_lab.wait_until_sleeping("INSERT INTO provider_session")
+        revoked = await revoke_incarnation(admission_lab.backends[1].db, instance, incarnation)
+        result = await admission
+    mapping = await admission_lab.mapping(conv)
+
+    assert_never_current_on_revoked(mapping, result, incarnation)
+    winner = admitted(result)
+    assert revoked == [winner.reservation.provider_session_id]
+    assert mapping is not None and mapping["runtime_incarnation_id"] == incarnation
+    assert mapping["ownership_epoch"] == winner.authority.ownership_epoch + 1
+    assert await admission_lab.instance_status(instance) == "failed"
+
+
+async def test_admission_that_read_a_ready_instance_is_refused_after_its_revocation(
+    admission_lab: AdmissionLab,
+) -> None:
+    (instance,) = await admission_lab.fresh_pool([(2, 2)], provider_limit=4)
+    incarnation = await admission_lab.incarnation(instance)
+    conv = await admission_lab.conversation()
+    async with admission_lab.slow_active_claim(instance, seconds=0.8):
+        admission = asyncio.create_task(admission_lab.admit(conv, "req-before-fence"))
+        await admission_lab.wait_until_sleeping("capacity_slot")
+        revoked = await revoke_incarnation(admission_lab.backends[1].db, instance, incarnation)
+        result = await admission
+    mapping = await admission_lab.mapping(conv)
+
+    assert_never_current_on_revoked(mapping, result, incarnation)
+    assert revoked == []
+    refused = rejected(result)
+    assert (refused.code, refused.reason) == ("service_unavailable", "incarnation_unavailable")
+    assert await admission_lab.held_slots() == []
+    assert await admission_lab.guard(conv) is None
+    assert await admission_lab.instance_status(instance) == "failed"
+
+
+async def test_revocation_in_progress_refuses_admission_without_waiting(admission_lab: AdmissionLab) -> None:
+    (instance,) = await admission_lab.fresh_pool([(2, 2)], provider_limit=4)
+    incarnation = await admission_lab.incarnation(instance)
+    conv = await admission_lab.conversation()
+    revoking = await admission_lab.hold_incarnation_fence(incarnation, exclusive=True)
+    try:
+        refused = rejected(await admission_lab.admit(conv))
+        held_during = await admission_lab.held_slots()
+    finally:
+        await revoking.release()
+    assert (refused.code, refused.reason) == ("service_unavailable", "incarnation_fenced")
+    assert held_during == []
+    assert await admission_lab.mapping_count(conv) == 0
+    # A peer's shared dispatch fence never contends with admission's shared fence.
+    dispatching = await admission_lab.hold_incarnation_fence(incarnation, exclusive=False)
+    try:
+        assert admitted(await admission_lab.admit(conv)).reservation.runtime_incarnation_id == incarnation
+    finally:
+        await dispatching.release()
+    within_budget(admission_lab)
+
+
+async def test_whole_process_revocation_marks_first_and_never_reports_an_incomplete_inventory(
+    admission_lab: AdmissionLab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (instance,) = await admission_lab.fresh_pool([(2, 2)], provider_limit=4)
+    incarnation = await admission_lab.incarnation(instance)
+    owner = await admission_lab.conversation()
+    resident = admitted(await admission_lab.admit(owner))
+    revoker = admission_lab.backends[1].db
+
+    # An in-flight dispatch holds the shared fence. Revocation marks the instance at once, then queues
+    # for the exclusive fence; while it waits, no new dispatch or admission fence is granted.
+    dispatching = await admission_lab.hold_incarnation_fence(incarnation, exclusive=False)
+    revocation = asyncio.create_task(revoke_incarnation(revoker, instance, incarnation))
+    try:
+        await admission_lab.wait_until_awaiting_advisory_lock()
+        assert await admission_lab.instance_status(instance) == "failed"
+        assert not await admission_lab.try_incarnation_fence(incarnation, exclusive=False)
+        assert not revocation.done()
+    finally:
+        await dispatching.release()
+    assert await revocation == [resident.reservation.provider_session_id]
+
+    # A holder that outlasts the bounded wait makes revocation raise. It never returns an empty
+    # inventory that a caller could mistake for "no mapping on this incarnation".
+    monkeypatch.setattr(dispatch_fence, "REVOCATION_LOCK_TIMEOUT", "200ms")
+    dispatching = await admission_lab.hold_incarnation_fence(incarnation, exclusive=False)
+    try:
+        with pytest.raises(AuthorizationError, match="fence_unavailable"):
+            await revoke_incarnation(revoker, instance, incarnation)
+    finally:
+        await dispatching.release()
+    mapping = await admission_lab.mapping(owner)
+    assert mapping is not None and mapping["ownership_epoch"] == resident.authority.ownership_epoch + 1
 
 
 async def test_free_instance_is_used_when_another_instance_is_contended(admission_lab: AdmissionLab) -> None:
@@ -493,16 +622,36 @@ async def test_release_requires_proven_current_authority_and_stays_conservative(
 
 
 async def test_admission_keeps_no_input_or_backlog(admission_lab: AdmissionLab) -> None:
-    tables_before = await admission_lab.application_tables()
     await admission_lab.fresh_pool([(1, 1)], provider_limit=1)
-    admitted(await admission_lab.admit(await admission_lab.conversation()))
+    holder = admitted(await admission_lab.admit(await admission_lab.conversation()))
     refused = [await admission_lab.conversation() for _ in range(4)]
+    rows_before = await admission_lab.conversation_rows(refused)
+    draft = f"test-admission-draft-canary-{uuid.uuid4().hex}"
     results = await asyncio.gather(
-        *(admission_lab.submit(conv, f"req-refused-{index}", "draft") for index, conv in enumerate(refused))
+        *(admission_lab.submit(conv, f"req-refused-{index}", draft) for index, conv in enumerate(refused))
     )
     assert {rejected(result).code for result in results} == {"capacity_unavailable"}
-    assert await admission_lab.application_tables() == tables_before
-    assert sum(admission_lab.native_submissions.values()) == 0
+
+    # Free the capacity the refusals saw as full. Nothing refused may run, or be kept, afterwards.
+    assert await admission_lab.backends[0].controller.release_unsubmitted(holder.authority)
+    await asyncio.sleep(0.3)
+    assert await admission_lab.conversation_rows(refused) == rows_before
     for conv in refused:
         assert await admission_lab.mapping_count(conv) == 0
+    assert await admission_lab.stored_text_occurrences(draft) == []
     within_budget(admission_lab)
+
+
+async def test_stored_text_search_finds_text_in_a_table_or_valkey(admission_lab: AdmissionLab) -> None:
+    """The no-backlog search above can fail: it finds text written to a table row or a Valkey key."""
+    (instance,) = await admission_lab.fresh_pool([(1, 1)], provider_limit=1)
+    canary = f"test-admission-search-canary-{uuid.uuid4().hex}"
+    await admission_lab.set_instance(instance, worker_id=f"worker-{canary}")
+    client = open_counter_client(VALKEY_URL, timeout_seconds=1.0)
+    key = f"esp:test:{uuid.uuid4().hex}"
+    try:
+        await client.hset(key, mapping={"value": canary})
+        assert await admission_lab.stored_text_occurrences(canary) == ["table:harness_instance", f"valkey:{key}"]
+    finally:
+        await client.delete(key)
+        await client.aclose()

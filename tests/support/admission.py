@@ -15,8 +15,10 @@ replaces them with its own budget and restores the snapshot when it closes, as `
 place work on them.
 
 `native_submissions` stands in for the native submission that Task 16 performs after admission. It is
-incremented only for an `Admitted` result, so it counts exactly the inputs that could have reached a
-harness.
+incremented only for an `Admitted` result, so it restates the admission outcome and is not independent
+evidence. The independent no-backlog evidence is authoritative state: no mapping, run or guard for a
+refused conversation, its conversation row unchanged, and its draft text absent from every database
+table and every Valkey key and value (`stored_text_occurrences`).
 """
 
 from __future__ import annotations
@@ -31,9 +33,9 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, LiteralString, cast
+from typing import Any, LiteralString, Protocol, cast
 
-from psycopg import AsyncConnection
+from psycopg import AsyncConnection, sql
 from psycopg.rows import TupleRow, dict_row
 from psycopg_pool import AsyncConnectionPool
 from redis.asyncio import Redis
@@ -66,6 +68,12 @@ LAB_RATE_POLICY = RatePolicy(
     refill=10_000,
     expiry_seconds=60,
 )
+
+
+class _KeyScanner(Protocol):
+    """The one Valkey `SCAN` shape the stored-text search uses, typed for strict checking."""
+
+    async def scan(self, cursor: int = 0, *, count: int | None = None) -> tuple[int, list[bytes | str]]: ...
 
 
 @dataclass(frozen=True)
@@ -125,7 +133,7 @@ class AdmissionLab:
     _holders: list[LockHolder] = field(default_factory=lambda: [])
     _provider_slot_snapshot: list[dict[str, Any]] = field(default_factory=lambda: [])
     _extra_backends: list[Backend] = field(default_factory=lambda: [])
-    _fault_triggers: list[str] = field(default_factory=lambda: [])
+    _fault_triggers: list[tuple[str, str]] = field(default_factory=lambda: [])
 
     # Setup and teardown
 
@@ -191,8 +199,8 @@ class AdmissionLab:
     async def close(self) -> None:
         for holder in self._holders:
             await holder.release()
-        for name in self._fault_triggers:
-            await self._drop_fault(name)
+        for name, table in self._fault_triggers:
+            await self._drop_fault(name, table)
         if self.counter_keys:
             client = open_counter_client(VALKEY_URL, timeout_seconds=1.0)
             try:
@@ -298,7 +306,13 @@ class AdmissionLab:
                 await provision_provider_slots(Transaction(connection), PROVIDER)
 
     async def set_instance(self, instance_id: str, **changes: object) -> None:
-        allowed = {"lifecycle_status", "process_incarnation_id", "resident_session_limit", "active_turn_limit"}
+        allowed = {
+            "lifecycle_status",
+            "process_incarnation_id",
+            "resident_session_limit",
+            "active_turn_limit",
+            "worker_id",
+        }
         if not set(changes) <= allowed:
             raise ValueError("unsupported instance change")
         assignments = ", ".join(f"{name} = %s" for name in changes)
@@ -310,11 +324,14 @@ class AdmissionLab:
                 )
                 await provision_instance_slots(Transaction(connection), instance_id)
 
-    async def drop_unheld_slots(self, instance_id: str, scope: SlotScope) -> None:
-        """Unprovision a budget's free rows while its limit still promises capacity."""
+    async def drop_unheld_slots(self, scope_id: str, scope: SlotScope) -> None:
+        """Unprovision a budget's free rows while its limit still promises capacity.
+
+        `scope_id` is the instance ID for resident and active budgets and the provider name for `provider`.
+        """
         await self._execute(
             "DELETE FROM capacity_slot WHERE scope = %s AND scope_id = %s AND holder_provider_session_id IS NULL",
-            (scope, instance_id),
+            (scope, scope_id),
         )
 
     async def conversation(self, subject_id: str | None = None) -> Conv:
@@ -428,6 +445,37 @@ class AdmissionLab:
             (scope, scope_id),
         )
 
+    async def hold_incarnation_fence(self, incarnation_id: str, *, exclusive: bool) -> LockHolder:
+        """Another backend's fence on a Process Incarnation (ProInc), through the production fence function.
+
+        Shared stands for an in-flight dispatch; exclusive for a revocation in progress on that incarnation.
+        The fenced mapping is a fresh ID, so only the incarnation key can contend.
+        """
+        connection = await AsyncConnection.connect(APP_ROLE_DSN, autocommit=False)
+        cursor = await connection.execute(
+            "SELECT esp_try_fence(%s, %s, %s)", (incarnation_id, str(uuid.uuid4()), exclusive)
+        )
+        row = await cursor.fetchone()
+        holder = LockHolder(connection=connection, locked_rows=1 if row is not None and row[0] is True else 0)
+        self._holders.append(holder)
+        if holder.locked_rows != 1:
+            await holder.release()
+            raise AssertionError("the lab could not take the incarnation fence")
+        return holder
+
+    async def try_incarnation_fence(self, incarnation_id: str, *, exclusive: bool) -> bool:
+        """Whether a further backend could take the incarnation fence right now. It never waits."""
+        connection = await AsyncConnection.connect(APP_ROLE_DSN, autocommit=False)
+        try:
+            cursor = await connection.execute(
+                "SELECT esp_try_fence(%s, %s, %s)", (incarnation_id, str(uuid.uuid4()), exclusive)
+            )
+            row = await cursor.fetchone()
+            return row is not None and row[0] is True
+        finally:
+            await connection.rollback()
+            await connection.close()
+
     async def _hold(self, query: str, params: tuple[object, ...]) -> LockHolder:
         connection = await AsyncConnection.connect(APP_ROLE_DSN, autocommit=False)
         cursor = await connection.execute(cast(LiteralString, query), params)
@@ -436,46 +484,93 @@ class AdmissionLab:
         self._holders.append(holder)
         return holder
 
+    async def wait_until_sleeping(self, statement_fragment: str, *, timeout: float = 3.0) -> None:
+        """Wait until some backend sleeps in a lab trigger inside a statement containing the fragment."""
+        await self._wait_for_activity(
+            "wait_event = 'PgSleep' AND strpos(query, %s) > 0", (statement_fragment,), timeout, "a sleeping admission"
+        )
+
+    async def wait_until_awaiting_advisory_lock(self, *, timeout: float = 3.0) -> None:
+        """Wait until some backend is queued for an advisory lock (a revocation waiting for its fence)."""
+        await self._wait_for_activity(
+            "wait_event_type = 'Lock' AND wait_event = 'advisory'", (), timeout, "a queued advisory lock"
+        )
+
+    async def _wait_for_activity(self, condition: str, params: tuple[object, ...], timeout: float, what: str) -> None:
+        deadline = time.monotonic() + timeout
+        query = f"SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND {condition}"
+        while time.monotonic() < deadline:
+            if int((await self._fetch(query, params))[0]["n"]) > 0:
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError(f"timed out waiting for {what}")
+
     @asynccontextmanager
     async def mapping_write_fault(self, conv: Conv) -> AsyncGenerator[None]:
         """Fail every provider_session write for this one synthetic conversation, after slots are claimed."""
-        name = f"esp_test_fault_{uuid.uuid4().hex[:12]}"
         conversation_id = str(uuid.UUID(conv.conversation_id))
+        async with self._trigger(
+            "provider_session",
+            f"NEW.conversation_id = '{conversation_id}'::uuid",
+            "RAISE EXCEPTION 'injected admission fault' USING ERRCODE = '58000';",
+        ):
+            yield
+
+    @asynccontextmanager
+    async def slow_mapping_write(self, conv: Conv, *, seconds: float) -> AsyncGenerator[None]:
+        """Stretch an admission at its mapping write: after placement fenced and re-read the incarnation."""
+        conversation_id = str(uuid.UUID(conv.conversation_id))
+        async with self._trigger(
+            "provider_session",
+            f"NEW.conversation_id = '{conversation_id}'::uuid",
+            f"PERFORM pg_sleep({float(seconds)}); RETURN NEW;",
+        ):
+            yield
+
+    @asynccontextmanager
+    async def slow_active_claim(self, instance_id: str, *, seconds: float) -> AsyncGenerator[None]:
+        """Stretch an admission at its active-slot claim: after it read the instance as ready, before its fence."""
+        scope_id = str(uuid.UUID(instance_id))
+        async with self._trigger(
+            "capacity_slot",
+            f"NEW.scope = 'active' AND NEW.scope_id = '{scope_id}' AND NEW.holder_provider_session_id IS NOT NULL",
+            f"PERFORM pg_sleep({float(seconds)}); RETURN NEW;",
+        ):
+            yield
+
+    @asynccontextmanager
+    async def _trigger(self, table: str, when: str, body: str) -> AsyncGenerator[None]:
+        """A row trigger that fires only for the lab's own synthetic rows. Dropped on exit and at close."""
+        name = f"esp_test_fault_{uuid.uuid4().hex[:12]}"
         async with self.admin.pool.connection() as connection:
             async with connection.transaction():
                 await connection.execute(
                     cast(
                         LiteralString,
-                        f"""
-                        CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$
-                        BEGIN
-                            RAISE EXCEPTION 'injected admission fault' USING ERRCODE = '58000';
-                        END;
-                        $$
-                        """,
+                        f"CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN {body} END; $$",
                     )
                 )
                 await connection.execute(
                     cast(
                         LiteralString,
                         f"""
-                        CREATE TRIGGER {name} BEFORE INSERT OR UPDATE ON provider_session
-                        FOR EACH ROW WHEN (NEW.conversation_id = '{conversation_id}'::uuid)
+                        CREATE TRIGGER {name} BEFORE INSERT OR UPDATE ON {table}
+                        FOR EACH ROW WHEN ({when})
                         EXECUTE FUNCTION {name}()
                         """,
                     )
                 )
-        self._fault_triggers.append(name)
+        self._fault_triggers.append((name, table))
         try:
             yield
         finally:
-            await self._drop_fault(name)
-            self._fault_triggers.remove(name)
+            await self._drop_fault(name, table)
+            self._fault_triggers.remove((name, table))
 
-    async def _drop_fault(self, name: str) -> None:
+    async def _drop_fault(self, name: str, table: str) -> None:
         async with self.admin.pool.connection() as connection:
             async with connection.transaction():
-                await connection.execute(cast(LiteralString, f"DROP TRIGGER IF EXISTS {name} ON provider_session"))
+                await connection.execute(cast(LiteralString, f"DROP TRIGGER IF EXISTS {name} ON {table}"))
                 await connection.execute(cast(LiteralString, f"DROP FUNCTION IF EXISTS {name}()"))
 
     # Observations
@@ -532,15 +627,60 @@ class AdmissionLab:
         value = rows[0]["guard"]
         return None if value is None else str(value)
 
-    async def application_tables(self) -> set[str]:
+    async def incarnation(self, instance_id: str) -> str:
         rows = await self._fetch(
-            """
-            SELECT table_name FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-            """,
-            (),
+            "SELECT process_incarnation_id::text AS incarnation FROM harness_instance WHERE id = %s", (instance_id,)
         )
-        return {str(row["table_name"]) for row in rows}
+        return str(rows[0]["incarnation"])
+
+    async def instance_status(self, instance_id: str) -> str:
+        rows = await self._fetch("SELECT lifecycle_status FROM harness_instance WHERE id = %s", (instance_id,))
+        return str(rows[0]["lifecycle_status"])
+
+    async def conversation_rows(self, convs: Sequence[Conv]) -> list[dict[str, Any]]:
+        """Every column of these conversations' rows, so any write to them (even `updated_at`) shows."""
+        return await self._fetch(
+            "SELECT * FROM conversation WHERE id = ANY(%s::uuid[]) ORDER BY id",
+            ([conv.conversation_id for conv in convs],),
+        )
+
+    async def stored_text_occurrences(self, text: str) -> list[str]:
+        """Where `text` is stored: any row of any public table, or any Valkey key name or value."""
+        found: list[str] = []
+        async with self.admin.pool.connection() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+                """
+            )
+            tables = [str(row["table_name"]) for row in await cursor.fetchall()]
+            for table in tables:
+                query = sql.SQL("SELECT count(*) AS n FROM {} AS t WHERE strpos(t::text, %s) > 0").format(
+                    sql.Identifier(table)
+                )
+                cursor = await connection.execute(query, (text,))
+                row = await cursor.fetchone()
+                if row is not None and int(row["n"]) > 0:
+                    found.append(f"table:{table}")
+        client = open_counter_client(VALKEY_URL, timeout_seconds=1.0)
+        try:
+            cursor = 0
+            while True:
+                cursor, keys = await cast(_KeyScanner, client).scan(cursor, count=500)
+                for raw_key in keys:
+                    key = _text(raw_key)
+                    value = await _valkey_value(client, raw_key)
+                    if value is None:
+                        found.append(f"valkey-unsearchable:{key}")
+                    elif text in key or text in value:
+                        found.append(f"valkey:{key}")
+                if cursor == 0:
+                    break
+        finally:
+            await client.aclose()
+        return found
 
     async def _fetch(self, query: str, params: tuple[object, ...]) -> list[dict[str, Any]]:
         async with self.admin.pool.connection() as connection:
@@ -686,8 +826,27 @@ class RateLab:
 
 def _text(value: object) -> str:
     if isinstance(value, bytes):
-        return value.decode()
+        return value.decode(errors="replace")
     return str(value)
+
+
+async def _valkey_value(client: Redis, key: bytes | str) -> str | None:
+    """One Valkey value rendered as text for a stored-text search; `None` for a type it cannot read.
+
+    The search reports an unreadable key rather than skipping it, so it never passes by not looking.
+    """
+    kind = _text(await client.type(key))
+    if kind == "string":
+        parts: list[object] = [await client.get(key)]
+    elif kind == "hash":
+        parts = [item for pair in (await client.hgetall(key)).items() for item in pair]
+    elif kind == "list":
+        parts = list(await client.lrange(key, 0, -1))
+    elif kind == "set":
+        parts = list(await client.smembers(key))
+    else:
+        return None
+    return "\n".join(_text(part) for part in parts)
 
 
 async def open_rate_lab(clients: int = 4) -> RateLab:

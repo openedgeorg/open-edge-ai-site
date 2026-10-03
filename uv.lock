@@ -339,6 +339,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "esp-contracts" },
     { name = "esp-db" },
+    { name = "psycopg", extra = ["binary", "pool"] },
 ]
 
 [package.metadata]
@@ -346,6 +347,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=44" },
     { name = "esp-contracts", editable = "packages/contracts" },
     { name = "esp-db", editable = "packages/db" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
 ]
 
 [[package]]
