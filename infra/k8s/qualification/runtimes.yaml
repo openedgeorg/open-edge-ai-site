@@ -2,7 +2,11 @@
 #
 # Each pod is one Process Incarnation (ProInc): restartPolicy Never and no controller, so nothing
 # replaces a writer behind ESP's back. A replacement is created only after a positive fence receipt
-# (KubernetesStorageFence). The pods run as a fixed non-root user with a read-only root file system;
+# (KubernetesStorageFence). The pod carries no incarnation placeholder: the lifecycle wiring (Task 17
+# supervision, Task 21 recovery) records the incarnation either as the
+# `esp.openedge.dev/process-incarnation` annotation it sets or as this pod's UID, which the runtime
+# reads as ESP_POD_UID. The fence locates a writer by either; an unrecorded id locates nothing and the
+# fence fails closed. The pods run as a fixed non-root user with a read-only root file system;
 # the native volume is the only writable mount. They hold no provider credential and no signing key:
 # scopes arrive over the mutually authenticated (mTLS) control endpoint, and model traffic reaches
 # providers only through the ESP Inference Gateway.
@@ -33,9 +37,6 @@ metadata:
     esp.openedge.dev/provider: openai
     esp.openedge.dev/harness: codex
     esp.openedge.dev/shared-harness-instance: codex-0
-  annotations:
-    # Identification only; the supervisor records the actual incarnation when the process starts.
-    esp.openedge.dev/process-incarnation: unassigned
 spec:
   serviceAccountName: esp-codex-runtime
   automountServiceAccountToken: false
@@ -60,6 +61,10 @@ spec:
       env:
         - name: ESP_NATIVE_ROOT
           value: /var/lib/esp/native
+        - name: ESP_POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
         - name: HOME
           value: /var/lib/esp/native/home
         - name: CODEX_HOME
@@ -116,8 +121,6 @@ metadata:
     esp.openedge.dev/provider: xai
     esp.openedge.dev/harness: grok-build
     esp.openedge.dev/shared-harness-instance: grok-0
-  annotations:
-    esp.openedge.dev/process-incarnation: unassigned
 spec:
   serviceAccountName: esp-grok-runtime
   automountServiceAccountToken: false
@@ -142,6 +145,10 @@ spec:
       env:
         - name: ESP_NATIVE_ROOT
           value: /var/lib/esp/native
+        - name: ESP_POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
         - name: HOME
           value: /var/lib/esp/native/home
         - name: GROK_HOME

@@ -260,6 +260,15 @@ def test_isolation_findings_detect_public_exposure_and_runtime_escapes() -> None
     assert any("runtime_writable_mount" in finding for finding in mutated(scratch_volume))
 
 
+def test_runtime_pods_expose_their_uid_as_the_incarnation_identity() -> None:
+    for pod in _runtime_pods(render_qualification_manifests()):
+        annotations = pod["metadata"].get("annotations") or {}
+        # No placeholder incarnation: the lifecycle records the annotation or the pod UID.
+        assert "esp.openedge.dev/process-incarnation" not in annotations
+        env = {item["name"]: item for item in pod["spec"]["containers"][0]["env"]}
+        assert env["ESP_POD_UID"]["valueFrom"] == {"fieldRef": {"fieldPath": "metadata.uid"}}
+
+
 def test_gateway_egress_excludes_every_reserved_and_translated_range() -> None:
     documents = render_qualification_manifests()
     assert not [finding for finding in isolation_findings(documents) if "reserved_range_open" in finding]

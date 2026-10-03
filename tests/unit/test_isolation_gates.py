@@ -40,15 +40,22 @@ from scripts.qualify import (
     direct_egress_outcome,
     dns_internal_only_outcome,
     evaluate_live_evidence,
+    force_delete_outcome,
     forward_proxy_outcome,
+    insufficient_signal_outcome,
     judge_offered_tools,
     key_material_outcomes,
     load_candidate_policy,
     load_tool_policy,
     offered_tools,
+    partitioned_writer_outcome,
+    replacement_blocked_outcome,
     tool_policy_violations,
+    writer_recently_active,
+    writes_after_receipt,
 )
 from tests.qualification.test_egress import PROBE as EGRESS_PROBE
+from tests.qualification.test_storage_fence import FenceProbe
 from tests.qualification.test_tool_policy import KEY_PROBE
 from tests.support.policy_lab import CLUSTER_UID, policy_document, synthetic_profile, synthetic_release
 
@@ -610,6 +617,109 @@ def test_vacuous_stale_foreign_or_unbound_tool_evidence_is_inconclusive(tmp_path
     # A stale body that shows a violation is not counted against this runtime either.
     hostile = {"tools": [{"type": "function", "name": "exec_command"}]}
     assert _judge(_export(tmp_path / "old-hostile", [(hostile, stale)])).outcome == "inconclusive"
+
+
+def test_storage_functional_pass_requires_a_partitioned_writer_scenario() -> None:
+    cooperative_only = tuple(item for item in REQUIRED_STORAGE_SCENARIOS if item != "fence_partitioned_writer_revoked")
+    assert "fence_partitioned_writer_revoked" in REQUIRED_STORAGE_SCENARIOS
+    report = evaluate_live_evidence(
+        "storage", "openai", _observations("storage", cooperative_only), ALL_PASSED, _environment(), _policy()
+    )
+    assert not report.functional_subgate_pass
+    assert "fence_partitioned_writer_revoked_missing" in report.failed_criteria
+
+
+def test_insufficient_signal_verdicts_need_a_writer_that_is_demonstrably_alive() -> None:
+    assert insufficient_signal_outcome(receipt_issued=False, writer_alive_before=True, writer_alive_after=True) == (
+        "satisfied"
+    )
+    assert insufficient_signal_outcome(receipt_issued=True, writer_alive_before=True, writer_alive_after=True) == (
+        "violated"
+    )
+    # A writer that died on its own is legitimately fenced by an observe-only fence: no false invalidation.
+    for before, after in ((True, False), (False, True), (False, False)):
+        for receipt in (True, False):
+            outcome = insufficient_signal_outcome(
+                receipt_issued=receipt, writer_alive_before=before, writer_alive_after=after
+            )
+            assert outcome == "inconclusive", (receipt, before, after)
+    blocked = {"writer_alive_before": True, "writer_alive_after": True}
+    assert replacement_blocked_outcome(receipt_issued=False, replacement_ran=False, **blocked) == "satisfied"
+    assert replacement_blocked_outcome(receipt_issued=False, replacement_ran=True, **blocked) == "violated"
+    assert (
+        replacement_blocked_outcome(
+            receipt_issued=False, replacement_ran=True, writer_alive_before=True, writer_alive_after=False
+        )
+        == "inconclusive"
+    )
+
+
+def test_writer_activity_and_late_writes_are_read_from_the_volume() -> None:
+    entries = [("a", 100.0), ("a", 100.5), ("b", 101.0)]
+    assert writer_recently_active(entries, "a", now=103.0, window=5.0)
+    assert not writer_recently_active(entries, "a", now=110.0, window=5.0)
+    assert not writer_recently_active(entries, "c", now=101.0, window=5.0)
+    assert writes_after_receipt(entries, "a", receipt_at=100.1, skew=0.2) == [("a", 100.5)]
+    assert writes_after_receipt(entries, "a", receipt_at=100.4, skew=0.2) == []
+
+
+def test_partitioned_writer_and_force_delete_verdicts() -> None:
+    complete = {"isolated": True, "receipt_issued": True, "replacement_wrote": True}
+    assert partitioned_writer_outcome(late_writes=0, **complete) == "satisfied"
+    assert partitioned_writer_outcome(late_writes=2, **complete) == "violated"
+    for missing in ("isolated", "receipt_issued", "replacement_wrote"):
+        assert partitioned_writer_outcome(late_writes=0, **{**complete, missing: False}) == "inconclusive"
+    alive = {"isolated": True, "writer_alive_before": True}
+    assert force_delete_outcome(early_receipt=False, late_writes=0, **alive) == "satisfied"
+    assert force_delete_outcome(early_receipt=True, late_writes=1, **alive) == "violated"
+    assert force_delete_outcome(early_receipt=True, late_writes=0, **alive) == "inconclusive"
+    assert force_delete_outcome(early_receipt=False, late_writes=0, isolated=False, writer_alive_before=True) == (
+        "inconclusive"
+    )
+
+
+def test_writer_isolation_commands_are_explicit_argv_with_a_node_placeholder() -> None:
+    environment = _environment(
+        writer_isolation={
+            "mechanism": "kubelet-stopped",
+            "isolate": ["ssh", "{node}", "systemctl", "stop", "kubelet"],
+            "restore": ["ssh", "{node}", "systemctl", "start", "kubelet"],
+        }
+    )
+    assert environment.writer_isolation is not None
+    isolate = environment.writer_isolation.command("isolate", "node-a")
+    assert isolate == ["ssh", "node-a", "systemctl", "stop", "kubelet"]
+    with pytest.raises(ValueError):
+        _environment(writer_isolation={"mechanism": "x", "isolate": ["true"], "restore": ["true"]})
+
+
+class _RecordingCluster:
+    """Duck-typed stand-in for QualificationCluster that records kubectl calls."""
+
+    def __init__(self, environment: QualificationEnvironment) -> None:
+        self.environment = environment
+        self.provider = "openai"
+        self.calls: list[list[str]] = []
+
+    def kubectl(self, *args: str, **_: object) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(args))
+        stdout = "pv-probe-volume" if "jsonpath={.spec.volumeName}" in args else ""
+        return subprocess.CompletedProcess(list(args), 0, stdout, "")
+
+
+def test_fence_probe_cleanup_reclaims_the_probe_volume() -> None:
+    environment = _environment(
+        images={"esp-codex-runtime": "registry.test.invalid/esp-codex-runtime@sha256:" + "1" * 64}
+    )
+    cluster = _RecordingCluster(environment)
+    probe = FenceProbe(cast(Any, cluster))
+    probe.cleanup()
+    flattened = [" ".join(call) for call in cluster.calls]
+    patch = next(index for index, call in enumerate(flattened) if call.startswith("patch pv pv-probe-volume"))
+    assert '"persistentVolumeReclaimPolicy": "Delete"' in flattened[patch]
+    delete_claim = next(index for index, call in enumerate(flattened) if call.startswith(f"delete pvc {probe.unit}"))
+    assert patch < delete_claim
+    assert any(call.startswith("delete pv pv-probe-volume") for call in flattened[delete_claim:])
 
 
 def test_runtime_entry_refuses_provider_and_signing_key_material() -> None:

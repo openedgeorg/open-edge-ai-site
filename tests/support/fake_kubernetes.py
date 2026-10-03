@@ -44,6 +44,7 @@ class FakeCluster:
         node: str = "node-a",
         attacher: str = DRIVER,
         force_deleted: bool = False,
+        annotate: bool = True,
     ) -> None:
         volume = f"pv-{unit}"
         self.claims[unit] = {"metadata": {"name": unit, "uid": f"uid-{unit}"}, "spec": {"volumeName": volume}}
@@ -56,12 +57,9 @@ class FakeCluster:
             "spec": {"attacher": attacher, "nodeName": node, "source": {"persistentVolumeName": volume}},
             "status": {"attached": True},
         }
-        metadata: dict[str, Any] = {
-            "name": pod,
-            "uid": f"uid-{pod}",
-            "resourceVersion": "11",
-            "annotations": {INCARNATION_ANNOTATION: incarnation},
-        }
+        metadata: dict[str, Any] = {"name": pod, "uid": f"uid-{pod}", "resourceVersion": "11"}
+        if annotate:
+            metadata["annotations"] = {INCARNATION_ANNOTATION: incarnation}
         if force_deleted:
             metadata["deletionTimestamp"] = "2026-10-03T00:00:00Z"
             metadata["deletionGracePeriodSeconds"] = 0

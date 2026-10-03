@@ -1493,6 +1493,7 @@ REQUIRED_STORAGE_SCENARIOS: tuple[str, ...] = (
     "fence_positive_receipt",
     "fence_single_writer_after_replacement",
     "fence_force_delete_insufficient",
+    "fence_partitioned_writer_revoked",
 )
 _LIVE_PROBE_TIMEOUT_SECONDS = 3600.0
 _KUBECTL_TIMEOUT_SECONDS = 15.0
@@ -1588,6 +1589,34 @@ class ProviderAddresses(BaseModel):
         return values
 
 
+class WriterIsolation(BaseModel):
+    """Operator commands that cut one node off from the control plane and bring it back.
+
+    The partitioned-writer storage scenario needs a writer process that keeps running while the kubelet
+    cannot stop it: the node agent stopped, or the node's network partitioned. How that is done is
+    infrastructure specific (an SSH command, a cloud API call, `docker pause` of a kind node), so the
+    environment records it explicitly. Each command is an argv list run without a shell by the live
+    storage probe only; `{node}` is replaced by the writer's node name.
+    """
+
+    model_config = STRICT
+    mechanism: str = Field(min_length=1)
+    isolate: list[str] = Field(min_length=1)
+    restore: list[str] = Field(min_length=1)
+    timeout_seconds: float = Field(default=180.0, gt=0, le=1800)
+
+    @field_validator("isolate", "restore")
+    @classmethod
+    def _names_the_node(cls, argv: list[str]) -> list[str]:
+        if not any("{node}" in part for part in argv):
+            raise ValueError("isolation commands must name the node through the {node} placeholder")
+        return argv
+
+    def command(self, action: Literal["isolate", "restore"], node: str) -> list[str]:
+        argv = self.isolate if action == "isolate" else self.restore
+        return [part.replace("{node}", node) for part in argv]
+
+
 class QualificationEnvironment(BaseModel):
     """The explicitly configured disposable qualification environment. Nothing else is deployable."""
 
@@ -1603,6 +1632,7 @@ class QualificationEnvironment(BaseModel):
     provider_addresses: dict[Provider, ProviderAddresses]
     evidence_export_dir: str | None = None
     evidence_output_dir: str | None = None
+    writer_isolation: WriterIsolation | None = None
 
 
 @dataclass(frozen=True)
@@ -2333,6 +2363,74 @@ def key_material_outcomes(
         return ScenarioVerdict("inconclusive" if probe.truncated else "satisfied", findings)
 
     return verdict(provider), verdict(signing)
+
+
+WRITER_ACTIVITY_WINDOW_SECONDS = 5.0
+
+
+def writer_recently_active(
+    entries: Sequence[tuple[str, float]],
+    incarnation: str,
+    *,
+    now: float,
+    window: float = WRITER_ACTIVITY_WINDOW_SECONDS,
+) -> bool:
+    """The writer appended to the volume within `window` seconds of `now`, both read on its own node."""
+    times = [at for who, at in entries if who == incarnation]
+    return bool(times) and 0.0 <= now - max(times) <= window
+
+
+def writes_after_receipt(
+    entries: Sequence[tuple[str, float]], incarnation: str, *, receipt_at: float, skew: float
+) -> list[tuple[str, float]]:
+    """Entries the obsolete writer landed on the volume after its fence receipt (beyond clock skew)."""
+    return [(who, at) for who, at in entries if who == incarnation and at > receipt_at + skew]
+
+
+def insufficient_signal_outcome(
+    *, receipt_issued: bool, writer_alive_before: bool, writer_alive_after: bool
+) -> LiveOutcome:
+    """An insufficient signal (expired lease, relabelled claim) observed while the writer runs.
+
+    The verdict is only meaningful while the writer is demonstrably alive before and after the fence
+    attempt: a writer that died on its own is legitimately fenced, so its receipt is no violation.
+    """
+    if not (writer_alive_before and writer_alive_after):
+        return "inconclusive"
+    return "violated" if receipt_issued else "satisfied"
+
+
+def replacement_blocked_outcome(
+    *, receipt_issued: bool, replacement_ran: bool, writer_alive_before: bool, writer_alive_after: bool
+) -> LiveOutcome:
+    """Without a receipt a replacement must not run on the volume while the first writer runs."""
+    if not (writer_alive_before and writer_alive_after):
+        return "inconclusive"
+    if replacement_ran or receipt_issued:
+        return "violated"
+    return "satisfied"
+
+
+def force_delete_outcome(
+    *, isolated: bool, writer_alive_before: bool, early_receipt: bool, late_writes: int
+) -> LiveOutcome:
+    """A force-deleted pod on an isolated node: the vanished pod object must not produce a receipt."""
+    if early_receipt and late_writes:
+        return "violated"
+    if not (isolated and writer_alive_before) or early_receipt:
+        return "inconclusive"
+    return "satisfied"
+
+
+def partitioned_writer_outcome(
+    *, isolated: bool, receipt_issued: bool, replacement_wrote: bool, late_writes: int
+) -> LiveOutcome:
+    """A writer the kubelet cannot stop is fenced only by driver revocation: no write lands after the receipt."""
+    if late_writes:
+        return "violated"
+    if not (isolated and receipt_issued and replacement_wrote):
+        return "inconclusive"
+    return "satisfied"
 
 
 def load_tool_policy(path: Path = TOOL_POLICY_PATH) -> ToolPolicy:

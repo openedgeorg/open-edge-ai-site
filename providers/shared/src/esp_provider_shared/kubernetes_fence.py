@@ -14,6 +14,19 @@ deployment qualified. Kubernetes object state alone is never that evidence: a fo
 still run on a partitioned node, an expired owner lease does not stop a process, a volume label is
 metadata and a missing pod object proves nothing. Those observations are recorded and never accepted.
 
+Every decision, receipt or refusal, is handed with its full evidence to a `FenceEvidenceSink`, which
+retains it and returns a durable reference. The receipt's `fence_evidence_ref` is that reference, so a
+receipt never rests on a Kubernetes object locator that later disappears; evidence that cannot be
+retained yields no receipt. The qualification probe retains into its run directory; the protected
+evidence store (Task 19) is the production sink.
+
+A writer is the pod that mounts the unit's claim and is identified with the obsolete Process
+Incarnation (ProInc) either by the `esp.openedge.dev/process-incarnation` annotation or by its pod
+UID. The committed runtime pods carry no incarnation annotation: the lifecycle wiring (Task 17
+supervision, Task 21 recovery) records either the annotation it sets or the pod UID it reads
+(exposed to the runtime as `ESP_POD_UID`) as the runtime incarnation. Until then a supervisor-generated
+id locates no pod, `stop_writer` reports `pod_object_absent`, and the fence fails closed.
+
 `KubectlFenceDriver` is the selected driver binding. It always names its context and namespace,
 never force-deletes, never deletes a VolumeAttachment and never taints a node; its only mutation is a
 bounded `activeDeadlineSeconds` that makes the kubelet stop the obsolete pod's containers.
@@ -26,7 +39,7 @@ import json
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, NoReturn, Protocol, cast
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
@@ -85,12 +98,27 @@ class StorageFenceDriver(Protocol):
     async def acknowledge(self, unit_id: str, incarnation_id: str) -> Sequence[WriterEvidence]: ...
 
 
-class KubernetesStorageFence:
-    """`StorageFence` on Kubernetes: stop, access revoke, acknowledgement, then a receipt."""
+class FenceEvidenceSink(Protocol):
+    """Retains one fence decision with all of its evidence and returns a durable reference to it."""
 
-    def __init__(self, driver: StorageFenceDriver, *, qualified_drivers: Iterable[DriverIdentity]) -> None:
+    async def retain(
+        self, unit_id: str, incarnation_id: str, evidence: Sequence[WriterEvidence], decision: str
+    ) -> str: ...
+
+
+class KubernetesStorageFence:
+    """`StorageFence` on Kubernetes: stop, access revoke, acknowledgement, then a retained receipt."""
+
+    def __init__(
+        self,
+        driver: StorageFenceDriver,
+        *,
+        qualified_drivers: Iterable[DriverIdentity],
+        evidence_sink: FenceEvidenceSink,
+    ) -> None:
         self._driver = driver
         self._qualified = frozenset(qualified_drivers)
+        self._sink = evidence_sink
         self._evidence: dict[tuple[str, str], tuple[WriterEvidence, ...]] = {}
 
     def evidence(self, unit_id: str, incarnation_id: str) -> tuple[WriterEvidence, ...]:
@@ -99,9 +127,11 @@ class KubernetesStorageFence:
 
     async def fence_previous_writer(self, unit_id: str, incarnation_id: str) -> FenceReceipt:
         identity = self._driver.identity
+        if not unit_id or not incarnation_id:
+            raise FenceEvidenceMissing("writer_identity_missing")
         if identity not in self._qualified:
             self._evidence[(unit_id, incarnation_id)] = ()
-            raise FenceEvidenceMissing("driver_not_qualified")
+            await self._refuse(unit_id, incarnation_id, (), "driver_not_qualified")
         collected: list[WriterEvidence] = []
         for step in (self._driver.stop_writer, self._driver.revoke_access, self._driver.acknowledge):
             try:
@@ -109,15 +139,20 @@ class KubernetesStorageFence:
             except Exception:  # A failed step yields no evidence; it never fences.
                 continue
             collected.extend(item for item in observed if _belongs(item, unit_id, incarnation_id, identity))
-        self._evidence[(unit_id, incarnation_id)] = tuple(collected)
+        evidence = tuple(collected)
+        self._evidence[(unit_id, incarnation_id)] = evidence
         positives = [item for item in collected if item.kind in POSITIVE_REVOCATION]
         if not positives:
-            raise FenceEvidenceMissing("no_positive_revocation")
+            await self._refuse(unit_id, incarnation_id, evidence, "no_positive_revocation")
         latest = max(item.observed_at for item in positives)
         acknowledgements = [item for item in collected if item.kind == ACKNOWLEDGEMENT and item.observed_at >= latest]
         if not acknowledgements:
-            raise FenceEvidenceMissing("fence_unacknowledged")
+            await self._refuse(unit_id, incarnation_id, evidence, "fence_unacknowledged")
         acknowledgement = acknowledgements[-1]
+        try:
+            reference = await self._sink.retain(unit_id, incarnation_id, evidence, "receipt")
+        except Exception as exc:  # Unretained evidence cannot support a receipt.
+            raise FenceEvidenceMissing("fence_evidence_unretained") from exc
         kinds = "+".join(sorted({item.kind for item in positives}) + [ACKNOWLEDGEMENT])
         return FenceReceipt(
             storage_unit_id=unit_id,
@@ -126,8 +161,17 @@ class KubernetesStorageFence:
                 f"kubernetes/{identity.mechanism}:{identity.csi_driver}@{identity.driver_version}:{kinds}"
             ),
             verified_at=acknowledgement.observed_at,
-            fence_evidence_ref=acknowledgement.evidence_ref,
+            fence_evidence_ref=reference,
         )
+
+    async def _refuse(
+        self, unit_id: str, incarnation_id: str, evidence: Sequence[WriterEvidence], code: str
+    ) -> NoReturn:
+        try:
+            await self._sink.retain(unit_id, incarnation_id, evidence, code)
+        except Exception as exc:  # The refusal stands whether or not it could be retained.
+            raise FenceEvidenceMissing(code) from exc
+        raise FenceEvidenceMissing(code)
 
 
 def _belongs(item: WriterEvidence, unit_id: str, incarnation_id: str, identity: DriverIdentity) -> bool:
@@ -168,8 +212,8 @@ async def run_kubectl(argv: Sequence[str], *, timeout: float = 30.0) -> str:
 class KubectlFenceDriver:
     """Kubernetes API observations through kubectl, scoped to one explicit context and namespace.
 
-    Writers are located by the claim they mount and the process-incarnation annotation; location is
-    not proof. With `act=False` the driver only observes and never stops a writer.
+    Writers are located by the claim they mount and the process-incarnation annotation or pod UID;
+    location is not proof. With `act=False` the driver only observes and never stops a writer.
     """
 
     def __init__(
@@ -206,7 +250,7 @@ class KubectlFenceDriver:
 
     async def stop_writer(self, unit_id: str, incarnation_id: str) -> Sequence[WriterEvidence]:
         pods = (await self._get("pods"))["items"]
-        writers = [pod for pod in pods if _mounts(pod, unit_id) and _incarnation(pod) == incarnation_id]
+        writers = [pod for pod in pods if _mounts(pod, unit_id) and _is_incarnation(pod, incarnation_id)]
         claim_ref = self._ref(f"persistentvolumeclaims/{unit_id}")
         if not writers:
             return [
@@ -367,10 +411,11 @@ def _mounts(pod: dict[str, Any], claim: str) -> bool:
     return False
 
 
-def _incarnation(pod: dict[str, Any]) -> str | None:
-    annotations = cast(dict[str, Any], pod.get("metadata", {}).get("annotations") or {})
-    value = annotations.get(INCARNATION_ANNOTATION)
-    return value if isinstance(value, str) else None
+def _is_incarnation(pod: dict[str, Any], incarnation_id: str) -> bool:
+    """The pod is the incarnation by its recorded annotation or by its own UID."""
+    metadata = cast(dict[str, Any], pod.get("metadata") or {})
+    annotations = cast(dict[str, Any], metadata.get("annotations") or {})
+    return incarnation_id in (annotations.get(INCARNATION_ANNOTATION), metadata.get("uid"))
 
 
 def _force_deleted(pod: dict[str, Any]) -> bool:
