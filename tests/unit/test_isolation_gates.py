@@ -33,6 +33,7 @@ from scripts.qualify import (
     JunitSummary,
     KeyProbeReport,
     LiveObservation,
+    ObservedInfrastructure,
     OfferedToolsJudgement,
     QualificationEnvironment,
     classify_egress_attempt,
@@ -42,6 +43,7 @@ from scripts.qualify import (
     evaluate_live_evidence,
     force_delete_outcome,
     forward_proxy_outcome,
+    infrastructure_mismatches,
     insufficient_signal_outcome,
     judge_offered_tools,
     key_material_outcomes,
@@ -50,6 +52,7 @@ from scripts.qualify import (
     offered_tools,
     partitioned_writer_outcome,
     replacement_blocked_outcome,
+    running_image_digests,
     tool_policy_violations,
     writer_recently_active,
     writes_after_receipt,
@@ -61,6 +64,9 @@ from tests.support.policy_lab import CLUSTER_UID, policy_document, synthetic_pro
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTEXT = "esp-qualification-test"
+SERVER_VERSION = "v0.0.0-test"
+CNI_DIGEST = "sha256:" + "c" * 64
+CSI_DIGEST = "sha256:" + "d" * 64
 ALL_PASSED = JunitSummary(tests=4, failures=0, errors=0, skipped=0)
 
 
@@ -235,11 +241,13 @@ def _environment(**overrides: object) -> QualificationEnvironment:
         "candidate_policy": "/nonexistent/policy.json",
         "images": {},
         "infrastructure": {
-            "kubernetes_version": "test-only",
+            "kubernetes_version": SERVER_VERSION,
             "cni": "test-only-cni 0.0",
+            "cni_image_digests": [CNI_DIGEST],
             "storage_class": "esp-qualification-native-rwop",
             "csi_driver": "csi.test.invalid",
             "csi_driver_version": "0.0.0-test",
+            "csi_image_digests": [CSI_DIGEST],
             "fence_mechanism": "csi-controller-unpublish",
         },
         "provider_addresses": {
@@ -768,11 +776,38 @@ def test_unconfigured_environment_is_pending_and_nonzero(tmp_path: Path, gate: s
     assert "qualification_environment_unconfigured" in payload["failed_criteria"]
 
 
-def _fake_kubectl(tmp_path: Path, *, current_context: str, cluster_uid: str) -> Path:
+def _fake_kubectl(
+    tmp_path: Path,
+    *,
+    current_context: str,
+    cluster_uid: str,
+    server_version: str = SERVER_VERSION,
+    running_digests: tuple[str, ...] = (CNI_DIGEST, CSI_DIGEST),
+    attach_required: bool = True,
+) -> Path:
     """A recorded kubectl stand-in: answers context/identity reads, logs everything, refuses the rest.
 
     Offline `kustomize` rendering is passed through to the real kubectl; nothing reaches a cluster.
     """
+    version = json.dumps({"serverVersion": {"gitVersion": server_version}})
+    csidriver = json.dumps(
+        {"metadata": {"name": "csi.test.invalid", "uid": "csidriver-uid"}, "spec": {"attachRequired": attach_required}}
+    )
+    pods = json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": f"infra-{index}", "namespace": "kube-system"},
+                    "status": {
+                        "containerStatuses": [
+                            {"name": "c", "imageID": f"registry.test.invalid/infra@{digest}", "state": {"running": {}}}
+                        ]
+                    },
+                }
+                for index, digest in enumerate(running_digests)
+            ]
+        }
+    )
     real = shutil.which("kubectl")
     assert real is not None
     bin_dir = tmp_path / "bin"
@@ -794,6 +829,15 @@ def _fake_kubectl(tmp_path: Path, *, current_context: str, cluster_uid: str) -> 
         "if 'kube-system' in args and 'namespace' in args:\n"
         f"    print({cluster_uid!r}, end='')\n"
         "    sys.exit(0)\n"
+        "if 'version' in args:\n"
+        f"    print({version!r})\n"
+        "    sys.exit(0)\n"
+        "if 'csidriver' in args:\n"
+        f"    print({csidriver!r})\n"
+        "    sys.exit(0)\n"
+        "if 'pods' in args and '--all-namespaces' in args:\n"
+        f"    print({pods!r})\n"
+        "    sys.exit(0)\n"
         "if 'apply' in args:\n"
         "    sys.stdin.read()\n"
         "    print('applied (recorded stand-in)')\n"
@@ -806,7 +850,7 @@ def _fake_kubectl(tmp_path: Path, *, current_context: str, cluster_uid: str) -> 
     return bin_dir
 
 
-def _configured(tmp_path: Path, *, codex_image_digest: str) -> Path:
+def _configured(tmp_path: Path, *, codex_image_digest: str, evidence: Path | None = None) -> Path:
     profile = synthetic_profile(image_digest="sha256:" + "1" * 64)
     release = synthetic_release()
     document = policy_document(profile, release)
@@ -822,7 +866,7 @@ def _configured(tmp_path: Path, *, codex_image_digest: str) -> Path:
     policy_path.write_text(json.dumps(document), encoding="utf-8")
     environment = _environment(
         candidate_policy=str(policy_path),
-        evidence_output_dir=str(tmp_path / "evidence"),
+        evidence_output_dir=str(evidence or tmp_path / "evidence"),
         images={
             "esp-codex-runtime": "registry.test.invalid/esp-codex-runtime@" + codex_image_digest,
             "esp-grok-runtime": "registry.test.invalid/esp-grok-runtime@sha256:" + "3" * 64,
@@ -840,6 +884,86 @@ def _logged(tmp_path: Path) -> list[list[str]]:
     if not log.exists():
         return []
     return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def test_infrastructure_identity_is_read_from_the_cluster() -> None:
+    identity = _environment().infrastructure
+    observed = ObservedInfrastructure(
+        kubernetes_version=SERVER_VERSION,
+        csi_driver_uid="csidriver-uid",
+        csi_attach_required=True,
+        running_image_digests=[CNI_DIGEST, CSI_DIGEST, "sha256:" + "e" * 64],
+    )
+    assert infrastructure_mismatches(identity, observed) == []
+    other_version = observed.model_copy(update={"kubernetes_version": "v1.99.0"})
+    assert infrastructure_mismatches(identity, other_version) == ["kubernetes_version_mismatch:v1.99.0"]
+    no_driver = observed.model_copy(update={"csi_driver_uid": None, "csi_attach_required": None})
+    assert "csi_driver_absent:csi.test.invalid" in infrastructure_mismatches(identity, no_driver)
+    not_attaching = observed.model_copy(update={"csi_attach_required": False})
+    assert infrastructure_mismatches(identity, not_attaching) == ["csi_driver_not_attaching:csi.test.invalid"]
+    other_images = observed.model_copy(update={"running_image_digests": [CNI_DIGEST]})
+    assert infrastructure_mismatches(identity, other_images) == [f"csi_image_not_running:{CSI_DIGEST}"]
+    unobserved = ObservedInfrastructure(
+        kubernetes_version=None, csi_driver_uid=None, csi_attach_required=None, running_image_digests=None
+    )
+    assert set(infrastructure_mismatches(identity, unobserved)) == {
+        "kubernetes_version_unobserved",
+        "csi_driver_absent:csi.test.invalid",
+        "running_images_unobserved",
+    }
+
+
+def test_only_running_containers_count_as_running_infrastructure_images() -> None:
+    pods: list[object] = [
+        {
+            "status": {
+                "containerStatuses": [
+                    {"imageID": f"docker-pullable://registry.test.invalid/cni@{CNI_DIGEST}", "state": {"running": {}}},
+                    {"imageID": f"registry.test.invalid/csi@{CSI_DIGEST}", "state": {"terminated": {"exitCode": 0}}},
+                    {"image": "registry.test.invalid/other:latest", "imageID": "", "state": {"running": {}}},
+                ],
+                # An init container that ran once is not the running driver.
+                "initContainerStatuses": [
+                    {"imageID": "registry.test.invalid/init@sha256:" + "e" * 64, "state": {"terminated": {}}}
+                ],
+            }
+        },
+        "not-a-pod",
+    ]
+    assert running_image_digests(pods) == {CNI_DIGEST}
+
+
+def test_deploy_refuses_infrastructure_that_differs_from_the_record(tmp_path: Path) -> None:
+    environment = _configured(tmp_path, codex_image_digest="sha256:" + "1" * 64)
+    bin_dir = _fake_kubectl(
+        tmp_path, current_context=CONTEXT, cluster_uid=CLUSTER_UID, server_version="v1.99.0", running_digests=()
+    )
+    env = _hermetic_env(
+        tmp_path, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}", ESP_QUALIFICATION_ENV=str(environment)
+    )
+    completed = _qualify(["storage", "--provider", "openai", "--deploy", "--json"], env)
+    assert completed.returncode == 2, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert "infrastructure_unverified" in payload["failed_criteria"]
+    assert "kubernetes_version_mismatch:v1.99.0" in payload["failed_criteria"]
+    assert f"cni_image_not_running:{CNI_DIGEST}" in payload["failed_criteria"]
+    assert payload["observed_infrastructure"]["kubernetes_version"] == "v1.99.0"
+    assert not any("apply" in call for call in _logged(tmp_path))
+
+
+def test_an_unwritable_evidence_directory_is_pending_not_a_crash(tmp_path: Path) -> None:
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("x", encoding="utf-8")
+    environment = _configured(tmp_path, codex_image_digest="sha256:" + "1" * 64, evidence=blocker / "evidence")
+    bin_dir = _fake_kubectl(tmp_path, current_context=CONTEXT, cluster_uid=CLUSTER_UID)
+    env = _hermetic_env(
+        tmp_path, PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}", ESP_QUALIFICATION_ENV=str(environment)
+    )
+    completed = _qualify(["network", "--provider", "openai", "--json"], env)
+    assert completed.returncode == 2, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["classification"] == "pending"
+    assert "evidence_output_unwritable" in payload["failed_criteria"]
 
 
 def test_deploy_refuses_any_other_current_context(tmp_path: Path) -> None:
@@ -902,3 +1026,8 @@ def test_recorded_context_deploys_explicitly_and_live_probes_without_a_cluster_s
     assert applies[0][:2] == ["--context", CONTEXT]
     assert "--server-side" in applies[0]
     assert payload["infrastructure"]["csi_driver"] == "csi.test.invalid"
+    assert payload["observed_infrastructure"]["kubernetes_version"] == SERVER_VERSION
+    # The gate result is retained beside the run's evidence, not only printed.
+    retained = json.loads((Path(payload["evidence_dir"]) / "result.json").read_text(encoding="utf-8"))
+    assert retained["failed_criteria"] == payload["failed_criteria"]
+    assert retained["observed_infrastructure"] == payload["observed_infrastructure"]

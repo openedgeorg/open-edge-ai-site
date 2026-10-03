@@ -1555,16 +1555,50 @@ class ContextRefused(Exception):
         self.code = code
 
 
+_IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+
+
 class InfrastructureIdentity(BaseModel):
-    """Exact infrastructure the evidence was collected on. Engineering choices, recorded per run."""
+    """Exact infrastructure the evidence was collected on. Engineering choices, recorded per run.
+
+    The record is an operator's claim until the cluster confirms it. Before anything is deployed or
+    probed, `observe_infrastructure` reads the recorded cluster and `infrastructure_mismatches` refuses
+    any difference: the API server's `gitVersion` must equal `kubernetes_version`, the CSIDriver object
+    named `csi_driver` must exist and require attachment, and every digest in `cni_image_digests` and
+    `csi_image_digests` must belong to a running container. The CNI name and the CSI driver version
+    have no API of their own, so those running image digests are what bind them.
+    """
 
     model_config = STRICT
     kubernetes_version: str = Field(min_length=1)
     cni: str = Field(min_length=1)
+    cni_image_digests: list[str] = Field(min_length=1)
     storage_class: str = Field(min_length=1)
     csi_driver: str = Field(min_length=1)
     csi_driver_version: str = Field(min_length=1)
+    csi_image_digests: list[str] = Field(min_length=1)
     fence_mechanism: Literal["csi-controller-unpublish"]
+
+    @field_validator("cni_image_digests", "csi_image_digests")
+    @classmethod
+    def _image_digests(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if _IMAGE_DIGEST.fullmatch(value) is None:
+                raise ValueError("image digests must be sha256:<64 lowercase hex>")
+        return values
+
+
+class ObservedInfrastructure(BaseModel):
+    """What the recorded cluster reports about itself through the recorded context. Read-only.
+
+    `None` means the value could not be read; it never matches a record.
+    """
+
+    model_config = STRICT
+    kubernetes_version: str | None
+    csi_driver_uid: str | None
+    csi_attach_required: bool | None
+    running_image_digests: list[str] | None
 
 
 class ProviderAddresses(BaseModel):
@@ -1731,6 +1765,7 @@ class IsolationGateOutcome:
     report: QualificationResult
     infrastructure: InfrastructureIdentity | None = None
     evidence_dir: Path | None = None
+    observed_infrastructure: ObservedInfrastructure | None = None
 
 
 def _strict_json(raw: bytes | str) -> Any:
@@ -1843,6 +1878,93 @@ def require_disposable_context(environment: QualificationEnvironment, observed: 
         raise ContextRefused("cluster_identity_unverified")
     if observed.cluster_uid != environment.cluster_uid:
         raise ContextRefused("cluster_identity_mismatch")
+
+
+def observe_infrastructure(environment: QualificationEnvironment, kubectl: str) -> ObservedInfrastructure:
+    """Read the server version, the CSIDriver object and the running image digests. Never mutates.
+
+    Only call this after `require_disposable_context` accepted the recorded context.
+    """
+    base = [kubectl, "--context", environment.kube_context, f"--request-timeout={int(_KUBECTL_TIMEOUT_SECONDS)}s"]
+    version = _json_object(_kubectl_read([*base, "version", "-o", "json"]))
+    server = cast(dict[str, Any], version.get("serverVersion") or {}) if version is not None else {}
+    git_version = server.get("gitVersion")
+    driver = _json_object(
+        _kubectl_read([*base, "get", "csidriver", environment.infrastructure.csi_driver, "-o", "json"])
+    )
+    driver_uid: str | None = None
+    attach_required: bool | None = None
+    if driver is not None:
+        metadata = cast(dict[str, Any], driver.get("metadata") or {})
+        spec = cast(dict[str, Any], driver.get("spec") or {})
+        if metadata.get("name") == environment.infrastructure.csi_driver and isinstance(metadata.get("uid"), str):
+            driver_uid = str(metadata["uid"])
+            attach = spec.get("attachRequired")
+            attach_required = attach if isinstance(attach, bool) else None
+    pods = _json_object(
+        _kubectl_read([*base, "get", "pods", "--all-namespaces", "--field-selector=status.phase=Running", "-o", "json"])
+    )
+    running: list[str] | None = None
+    if pods is not None and isinstance(pods.get("items"), list):
+        running = sorted(running_image_digests(cast(list[object], pods["items"])))
+    return ObservedInfrastructure(
+        kubernetes_version=git_version if isinstance(git_version, str) and git_version else None,
+        csi_driver_uid=driver_uid,
+        csi_attach_required=attach_required,
+        running_image_digests=running,
+    )
+
+
+def _json_object(raw: str | None) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    try:
+        document = json.loads(raw)
+    except ValueError:
+        return None
+    return cast(dict[str, Any], document) if isinstance(document, dict) else None
+
+
+def running_image_digests(pods: Sequence[object]) -> set[str]:
+    """Digests of the images behind containers the kubelet reports running."""
+    digests: set[str] = set()
+    for pod in pods:
+        if not isinstance(pod, dict):
+            continue
+        status = cast(dict[str, Any], cast(dict[str, Any], pod).get("status") or {})
+        for container in cast(list[dict[str, Any]], status.get("containerStatuses") or []):
+            if "running" not in cast(dict[str, Any], container.get("state") or {}):
+                continue
+            for reference in (container.get("imageID"), container.get("image")):
+                found = re.search(r"sha256:[0-9a-f]{64}$", str(reference or ""))
+                if found is not None:
+                    digests.add(found.group(0))
+    return digests
+
+
+def infrastructure_mismatches(identity: InfrastructureIdentity, observed: ObservedInfrastructure) -> list[str]:
+    """Every way the cluster differs from the recorded infrastructure; empty only when it all matches."""
+    findings: list[str] = []
+    if observed.kubernetes_version is None:
+        findings.append("kubernetes_version_unobserved")
+    elif observed.kubernetes_version != identity.kubernetes_version:
+        findings.append(f"kubernetes_version_mismatch:{observed.kubernetes_version}")
+    if observed.csi_driver_uid is None:
+        findings.append(f"csi_driver_absent:{identity.csi_driver}")
+    elif observed.csi_attach_required is not True:
+        # Without attachment there is no ControllerUnpublishVolume, so no driver revocation evidence.
+        findings.append(f"csi_driver_not_attaching:{identity.csi_driver}")
+    if observed.running_image_digests is None:
+        findings.append("running_images_unobserved")
+    else:
+        running = set(observed.running_image_digests)
+        findings.extend(
+            f"cni_image_not_running:{digest}" for digest in identity.cni_image_digests if digest not in running
+        )
+        findings.extend(
+            f"csi_image_not_running:{digest}" for digest in identity.csi_image_digests if digest not in running
+        )
+    return findings
 
 
 def render_qualification_manifests(directory: Path = QUALIFICATION_DIR) -> list[dict[str, Any]]:
@@ -2817,21 +2939,19 @@ def run_isolation_gate(
         return IsolationGateOutcome(
             _pending_isolation(gate, provider, [f"kube_context_refused:{exc.code}"]), infrastructure
         )
-    if deploy:
-        try:
-            documents = prepare_qualification_manifests(render_qualification_manifests(), environment)
-        except ManifestRenderError:
-            return IsolationGateOutcome(_pending_isolation(gate, provider, ["manifest_render_failed"]), infrastructure)
-        findings = deploy_readiness_findings(documents, environment, policy)
-        if findings:
-            failed = ["manifests_not_deployable", *findings]
-            return IsolationGateOutcome(_pending_isolation(gate, provider, failed), infrastructure)
-        try:
-            deploy_qualification(environment, observed, documents, policy_raw)
-        except (ContextRefused, DeploymentFailed):
-            return IsolationGateOutcome(_pending_isolation(gate, provider, ["deploy_failed"]), infrastructure)
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    assert observed.kubectl is not None
+    seen = observe_infrastructure(environment, observed.kubectl)
+    mismatches = infrastructure_mismatches(infrastructure, seen)
+    if mismatches:
+        failed = ["infrastructure_unverified", *mismatches]
+        return IsolationGateOutcome(
+            _pending_isolation(gate, provider, failed), infrastructure, observed_infrastructure=seen
+        )
     if environment.evidence_output_dir is None:
+        if deploy:
+            refused = _deploy_refusal(gate, provider, environment, policy, policy_raw, observed)
+            if refused is not None:
+                return IsolationGateOutcome(refused, infrastructure, observed_infrastructure=seen)
         with tempfile.TemporaryDirectory(prefix="esp-qualify-") as scratch:
             observations, junit = run_live_probes(gate, provider, Path(environ[QUALIFICATION_ENV_VAR]), Path(scratch))
         report = evaluate_live_evidence(gate, provider, observations, junit, environment, policy)
@@ -2842,13 +2962,86 @@ def run_isolation_gate(
                 "failed_criteria": [*report.failed_criteria, "evidence_output_unconfigured"],
             }
         )
-        return IsolationGateOutcome(report, infrastructure)
+        return IsolationGateOutcome(report, infrastructure, observed_infrastructure=seen)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     run_dir = Path(environment.evidence_output_dir) / f"{gate}-{provider}-{stamp}"
-    run_dir.mkdir(parents=True, exist_ok=False)
-    observations, junit = run_live_probes(gate, provider, Path(environ[QUALIFICATION_ENV_VAR]), run_dir)
-    report = evaluate_live_evidence(gate, provider, observations, junit, environment, policy)
+    try:
+        run_dir.mkdir(parents=True, exist_ok=False)
+    except OSError:
+        # Nothing is deployed or probed when its evidence cannot be retained.
+        failed = ["evidence_output_unwritable"]
+        return IsolationGateOutcome(
+            _pending_isolation(gate, provider, failed), infrastructure, observed_infrastructure=seen
+        )
+    refused = _deploy_refusal(gate, provider, environment, policy, policy_raw, observed) if deploy else None
+    if refused is not None:
+        report = refused
+    else:
+        observations, junit = run_live_probes(gate, provider, Path(environ[QUALIFICATION_ENV_VAR]), run_dir)
+        report = evaluate_live_evidence(gate, provider, observations, junit, environment, policy)
     report = report.model_copy(update={"evidence_bundle_ref": f"file://{run_dir}"})
-    return IsolationGateOutcome(report, infrastructure, run_dir)
+    outcome = IsolationGateOutcome(report, infrastructure, run_dir, seen)
+    try:
+        retain_isolation_result(outcome)
+    except OSError:
+        # A result that is printed but not retained beside its evidence cannot support a pass.
+        report = report.model_copy(
+            update={
+                "functional_subgate_pass": False,
+                "failed_criteria": [*report.failed_criteria, "evidence_output_unwritable"],
+            }
+        )
+        outcome = IsolationGateOutcome(report, infrastructure, run_dir, seen)
+    return outcome
+
+
+def _deploy_refusal(
+    gate: IsolationGate,
+    provider: Provider,
+    environment: QualificationEnvironment,
+    policy: CandidateAdmissionPolicy,
+    policy_raw: bytes,
+    observed: ObservedContext,
+) -> QualificationResult | None:
+    """Deploy the prepared manifests to the recorded context; a pending result when that is refused."""
+    try:
+        documents = prepare_qualification_manifests(render_qualification_manifests(), environment)
+    except ManifestRenderError:
+        return _pending_isolation(gate, provider, ["manifest_render_failed"])
+    findings = deploy_readiness_findings(documents, environment, policy)
+    if findings:
+        return _pending_isolation(gate, provider, ["manifests_not_deployable", *findings])
+    try:
+        deploy_qualification(environment, observed, documents, policy_raw)
+    except (ContextRefused, DeploymentFailed):
+        return _pending_isolation(gate, provider, ["deploy_failed"])
+    return None
+
+
+ISOLATION_RESULT_FILE = "result.json"
+
+
+def isolation_payload(outcome: IsolationGateOutcome) -> dict[str, Any]:
+    """The gate result as printed by the CLI and retained beside the run's evidence."""
+    report = outcome.report
+    payload = report.model_dump(mode="json")
+    payload["classification"] = classify_qualification(report)
+    payload["infrastructure"] = (
+        outcome.infrastructure.model_dump(mode="json") if outcome.infrastructure is not None else None
+    )
+    payload["observed_infrastructure"] = (
+        outcome.observed_infrastructure.model_dump(mode="json") if outcome.observed_infrastructure is not None else None
+    )
+    payload["evidence_dir"] = str(outcome.evidence_dir) if outcome.evidence_dir is not None else None
+    return payload
+
+
+def retain_isolation_result(outcome: IsolationGateOutcome) -> None:
+    """Write the gate result into the run's evidence directory, next to the observations it judged."""
+    if outcome.evidence_dir is None:
+        raise OSError("no evidence directory for this run")
+    text = json.dumps(isolation_payload(outcome), indent=2, sort_keys=True) + "\n"
+    (outcome.evidence_dir / ISOLATION_RESULT_FILE).write_text(text, encoding="utf-8")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2983,12 +3176,7 @@ def _isolation_main(command: IsolationGate, provider: Provider, args: argparse.N
         outcome = run_isolation_gate(command, provider, deploy=bool(args.deploy), environ=os.environ)
     report = outcome.report
     classification = classify_qualification(report)
-    payload = report.model_dump(mode="json")
-    payload["classification"] = classification
-    payload["infrastructure"] = (
-        outcome.infrastructure.model_dump(mode="json") if outcome.infrastructure is not None else None
-    )
-    payload["evidence_dir"] = str(outcome.evidence_dir) if outcome.evidence_dir is not None else None
+    payload = isolation_payload(outcome)
     if args.json:
         print(json.dumps(payload))
     else:

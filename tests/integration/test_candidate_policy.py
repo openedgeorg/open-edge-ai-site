@@ -262,7 +262,7 @@ def test_isolation_findings_detect_public_exposure_and_runtime_escapes() -> None
 
 def test_runtime_pods_expose_their_uid_as_the_incarnation_identity() -> None:
     for pod in _runtime_pods(render_qualification_manifests()):
-        annotations = pod["metadata"].get("annotations") or {}
+        annotations: dict[str, Any] = pod["metadata"].get("annotations") or {}
         # No placeholder incarnation: the lifecycle records the annotation or the pod UID.
         assert "esp.openedge.dev/process-incarnation" not in annotations
         env = {item["name"]: item for item in pod["spec"]["containers"][0]["env"]}
@@ -389,11 +389,13 @@ def _environment(codex_image: str | None = None) -> QualificationEnvironment:
                 "esp-embeddings": "registry.test.invalid/esp-embeddings@sha256:" + "5" * 64,
             },
             "infrastructure": {
-                "kubernetes_version": "test-only",
+                "kubernetes_version": "v0.0.0-test",
                 "cni": "test-only-cni 0.0",
+                "cni_image_digests": ["sha256:" + "c" * 64],
                 "storage_class": "esp-qualification-native-rwop",
                 "csi_driver": "csi.test.invalid",
                 "csi_driver_version": "0.0.0-test",
+                "csi_image_digests": ["sha256:" + "d" * 64],
                 "fence_mechanism": "csi-controller-unpublish",
             },
             "provider_addresses": {
