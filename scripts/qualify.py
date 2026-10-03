@@ -8,22 +8,36 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import hashlib
+import ipaddress
 import json
 import mmap
+import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Callable, Mapping
+import xml.etree.ElementTree as ElementTree
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, Protocol, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+import yaml
+from jsonschema import Draft202012Validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from esp_contracts.ids import Provider
+from esp_contracts.api import STRICT
+from esp_contracts.eligibility import (
+    QUALIFICATION_NAMESPACE,
+    CandidateAdmissionPolicy,
+    policy_digest,
+)
+from esp_contracts.ids import Provider, UuidStr
 from esp_contracts.qualification import (
     REQUIRED_PRIMITIVES,
     CapabilityReport,
@@ -35,6 +49,7 @@ from esp_provider_openai.codex_adapter import (
     CODEX_CLIENT_NOTIFICATIONS,
     CODEX_METHODS,
     CODEX_MODEL_PROVIDER,
+    CODEX_NATIVE_SHA256,
     CODEX_OPT_OUT_NOTIFICATIONS,
     STDIO_READER_LIMIT,
     JsonlFrameTransport,
@@ -42,11 +57,13 @@ from esp_provider_openai.codex_adapter import (
 )
 from esp_provider_openai.events import CODEX_EVENT_METHODS
 from esp_provider_shared.rpc import NativeRpcClient
+from esp_provider_shared.runtime_main import forbidden_runtime_material
 from esp_provider_xai.grok_build_adapter import (
     ACP_PROTOCOL_VERSION,
     GROK_CLIENT_NOTIFICATIONS,
     GROK_MCP_SESSION_HEADER,
     GROK_METHODS,
+    GROK_NATIVE_SHA256,
     GROK_SESSION_HEADER,
     HOST_IDENTIFYING_META,
     AcpClientGuard,
@@ -1431,6 +1448,995 @@ def _report_for(
     )
 
 
+# ---------------------------------------------------------------------------------------------------
+# Isolated qualification packaging, model egress, tool policy and native-writer fencing (Task 13).
+#
+# `network` and `storage` are G1/G2 prerequisites. They run the live probes in tests/qualification only
+# against the recorded disposable qualification cluster, refuse every other kube context, and stay
+# pending (exit 2) whenever the environment, the enforced denial or the positive fence is not
+# demonstrated. A complete run is a functional prerequisite pass (exit 0); DA-01 stays pending.
+# ---------------------------------------------------------------------------------------------------
+
+QUALIFICATION_DIR = ROOT / "infra" / "k8s" / "qualification"
+CANDIDATE_POLICY_SCHEMA_PATH = QUALIFICATION_DIR / "candidate-policy.schema.json"
+TOOL_POLICY_PATH = ROOT / "infra" / "runtime" / "tool-policy.json"
+QUALIFICATION_ENV_VAR = "ESP_QUALIFICATION_ENV"
+QUALIFICATION_RESULTS_VAR = "ESP_QUALIFICATION_RESULTS"
+QUALIFICATION_PROVIDER_VAR = "ESP_QUALIFICATION_PROVIDER"
+IsolationGate = Literal["network", "storage"]
+LIVE_PROBE_MODULES: dict[str, tuple[str, ...]] = {
+    "network": ("tests/qualification/test_egress.py", "tests/qualification/test_tool_policy.py"),
+    "storage": ("tests/qualification/test_storage_fence.py",),
+}
+REQUIRED_NETWORK_SCENARIOS: tuple[str, ...] = (
+    "egress_provider_hostname_denied",
+    "egress_provider_ipv4_denied",
+    "egress_provider_ipv6_denied",
+    "egress_provider_redirect_hop_denied",
+    "egress_alternate_model_endpoints_denied",
+    "egress_gateway_not_a_forward_proxy",
+    "egress_internal_dns_resolved",
+    "egress_gateway_path_observed",
+    "egress_knowledge_path_observed",
+    "tools_offered_only_approved",
+    "tools_runtime_shell_absent",
+    "tools_runtime_root_read_only",
+    "tools_runtime_provider_keys_absent",
+    "tools_runtime_signing_keys_absent",
+    "control_anonymous_refused",
+)
+REQUIRED_STORAGE_SCENARIOS: tuple[str, ...] = (
+    "fence_lease_expiry_insufficient",
+    "fence_replacement_blocked_without_receipt",
+    "fence_volume_label_insufficient",
+    "fence_positive_receipt",
+    "fence_single_writer_after_replacement",
+    "fence_force_delete_insufficient",
+)
+_LIVE_PROBE_TIMEOUT_SECONDS = 3600.0
+_KUBECTL_TIMEOUT_SECONDS = 15.0
+_PINNED_IMAGE = re.compile(r"@sha256:[0-9a-f]{64}$")
+_RUNTIME_ROLE = "harness-runtime"
+_ROLE_LABEL = "esp.openedge.dev/role"
+_RUNTIME_EGRESS_ROLES = frozenset({"inference-gateway", "knowledge", "telemetry-collector"})
+_CLUSTER_SCOPED_KINDS = frozenset(
+    {"Namespace", "StorageClass", "CSIDriver", "ClusterRole", "ClusterRoleBinding", "PriorityClass"}
+)
+_PUBLIC_KINDS = frozenset({"Ingress", "IngressClass", "Gateway", "HTTPRoute", "GRPCRoute", "TLSRoute", "TCPRoute"})
+_WORKLOAD_KINDS = frozenset({"Pod", "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob"})
+_PUBLIC_FLAG = re.compile(r"PUBLIC.*(?:ELIGIB|BYPASS)|BYPASS", re.IGNORECASE)
+
+
+class CandidatePolicyInvalid(ValueError):
+    """The recorded candidate policy failed the committed schema or the strict model."""
+
+
+class QualificationEnvironmentInvalid(ValueError):
+    """The qualification environment record is unreadable or malformed."""
+
+
+class ManifestRenderError(RuntimeError):
+    """The qualification manifests could not be rendered offline."""
+
+
+class DeploymentFailed(RuntimeError):
+    """kubectl did not apply the prepared manifests to the recorded context."""
+
+
+class ContextRefused(Exception):
+    """A kube context other than the recorded disposable qualification cluster."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class InfrastructureIdentity(BaseModel):
+    """Exact infrastructure the evidence was collected on. Engineering choices, recorded per run."""
+
+    model_config = STRICT
+    kubernetes_version: str = Field(min_length=1)
+    cni: str = Field(min_length=1)
+    storage_class: str = Field(min_length=1)
+    csi_driver: str = Field(min_length=1)
+    csi_driver_version: str = Field(min_length=1)
+    fence_mechanism: Literal["csi-controller-unpublish"]
+
+
+class ProviderAddresses(BaseModel):
+    """Provider endpoint addresses observed outside the cluster, probed as direct-IP bypass attempts."""
+
+    model_config = STRICT
+    ipv4: list[str] = Field(min_length=1)
+    ipv6: list[str] = Field(min_length=1)
+
+    @field_validator("ipv4")
+    @classmethod
+    def _ipv4(cls, values: list[str]) -> list[str]:
+        for value in values:
+            ipaddress.IPv4Address(value)
+        return values
+
+    @field_validator("ipv6")
+    @classmethod
+    def _ipv6(cls, values: list[str]) -> list[str]:
+        for value in values:
+            ipaddress.IPv6Address(value)
+        return values
+
+
+class QualificationEnvironment(BaseModel):
+    """The explicitly configured disposable qualification environment. Nothing else is deployable."""
+
+    model_config = STRICT
+    environment_id: str = Field(pattern=r"^qual-[a-z0-9]+(?:-[a-z0-9]+)*$")
+    disposable: Literal[True]
+    kube_context: str = Field(min_length=1)
+    cluster_uid: UuidStr
+    namespace: Literal["esp-qualification"]
+    candidate_policy: str = Field(min_length=1)
+    images: dict[str, str]
+    infrastructure: InfrastructureIdentity
+    provider_addresses: dict[Provider, ProviderAddresses]
+    evidence_export_dir: str | None = None
+    evidence_output_dir: str | None = None
+
+
+@dataclass(frozen=True)
+class ObservedContext:
+    kubectl: str | None
+    current_context: str | None
+    cluster_uid: str | None
+
+
+class EgressAttempt(BaseModel):
+    """One connection attempt from inside the runtime pod's network namespace."""
+
+    model_config = STRICT
+    scenario: str
+    target: str
+    resolved: bool
+    tcp_connected: bool
+    tls_established: bool | None
+    http_status: int | None
+    error: str | None
+
+
+class LiveObservation(BaseModel):
+    model_config = STRICT
+    gate: IsolationGate
+    provider: Provider
+    environment_id: str
+    scenario: str
+    outcome: Literal["satisfied", "violated", "inconclusive"]
+    evidence_ref: str = Field(min_length=1)
+    detail: str = ""
+
+
+class JunitSummary(BaseModel):
+    model_config = STRICT
+    tests: int
+    failures: int
+    errors: int
+    skipped: int
+
+
+class ToolCategory(BaseModel):
+    model_config = STRICT
+    description: str
+    native_names: dict[Provider, list[str]]
+
+
+class ModelVisibleTools(BaseModel):
+    model_config = STRICT
+    allowed_types: list[str] = Field(min_length=1)
+    name_pattern: str = Field(min_length=1)
+    status: str
+
+
+class ProviderToolPolicy(BaseModel):
+    model_config = STRICT
+    harness: str
+    configuration: str
+    enforcement: Literal["not_demonstrated", "demonstrated"]
+    g0_observations: list[str]
+
+
+class ToolPolicy(BaseModel):
+    model_config = STRICT
+    policy_format: Literal["esp-tool-policy/1"]
+    status: Literal["configured_not_demonstrated", "demonstrated"]
+    summary: str
+    approved_mcp_server: str
+    approved_mcp_tools: list[str]
+    model_visible: ModelVisibleTools
+    denied_categories: dict[str, ToolCategory]
+    enforcement_layers: list[str]
+    providers: dict[Provider, ProviderToolPolicy]
+    required_live_evidence: list[str]
+
+
+class OfferedTool(BaseModel):
+    model_config = STRICT
+    type: str | None = None
+    name: str | None = None
+    malformed: bool = False
+
+
+@dataclass
+class IsolationGateOutcome:
+    report: QualificationResult
+    infrastructure: InfrastructureIdentity | None = None
+    evidence_dir: Path | None = None
+
+
+def _strict_json(raw: bytes | str) -> Any:
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError(f"duplicate key {key!r}")
+            result[key] = value
+        return result
+
+    return json.loads(raw, object_pairs_hook=pairs)
+
+
+class _SchemaValidator(Protocol):
+    """The part of the jsonschema validator API used here, with an explicit type."""
+
+    def iter_errors(self, instance: object) -> Iterator[Any]: ...
+
+
+def candidate_policy_errors(document: object) -> list[str]:
+    """Errors from the committed JSON Schema; empty when the document conforms."""
+    schema = json.loads(CANDIDATE_POLICY_SCHEMA_PATH.read_text(encoding="utf-8"))
+    validator = cast(_SchemaValidator, Draft202012Validator(schema))
+    errors = validator.iter_errors(document)
+    messages: list[str] = []
+    for error in errors:
+        location = "/".join(str(part) for part in cast(Iterable[object], error.absolute_path)) or "<root>"
+        messages.append(f"{location}: {error.message}")
+    return sorted(messages)
+
+
+def load_candidate_policy(raw: bytes) -> CandidateAdmissionPolicy:
+    """Both the committed schema and the strict model must accept the recorded policy."""
+    try:
+        document = _strict_json(raw)
+    except ValueError as exc:
+        raise CandidatePolicyInvalid("candidate policy is not strict JSON") from exc
+    errors = candidate_policy_errors(document)
+    if errors:
+        raise CandidatePolicyInvalid("; ".join(errors[:5]))
+    try:
+        return CandidateAdmissionPolicy.model_validate(document)
+    except ValidationError as exc:
+        raise CandidatePolicyInvalid(f"candidate policy rejected by the model: {exc.error_count()} errors") from exc
+
+
+def load_qualification_environment(environ: Mapping[str, str]) -> QualificationEnvironment | None:
+    """None when no environment is configured; malformed records raise."""
+    location = environ.get(QUALIFICATION_ENV_VAR)
+    if not location:
+        return None
+    try:
+        return QualificationEnvironment.model_validate(_strict_json(Path(location).read_bytes()))
+    except (OSError, ValueError) as exc:
+        raise QualificationEnvironmentInvalid(type(exc).__name__) from exc
+
+
+def environment_digest(environment: QualificationEnvironment) -> str:
+    canonical = json.dumps(environment.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def tool_policy_digest(path: Path = TOOL_POLICY_PATH) -> str:
+    return "sha256:" + _file_digest(path)
+
+
+def observe_kube_context(environment: QualificationEnvironment) -> ObservedContext:
+    """Read the current context and the recorded context's cluster identity. Never mutates."""
+    kubectl = shutil.which("kubectl")
+    if kubectl is None:
+        return ObservedContext(kubectl=None, current_context=None, cluster_uid=None)
+    current = _kubectl_read([kubectl, "config", "current-context"])
+    uid = _kubectl_read(
+        [
+            kubectl,
+            "--context",
+            environment.kube_context,
+            f"--request-timeout={int(_KUBECTL_TIMEOUT_SECONDS)}s",
+            "get",
+            "namespace",
+            "kube-system",
+            "-o",
+            "jsonpath={.metadata.uid}",
+        ]
+    )
+    return ObservedContext(kubectl=kubectl, current_context=current, cluster_uid=uid)
+
+
+def _kubectl_read(argv: list[str]) -> str | None:
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, text=True, timeout=_KUBECTL_TIMEOUT_SECONDS + 5, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = completed.stdout.strip()
+    return value if completed.returncode == 0 and value else None
+
+
+def require_disposable_context(environment: QualificationEnvironment, observed: ObservedContext) -> None:
+    """Refuse every context except the recorded disposable cluster, identified by its kube-system UID."""
+    if observed.kubectl is None:
+        raise ContextRefused("kubectl_unavailable")
+    if observed.current_context is None:
+        raise ContextRefused("no_current_context")
+    if observed.current_context != environment.kube_context:
+        raise ContextRefused("context_mismatch")
+    if observed.cluster_uid is None:
+        raise ContextRefused("cluster_identity_unverified")
+    if observed.cluster_uid != environment.cluster_uid:
+        raise ContextRefused("cluster_identity_mismatch")
+
+
+def render_qualification_manifests(directory: Path = QUALIFICATION_DIR) -> list[dict[str, Any]]:
+    """Offline `kubectl kustomize` render. Contacts no cluster."""
+    kubectl = shutil.which("kubectl")
+    if kubectl is None:
+        raise ManifestRenderError("kubectl unavailable")
+    completed = subprocess.run(
+        [kubectl, "kustomize", str(directory)], capture_output=True, text=True, timeout=60, check=False
+    )
+    if completed.returncode != 0:
+        raise ManifestRenderError(completed.stderr.strip()[:300])
+    documents: list[dict[str, Any]] = []
+    for document in yaml.safe_load_all(completed.stdout):
+        if isinstance(document, dict):
+            documents.append(cast(dict[str, Any], document))
+    return documents
+
+
+def _labels(document: Mapping[str, Any]) -> dict[str, str]:
+    return cast(dict[str, str], document.get("metadata", {}).get("labels") or {})
+
+
+def _name(document: Mapping[str, Any]) -> str:
+    return str(document.get("metadata", {}).get("name", "?"))
+
+
+def _pod_specs(document: Mapping[str, Any]) -> list[tuple[str, dict[str, Any], dict[str, str]]]:
+    """(name, pod spec, pod labels) for every workload kind."""
+    kind = document.get("kind")
+    if kind not in _WORKLOAD_KINDS:
+        return []
+    spec = cast(dict[str, Any], document.get("spec") or {})
+    if kind == "Pod":
+        return [(_name(document), spec, _labels(document))]
+    if kind == "CronJob":
+        spec = cast(dict[str, Any], spec.get("jobTemplate", {}).get("spec") or {})
+    template = cast(dict[str, Any], spec.get("template") or {})
+    return [(_name(document), cast(dict[str, Any], template.get("spec") or {}), _labels(template))]
+
+
+def _containers(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [*spec.get("initContainers", []), *spec.get("containers", [])]
+
+
+def _is_runtime(labels: Mapping[str, str]) -> bool:
+    return labels.get(_ROLE_LABEL) == _RUNTIME_ROLE
+
+
+def _selects(policy: Mapping[str, Any], labels: Mapping[str, str]) -> bool:
+    selector = cast(dict[str, Any], policy.get("spec", {}).get("podSelector") or {})
+    if selector.get("matchExpressions"):
+        return True  # conservatively treat expression selectors as possibly selecting the pod
+    match = cast(dict[str, str], selector.get("matchLabels") or {})
+    return all(labels.get(key) == value for key, value in match.items())
+
+
+def _policy_types(policy: Mapping[str, Any]) -> set[str]:
+    spec = policy.get("spec", {})
+    declared = set(cast(list[str], spec.get("policyTypes") or []))
+    if not declared:
+        declared.add("Ingress")
+        if "egress" in spec:
+            declared.add("Egress")
+    return declared
+
+
+def _is_dns_peer(peer: Mapping[str, Any]) -> bool:
+    namespace = cast(dict[str, Any], cast(dict[str, Any], peer.get("namespaceSelector") or {}).get("matchLabels") or {})
+    pods = cast(dict[str, Any], cast(dict[str, Any], peer.get("podSelector") or {}).get("matchLabels") or {})
+    return namespace == {"kubernetes.io/metadata.name": "kube-system"} and pods == {"k8s-app": "kube-dns"}
+
+
+def _runtime_network_findings(policy: Mapping[str, Any]) -> list[str]:
+    name = _name(policy)
+    spec = policy.get("spec", {})
+    findings: list[str] = []
+    types = _policy_types(policy)
+    if "Egress" in types:
+        for rule in cast(list[dict[str, Any]], spec.get("egress") or []):
+            peers = cast(list[dict[str, Any]], rule.get("to") or [])
+            ports = cast(list[dict[str, Any]], rule.get("ports") or [])
+            if not peers or not ports:
+                findings.append(f"runtime_egress_unrestricted:{name}")
+                continue
+            for peer in peers:
+                if _is_dns_peer(peer):
+                    if any(port.get("port") != 53 for port in ports):
+                        findings.append(f"runtime_egress_unrestricted:{name}")
+                    continue
+                if "ipBlock" in peer or "namespaceSelector" in peer:
+                    findings.append(f"runtime_egress_unrestricted:{name}")
+                    continue
+                role = cast(dict[str, Any], peer.get("podSelector") or {}).get("matchLabels", {}).get(_ROLE_LABEL)
+                if role not in _RUNTIME_EGRESS_ROLES:
+                    findings.append(f"runtime_egress_unrestricted:{name}:{role}")
+    if "Ingress" in types:
+        for rule in cast(list[dict[str, Any]], spec.get("ingress") or []):
+            peers = cast(list[dict[str, Any]], rule.get("from") or [])
+            ports = cast(list[dict[str, Any]], rule.get("ports") or [])
+            backend_only = bool(peers) and all(
+                set(peer) == {"podSelector"}
+                and cast(dict[str, Any], peer["podSelector"]).get("matchLabels") == {_ROLE_LABEL: "api"}
+                for peer in peers
+            )
+            control_only = bool(ports) and all(port.get("port") in (9443, "control") for port in ports)
+            if not (backend_only and control_only):
+                findings.append(f"runtime_ingress_unrestricted:{name}")
+    return findings
+
+
+def isolation_findings(documents: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Configuration that would expose a candidate or let a runtime escape. Empty means none found.
+
+    This inspects configuration only; it is not evidence that the CNI or the kubelet enforces it.
+    """
+    findings: list[str] = []
+    namespaces = [d for d in documents if d.get("kind") == "Namespace" and _name(d) == QUALIFICATION_NAMESPACE]
+    if not namespaces or _labels(namespaces[0]).get("esp.openedge.dev/environment") != "isolated-qualification":
+        findings.append("namespace_unlabelled")
+    policies = [d for d in documents if d.get("kind") == "NetworkPolicy"]
+    default_deny = any(
+        not (d.get("spec", {}).get("podSelector") or {})
+        and {"Ingress", "Egress"} <= set(d.get("spec", {}).get("policyTypes") or [])
+        and not d.get("spec", {}).get("ingress")
+        and not d.get("spec", {}).get("egress")
+        for d in policies
+    )
+    if not default_deny:
+        findings.append("default_deny_missing")
+    for document in documents:
+        kind = str(document.get("kind"))
+        name = _name(document)
+        if kind in _PUBLIC_KINDS:
+            findings.append(f"public_ingress:{kind}/{name}")
+        namespace = document.get("metadata", {}).get("namespace")
+        if kind not in _CLUSTER_SCOPED_KINDS and namespace != QUALIFICATION_NAMESPACE:
+            findings.append(f"foreign_namespace:{kind}/{name}")
+        if kind == "Service":
+            spec = document.get("spec", {})
+            if spec.get("type", "ClusterIP") != "ClusterIP" or spec.get("externalIPs"):
+                findings.append(f"public_service:{name}")
+        if kind == "NetworkPolicy":
+            egress_peers = [
+                peer
+                for rule in cast(list[dict[str, Any]], document.get("spec", {}).get("egress") or [])
+                for peer in cast(list[dict[str, Any]], rule.get("to") or [])
+            ]
+            selector = cast(dict[str, Any], document.get("spec", {}).get("podSelector") or {})
+            gateway_only = selector.get("matchLabels") == {_ROLE_LABEL: "inference-gateway"}
+            if any("ipBlock" in peer for peer in egress_peers) and not gateway_only:
+                findings.append(f"external_egress:{name}")
+        for workload, spec, labels in _pod_specs(document):
+            findings.extend(_workload_findings(workload, spec, labels))
+            if _is_runtime(labels):
+                findings.extend(_runtime_pod_findings(workload, spec))
+                for policy in policies:
+                    if _selects(policy, labels):
+                        findings.extend(_runtime_network_findings(policy))
+    return sorted(set(findings))
+
+
+def _workload_findings(name: str, spec: Mapping[str, Any], labels: Mapping[str, str]) -> list[str]:
+    findings: list[str] = []
+    if spec.get("hostNetwork"):
+        findings.append(f"host_network:{name}")
+    if spec.get("hostPID") or spec.get("hostIPC"):
+        findings.append(f"host_namespace:{name}")
+    role = labels.get(_ROLE_LABEL)
+    for volume in cast(list[dict[str, Any]], spec.get("volumes") or []):
+        if "hostPath" in volume:
+            findings.append(f"host_path:{name}/{volume.get('name')}")
+        secret = str(cast(dict[str, Any], volume.get("secret") or {}).get("secretName", ""))
+        if "provider-credentials" in secret and role != "inference-gateway":
+            findings.append(f"provider_credentials_outside_gateway:{name}")
+        if "signing-key" in secret and role != "api":
+            findings.append(f"signing_key_outside_backend:{name}")
+    for container in _containers(spec):
+        context = cast(dict[str, Any], container.get("securityContext") or {})
+        if context.get("privileged"):
+            findings.append(f"privileged:{name}/{container.get('name')}")
+        if any("hostPort" in port for port in cast(list[dict[str, Any]], container.get("ports") or [])):
+            findings.append(f"host_port:{name}/{container.get('name')}")
+        for variable in cast(list[dict[str, Any]], container.get("env") or []):
+            if _PUBLIC_FLAG.search(str(variable.get("name", ""))):
+                findings.append(f"public_eligibility_flag:{name}/{variable.get('name')}")
+            ref = cast(dict[str, Any], cast(dict[str, Any], variable.get("valueFrom") or {}).get("secretKeyRef") or {})
+            if "provider-credentials" in str(ref.get("name", "")) and role != "inference-gateway":
+                findings.append(f"provider_credentials_outside_gateway:{name}")
+    return findings
+
+
+def _runtime_pod_findings(name: str, spec: Mapping[str, Any]) -> list[str]:
+    findings: list[str] = []
+    pod_context = cast(dict[str, Any], spec.get("securityContext") or {})
+    if pod_context.get("runAsNonRoot") is not True or pod_context.get("runAsUser") in (0, None):
+        findings.append(f"runtime_user:{name}")
+    if spec.get("automountServiceAccountToken") is not False:
+        findings.append(f"service_account_token:{name}")
+    volumes = {str(v.get("name")): v for v in cast(list[dict[str, Any]], spec.get("volumes") or [])}
+    for volume_name, volume in volumes.items():
+        if not ({"persistentVolumeClaim", "secret", "configMap", "projected"} & set(volume)):
+            findings.append(f"runtime_writable_mount:{name}/{volume_name}")
+    for container in _containers(spec):
+        container_name = str(container.get("name"))
+        context = cast(dict[str, Any], container.get("securityContext") or {})
+        if context.get("readOnlyRootFilesystem") is not True:
+            findings.append(f"writable_root:{name}/{container_name}")
+        if context.get("allowPrivilegeEscalation") is not False:
+            findings.append(f"privilege_escalation:{name}/{container_name}")
+        if "ALL" not in cast(list[str], cast(dict[str, Any], context.get("capabilities") or {}).get("drop") or []):
+            findings.append(f"capabilities:{name}/{container_name}")
+        if context.get("runAsUser") == 0:
+            findings.append(f"runtime_user:{name}")
+        for variable in cast(list[dict[str, Any]], container.get("env") or []):
+            if "secretKeyRef" in cast(dict[str, Any], variable.get("valueFrom") or {}):
+                findings.append(f"runtime_secret_env:{name}/{variable.get('name')}")
+            if forbidden_runtime_material({str(variable.get("name", "")): str(variable.get("value", ""))}):
+                findings.append(f"runtime_secret_env:{name}/{variable.get('name')}")
+        if any("secretRef" in source for source in cast(list[dict[str, Any]], container.get("envFrom") or [])):
+            findings.append(f"runtime_secret_env:{name}/envFrom")
+        for mount in cast(list[dict[str, Any]], container.get("volumeMounts") or []):
+            volume = volumes.get(str(mount.get("name")), {})
+            if "persistentVolumeClaim" in volume:
+                continue
+            if mount.get("readOnly") is not True:
+                findings.append(f"runtime_writable_mount:{name}/{mount.get('name')}")
+    return findings
+
+
+def prepare_qualification_manifests(
+    documents: Sequence[Mapping[str, Any]], environment: QualificationEnvironment
+) -> list[dict[str, Any]]:
+    """Substitute the recorded digest-pinned images and the recorded CSI driver. Pure."""
+    prepared = [copy.deepcopy(dict(document)) for document in documents]
+    for document in prepared:
+        if document.get("kind") == "StorageClass" and _name(document) == environment.infrastructure.storage_class:
+            document["provisioner"] = environment.infrastructure.csi_driver
+        for _, spec, _ in _pod_specs(document):
+            for container in _containers(spec):
+                image = str(container.get("image", ""))
+                if image in environment.images:
+                    container["image"] = environment.images[image]
+    return prepared
+
+
+def deploy_readiness_findings(
+    documents: Sequence[Mapping[str, Any]], environment: QualificationEnvironment, policy: CandidateAdmissionPolicy
+) -> list[str]:
+    """Reasons the rendered manifests may not be applied to the recorded environment."""
+    findings = list(isolation_findings(documents))
+    if policy.deployment.cluster_uid != environment.cluster_uid:
+        findings.append("policy_cluster_mismatch")
+    storage_class = environment.infrastructure.storage_class
+    classes = [d for d in documents if d.get("kind") == "StorageClass" and _name(d) == storage_class]
+    if not classes:
+        findings.append(f"storage_class_missing:{storage_class}")
+    else:
+        provisioner = str(classes[0].get("provisioner", ""))
+        if provisioner != environment.infrastructure.csi_driver:
+            state = "unselected" if provisioner.endswith(".invalid") else "mismatch"
+            findings.append(f"storage_provisioner_{state}:{provisioner}")
+    for document in documents:
+        if document.get("kind") == "PersistentVolumeClaim":
+            if document.get("spec", {}).get("storageClassName") != storage_class:
+                findings.append(f"storage_class_mismatch:{_name(document)}")
+        for workload, spec, labels in _pod_specs(document):
+            for container in _containers(spec):
+                image = str(container.get("image", ""))
+                if _PINNED_IMAGE.search(image) is None:
+                    findings.append(f"image_not_pinned:{image}")
+                    continue
+                if _is_runtime(labels):
+                    provider = labels.get("esp.openedge.dev/provider")
+                    digest = image.rsplit("@", 1)[1]
+                    allowed = {runtime.image_digest for runtime in policy.runtimes if runtime.provider == provider}
+                    if digest not in allowed:
+                        findings.append(f"runtime_image_not_allowlisted:{workload}")
+    return sorted(set(findings))
+
+
+def _dockerfile_instructions(text: str) -> list[tuple[str, str]]:
+    instructions: list[tuple[str, str]] = []
+    buffer = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.endswith("\\"):
+            buffer += line[:-1] + " "
+            continue
+        buffer += line
+        keyword, _, rest = buffer.partition(" ")
+        instructions.append((keyword.upper(), rest.strip()))
+        buffer = ""
+    if buffer:
+        keyword, _, rest = buffer.partition(" ")
+        instructions.append((keyword.upper(), rest.strip()))
+    return instructions
+
+
+def _declared_names(keyword: str, rest: str) -> dict[str, str]:
+    if keyword == "ARG":
+        name, _, value = rest.partition("=")
+        return {name.strip(): value.strip()}
+    pairs = re.findall(r'([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|\S*)', rest)
+    if pairs:
+        return {name: value.strip('"') for name, value in pairs}
+    name, _, value = rest.partition(" ")
+    return {name: value}
+
+
+def runtime_image_findings(dockerfile: str, *, harness: Literal["codex", "grok-build"]) -> list[str]:
+    """Pinned bases, the exact harness digest, a numeric non-root user, no credentials, no network fetch."""
+    expected = CODEX_NATIVE_SHA256 if harness == "codex" else GROK_NATIVE_SHA256
+    config = "infra/runtime/codex/config.toml" if harness == "codex" else "infra/runtime/grok/config.toml"
+    instructions = _dockerfile_instructions(dockerfile)
+    findings: list[str] = []
+    stages: set[str] = set()
+    final: list[tuple[str, str]] = []
+    for keyword, rest in instructions:
+        if keyword == "FROM":
+            parts = [part for part in rest.split() if not part.startswith("--")]
+            reference = parts[0] if parts else ""
+            if reference not in stages and _PINNED_IMAGE.search(reference) is None:
+                findings.append(f"base_not_pinned:{reference}")
+            if len(parts) >= 3 and parts[1].upper() == "AS":
+                stages.add(parts[2])
+            final = []
+            continue
+        final.append((keyword, rest))
+        if keyword in ("ENV", "ARG"):
+            for name in forbidden_runtime_material(_declared_names(keyword, rest)):
+                findings.append(f"secret_in_image:{name}")
+        if keyword == "RUN":
+            lowered = rest.lower()
+            unpinned_pip = "pip install" in lowered and "--no-index" not in lowered
+            if re.search(r"\b(curl|wget)\b|git clone", lowered) or unpinned_pip:
+                findings.append(f"network_fetch:{rest[:60]}")
+            if "apt-get update" in lowered and "--snapshot" not in lowered:
+                findings.append("unpinned_packages")
+        if keyword == "ADD" and re.search(r"https?://", rest):
+            findings.append(f"network_fetch:{rest[:60]}")
+    if not any(keyword == "RUN" and expected in rest and "sha256sum --check" in rest for keyword, rest in instructions):
+        findings.append("harness_digest_unverified")
+    users = [rest for keyword, rest in final if keyword == "USER"]
+    if not users or re.fullmatch(r"[1-9][0-9]*:[1-9][0-9]*", users[-1]) is None:
+        findings.append(f"user_not_numeric_non_root:{users[-1] if users else 'missing'}")
+    entrypoints = [rest for keyword, rest in final if keyword == "ENTRYPOINT"]
+    if not entrypoints or not entrypoints[-1].startswith("["):
+        findings.append("entrypoint_not_exec_form")
+    copies = " ".join(rest for keyword, rest in final if keyword == "COPY")
+    if config not in copies:
+        findings.append("runtime_config_not_packaged")
+    if "infra/runtime/tool-policy.json" not in copies:
+        findings.append("tool_policy_not_packaged")
+    runs = [rest for keyword, rest in final if keyword == "RUN"]
+    if not runs or not (runs[-1].startswith("[") and '"/bin/sh"' in runs[-1]):
+        findings.append("shell_not_removed")
+    return sorted(set(findings))
+
+
+_DENIAL_ERRORS = frozenset(
+    {
+        "timeout",
+        "connection_refused",
+        "connection_reset",
+        "host_unreachable",
+        "network_unreachable",
+        "permission_denied",
+        "name_unresolved",
+    }
+)
+
+
+def classify_egress_attempt(attempt: EgressAttempt) -> Literal["denied", "reached", "inconclusive"]:
+    """Any completed connection or HTTP status is `reached`, a provider 401 included."""
+    if attempt.tcp_connected or attempt.tls_established or attempt.http_status is not None:
+        return "reached"
+    if attempt.error in _DENIAL_ERRORS:
+        return "denied"
+    return "inconclusive"
+
+
+def load_tool_policy(path: Path = TOOL_POLICY_PATH) -> ToolPolicy:
+    return ToolPolicy.model_validate(_strict_json(path.read_bytes()))
+
+
+def offered_tools(body: bytes) -> list[OfferedTool] | None:
+    """Tools a final model request offers. None when the request body is not strict JSON."""
+    try:
+        document = _strict_json(body)
+    except ValueError:
+        return None
+    if not isinstance(document, dict):
+        return None
+    tools = cast(dict[str, Any], document).get("tools", [])
+    if not isinstance(tools, list):
+        return [OfferedTool(malformed=True)]
+    offered: list[OfferedTool] = []
+    for entry in cast(list[object], tools):
+        if not isinstance(entry, dict):
+            offered.append(OfferedTool(malformed=True))
+            continue
+        item = cast(dict[str, Any], entry)
+        function = item.get("function")
+        name = item.get("name")
+        if name is None and isinstance(function, dict):
+            name = cast(dict[str, Any], function).get("name")
+        kind = item.get("type")
+        offered.append(
+            OfferedTool(type=kind if isinstance(kind, str) else None, name=name if isinstance(name, str) else None)
+        )
+    return offered
+
+
+def tool_policy_violations(offered: Sequence[OfferedTool] | None, policy: ToolPolicy) -> list[str]:
+    if offered is None:
+        return ["request_unparseable"]
+    pattern = re.compile(policy.model_visible.name_pattern)
+    violations: list[str] = []
+    for tool in offered:
+        if tool.malformed:
+            violations.append("malformed_tool_entry")
+        elif tool.type not in policy.model_visible.allowed_types:
+            violations.append(f"builtin_tool:{tool.type}")
+        elif tool.name is None or pattern.fullmatch(tool.name) is None:
+            violations.append(f"unapproved_tool:{tool.name}")
+    return violations
+
+
+def read_junit(path: Path) -> JunitSummary:
+    """Totals from a pytest JUnit XML report. A missing or unreadable report is an empty run."""
+    try:
+        root = ElementTree.parse(path).getroot()
+    except (OSError, ElementTree.ParseError):
+        return JunitSummary(tests=0, failures=0, errors=0, skipped=0)
+    suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+    totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+    for suite in suites:
+        for key in totals:
+            totals[key] += int(suite.get(key, "0"))
+    return JunitSummary(**totals)
+
+
+def read_live_observations(path: Path) -> list[LiveObservation]:
+    if not path.exists():
+        return []
+    observations: list[LiveObservation] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            observations.append(LiveObservation.model_validate_json(line))
+    return observations
+
+
+def evaluate_live_evidence(
+    gate: IsolationGate,
+    provider: Provider,
+    observations: Sequence[LiveObservation],
+    junit: JunitSummary,
+    environment: QualificationEnvironment,
+    policy: CandidateAdmissionPolicy,
+) -> QualificationResult:
+    """Functional prerequisite pass only with every scenario positively satisfied and a clean run.
+
+    A demonstrated bypass or second writer invalidates; anything missing, skipped or inconclusive is
+    pending. DA-01 itself stays pending either way.
+    """
+    required = REQUIRED_NETWORK_SCENARIOS if gate == "network" else REQUIRED_STORAGE_SCENARIOS
+    relevant = [
+        item
+        for item in observations
+        if item.gate == gate and item.provider == provider and item.environment_id == environment.environment_id
+    ]
+    violated = sorted({item.scenario for item in relevant if item.outcome == "violated"})
+    satisfied = {item.scenario for item in relevant if item.outcome == "satisfied"} - set(violated)
+    missing = [scenario for scenario in required if scenario not in satisfied and scenario not in violated]
+    incomplete = junit.tests == 0 or junit.failures > 0 or junit.errors > 0 or junit.skipped > 0
+    failed = [f"{scenario}_violated" for scenario in violated] + [f"{scenario}_missing" for scenario in missing]
+    if incomplete:
+        failed.append("live_probe_run_incomplete")
+    infrastructure = environment.infrastructure
+    storage_profile = (
+        f"kubernetes/{infrastructure.fence_mechanism}:{infrastructure.csi_driver}@{infrastructure.csi_driver_version}"
+        f"/{infrastructure.storage_class}/ReadWriteOncePod"
+    )
+    return QualificationResult(
+        provider=provider,
+        gate=gate,
+        status="invalidated" if violated else "pending",
+        functional_subgate_pass=not violated and not missing and not incomplete,
+        failed_criteria=failed,
+        scenario_ids=sorted(satisfied & set(required)),
+        positive_observation_count=sum(
+            1 for item in relevant if item.outcome == "satisfied" and item.scenario in required
+        ),
+        environment_digest=environment_digest(environment),
+        allowlist_digest=policy_digest(policy),
+        storage_profile=storage_profile if gate == "storage" else None,
+        tool_policy_digest=tool_policy_digest() if gate == "network" else None,
+        skipped=junit.skipped > 0,
+        empty_evidence=not relevant,
+    )
+
+
+def deploy_qualification(
+    environment: QualificationEnvironment,
+    observed: ObservedContext,
+    documents: Sequence[Mapping[str, Any]],
+    policy_raw: bytes,
+) -> None:
+    """Server-side apply to the recorded context only; the caller already verified that context."""
+    require_disposable_context(environment, observed)
+    assert observed.kubectl is not None
+    configmap = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": "esp-candidate-policy",
+            "namespace": environment.namespace,
+            "labels": {"app.kubernetes.io/part-of": "esp"},
+        },
+        "data": {"policy.json": policy_raw.decode()},
+    }
+    payload = yaml.safe_dump_all([*documents, configmap], sort_keys=False)
+    completed = subprocess.run(
+        [
+            observed.kubectl,
+            "--context",
+            environment.kube_context,
+            "apply",
+            "--server-side",
+            "--field-manager=esp-qualify",
+            "-f",
+            "-",
+        ],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise DeploymentFailed(completed.stderr.strip()[:300])
+
+
+def run_live_probes(
+    gate: IsolationGate, provider: Provider, environment_path: Path, run_dir: Path
+) -> tuple[list[LiveObservation], JunitSummary]:
+    """Run the live qualification modules against the recorded environment; never as ordinary pytest."""
+    results = run_dir / "observations.jsonl"
+    junit = run_dir / "junit.xml"
+    env = dict(os.environ)
+    env.update(
+        {
+            QUALIFICATION_ENV_VAR: str(environment_path),
+            QUALIFICATION_RESULTS_VAR: str(results),
+            QUALIFICATION_PROVIDER_VAR: provider,
+        }
+    )
+    argv = [
+        sys.executable,
+        "-m",
+        "pytest",
+        *[str(ROOT / module) for module in LIVE_PROBE_MODULES[gate]],
+        "-p",
+        "no:cacheprovider",
+        "-o",
+        "addopts=",
+        f"--junitxml={junit}",
+        "-q",
+    ]
+    try:
+        completed = subprocess.run(
+            argv, cwd=ROOT, env=env, capture_output=True, text=True, timeout=_LIVE_PROBE_TIMEOUT_SECONDS, check=False
+        )
+        (run_dir / "pytest.log").write_text(completed.stdout + completed.stderr, encoding="utf-8")
+    except subprocess.TimeoutExpired:
+        (run_dir / "pytest.log").write_text("live probes timed out\n", encoding="utf-8")
+    try:
+        observations = read_live_observations(results)
+    except ValueError:
+        observations = []
+    return observations, read_junit(junit)
+
+
+def _pending_isolation(gate: IsolationGate, provider: Provider, failed: list[str]) -> QualificationResult:
+    return QualificationResult(
+        provider=provider,
+        gate=gate,
+        status="pending",
+        failed_criteria=failed,
+        empty_evidence=True,
+        positive_observation_count=0,
+        scenario_ids=[],
+    )
+
+
+def run_isolation_gate(
+    gate: IsolationGate, provider: Provider, *, deploy: bool, environ: Mapping[str, str]
+) -> IsolationGateOutcome:
+    try:
+        environment = load_qualification_environment(environ)
+    except QualificationEnvironmentInvalid as exc:
+        return IsolationGateOutcome(_pending_isolation(gate, provider, [f"qualification_environment_invalid:{exc}"]))
+    if environment is None:
+        return IsolationGateOutcome(_pending_isolation(gate, provider, ["qualification_environment_unconfigured"]))
+    infrastructure = environment.infrastructure
+    try:
+        policy_raw = Path(environment.candidate_policy).read_bytes()
+        policy = load_candidate_policy(policy_raw)
+    except (OSError, CandidatePolicyInvalid):
+        return IsolationGateOutcome(_pending_isolation(gate, provider, ["candidate_policy_invalid"]), infrastructure)
+    if policy.deployment.cluster_uid != environment.cluster_uid:
+        failed = ["candidate_policy_environment_mismatch"]
+        return IsolationGateOutcome(_pending_isolation(gate, provider, failed), infrastructure)
+    observed = observe_kube_context(environment)
+    try:
+        require_disposable_context(environment, observed)
+    except ContextRefused as exc:
+        return IsolationGateOutcome(
+            _pending_isolation(gate, provider, [f"kube_context_refused:{exc.code}"]), infrastructure
+        )
+    if deploy:
+        try:
+            documents = prepare_qualification_manifests(render_qualification_manifests(), environment)
+        except ManifestRenderError:
+            return IsolationGateOutcome(_pending_isolation(gate, provider, ["manifest_render_failed"]), infrastructure)
+        findings = deploy_readiness_findings(documents, environment, policy)
+        if findings:
+            failed = ["manifests_not_deployable", *findings]
+            return IsolationGateOutcome(_pending_isolation(gate, provider, failed), infrastructure)
+        try:
+            deploy_qualification(environment, observed, documents, policy_raw)
+        except (ContextRefused, DeploymentFailed):
+            return IsolationGateOutcome(_pending_isolation(gate, provider, ["deploy_failed"]), infrastructure)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    if environment.evidence_output_dir is None:
+        with tempfile.TemporaryDirectory(prefix="esp-qualify-") as scratch:
+            observations, junit = run_live_probes(gate, provider, Path(environ[QUALIFICATION_ENV_VAR]), Path(scratch))
+        report = evaluate_live_evidence(gate, provider, observations, junit, environment, policy)
+        # Evidence that is not retained cannot support a functional pass.
+        report = report.model_copy(
+            update={
+                "functional_subgate_pass": False,
+                "failed_criteria": [*report.failed_criteria, "evidence_output_unconfigured"],
+            }
+        )
+        return IsolationGateOutcome(report, infrastructure)
+    run_dir = Path(environment.evidence_output_dir) / f"{gate}-{provider}-{stamp}"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    observations, junit = run_live_probes(gate, provider, Path(environ[QUALIFICATION_ENV_VAR]), run_dir)
+    report = evaluate_live_evidence(gate, provider, observations, junit, environment, policy)
+    report = report.model_copy(update={"evidence_bundle_ref": f"file://{run_dir}"})
+    return IsolationGateOutcome(report, infrastructure, run_dir)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qualify")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1439,6 +2445,12 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--provider", required=True, choices=["openai", "xai"])
         command.add_argument("--json", action="store_true")
         command.add_argument("--assume-essential-absent", action="store_true")
+        if name in ("network", "storage"):
+            command.add_argument(
+                "--deploy",
+                action="store_true",
+                help="apply the rendered qualification manifests first; refused outside the recorded cluster",
+            )
         if name == "inspect":
             command.add_argument(
                 "--write-protocol-capture",
@@ -1472,6 +2484,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--observation-file cannot be combined with --acp-handshake; that needs real discovery")
     if acp_handshake and provider != "xai":
         parser.error("--acp-handshake is only defined for --provider xai")
+    if args.command in ("network", "storage"):
+        return _isolation_main(args.command, provider, args)
     capabilities: CapabilityReport | None = None
     harness_build: str | None = None
     configuration_digest: str | None = None
@@ -1543,6 +2557,37 @@ def main(argv: list[str] | None = None) -> int:
     if classification == "invalidated":
         return 3
     if classification == "validated" and args.command == "da01":
+        return 0
+    return 2
+
+
+def _isolation_main(command: IsolationGate, provider: Provider, args: argparse.Namespace) -> int:
+    if args.assume_essential_absent:
+        report = _report_for(command, provider, assume_essential_absent=True)
+        outcome = IsolationGateOutcome(report)
+    else:
+        outcome = run_isolation_gate(command, provider, deploy=bool(args.deploy), environ=os.environ)
+    report = outcome.report
+    classification = classify_qualification(report)
+    payload = report.model_dump(mode="json")
+    payload["classification"] = classification
+    payload["infrastructure"] = (
+        outcome.infrastructure.model_dump(mode="json") if outcome.infrastructure is not None else None
+    )
+    payload["evidence_dir"] = str(outcome.evidence_dir) if outcome.evidence_dir is not None else None
+    if args.json:
+        print(json.dumps(payload))
+    else:
+        print(classification)
+        print(
+            f"provider={provider} gate={command} observations={report.positive_observation_count} "
+            f"functional_subgate_pass={str(report.functional_subgate_pass).lower()}"
+        )
+        for criterion in report.failed_criteria:
+            print(f"failed: {criterion}")
+    if classification == "invalidated":
+        return 3
+    if report.functional_subgate_pass:
         return 0
     return 2
 

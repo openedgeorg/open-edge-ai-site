@@ -1,0 +1,98 @@
+{
+  "policy_format": "esp-tool-policy/1",
+  "status": "configured_not_demonstrated",
+  "summary": "Initial shared-runtime tool policy for the constrained ESP informational workload (P §20.5). The model may use only the six read-only ESP Knowledge Service tools over the supervisor-local MCP relay. Arbitrary shell, repository edits, host filesystem access, unapproved network tools, runtime subagents and unbound background model work are denied. Model instructions are not the enforcement mechanism; each denial must be shown by live evidence, and none has been yet.",
+  "approved_mcp_server": "esp_knowledge",
+  "approved_mcp_tools": [
+    "esp.search",
+    "esp.get_source",
+    "esp.get_claim",
+    "esp.get_concept",
+    "esp.get_asset",
+    "esp.get_current_value"
+  ],
+  "model_visible": {
+    "allowed_types": ["function"],
+    "name_pattern": "^(?:mcp__)?esp_knowledge(?:__|[./_-])esp[._-]?(?:search|get_source|get_claim|get_concept|get_asset|get_current_value)$",
+    "status": "unobserved: the exact model-visible tool names are recorded from the first captured final request of each exact build; any other offered tool is a violation"
+  },
+  "denied_categories": {
+    "shell": {
+      "description": "Arbitrary command execution, including interactive terminals and unified exec.",
+      "native_names": {
+        "openai": ["shell", "local_shell", "exec_command", "unified_exec", "write_stdin"],
+        "xai": ["Bash", "run_terminal_command"]
+      }
+    },
+    "repository_edit": {
+      "description": "Creating or modifying files, patches or repository content.",
+      "native_names": {
+        "openai": ["apply_patch"],
+        "xai": ["Edit", "Write", "MultiEdit", "search_replace", "write_file"]
+      }
+    },
+    "host_filesystem": {
+      "description": "Reading or listing host or container files outside the harness's own native persistence.",
+      "native_names": {
+        "openai": ["view_image", "read_file", "list_dir", "grep_files"],
+        "xai": ["Read", "Grep", "Glob", "LS", "read_file", "list_dir", "grep"]
+      }
+    },
+    "unapproved_network": {
+      "description": "Web search, fetch, provider-hosted built-in tools or any network tool other than the approved MCP server.",
+      "native_names": {
+        "openai": ["web_search", "web_search_preview", "image_generation", "computer_use", "file_search", "code_interpreter", "mcp"],
+        "xai": ["WebSearch", "WebFetch", "web_search", "web_fetch", "x_keyword_search", "x_semantic_search", "image_gen", "image_edit", "video_gen"]
+      }
+    },
+    "runtime_subagents": {
+      "description": "Spawning additional agents or delegated sessions inside the runtime.",
+      "native_names": {
+        "openai": ["spawn_agent", "multi_agent"],
+        "xai": ["Task", "spawn_subagent"]
+      }
+    },
+    "background_model_work": {
+      "description": "Model calls not bound to the current Active Agent Run (ActAgeRun): titles, summaries, memories, suggestions, warmups.",
+      "native_names": {
+        "openai": ["memories", "goals"],
+        "xai": ["session_summary", "prompt_suggestion", "image_description", "turn_summary", "title_refresh"]
+      }
+    }
+  },
+  "enforcement_layers": [
+    "Native configuration disables the denied features (infra/runtime/codex/config.toml, infra/runtime/grok/config.toml); configuration alone is intent, not enforcement.",
+    "The supervised adapters refuse disallowed native items and permission requests and advertise no client file-system or terminal capability.",
+    "The ESP Inference Gateway rejects provider-hosted built-in tools and unapproved routes in final requests.",
+    "The runtime image has no shell, a read-only root file system and only the native volume writable.",
+    "Default-deny runtime egress allows only the gateway, the Knowledge Service, internal DNS and telemetry."
+  ],
+  "providers": {
+    "openai": {
+      "harness": "codex",
+      "configuration": "infra/runtime/codex/config.toml",
+      "enforcement": "not_demonstrated",
+      "g0_observations": [
+        "G0 discovery observed codex-cli 0.159.3 reporting unified_exec enabled although the configuration disables it, so shell disablement is not demonstrated.",
+        "No MCP per-call identity is declared by the captured schema, so the configuration defines no MCP server yet."
+      ]
+    },
+    "xai": {
+      "harness": "grok-build",
+      "configuration": "infra/runtime/grok/config.toml",
+      "enforcement": "not_demonstrated",
+      "g0_observations": [
+        "G0 discovery observed grok 1.0.46 silently ignoring unknown configuration keys and loading permission rules without validating tool names, so tool disablement is not demonstrated.",
+        "The effect of features.backend_tools = false on the advertised X search tool overrides is unobserved."
+      ]
+    }
+  },
+  "required_live_evidence": [
+    "tools_offered_only_approved",
+    "tools_runtime_shell_absent",
+    "tools_runtime_root_read_only",
+    "tools_runtime_provider_keys_absent",
+    "tools_runtime_signing_keys_absent",
+    "control_anonymous_refused"
+  ]
+}

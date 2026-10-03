@@ -1,0 +1,54 @@
+# Native storage for the isolated runtimes. Each Shared Harness Instance (ShaHarIns) owns one native
+# volume, mounted by at most one pod (ReadWriteOncePod) and retained across process replacement.
+#
+# Engineering choice, recorded per qualification environment: the Container Storage Interface (CSI)
+# driver whose ControllerUnpublishVolume revokes a node's backend access, so a completed detach is
+# positive writer-revocation evidence (see providers/shared/src/esp_provider_shared/kubernetes_fence.py).
+# The provisioner below is an unselected placeholder; deployment substitutes the recorded driver and
+# refuses this value. Access modes and labels alone do not fence a partitioned writer.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: esp-qualification-native-rwop
+  labels:
+    app.kubernetes.io/part-of: esp
+    esp.openedge.dev/environment: isolated-qualification
+provisioner: unselected.esp-qualification.invalid
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: false
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: native-codex-0
+  labels:
+    app.kubernetes.io/part-of: esp
+    esp.openedge.dev/role: native-storage
+    esp.openedge.dev/provider: openai
+spec:
+  accessModes:
+    - ReadWriteOncePod
+  storageClassName: esp-qualification-native-rwop
+  volumeMode: Filesystem
+  resources:
+    requests:
+      # Placeholder size; native history growth is measured during qualification.
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: native-grok-0
+  labels:
+    app.kubernetes.io/part-of: esp
+    esp.openedge.dev/role: native-storage
+    esp.openedge.dev/provider: xai
+spec:
+  accessModes:
+    - ReadWriteOncePod
+  storageClassName: esp-qualification-native-rwop
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 20Gi

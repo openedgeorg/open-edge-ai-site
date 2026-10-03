@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openedge.example/qualification/candidate-policy.schema.json",
+  "title": "ESP isolated candidate admission policy",
+  "description": "Recorded test-only allowlist for one isolated qualification deployment. It may admit exact pending runtime profiles and exact non-production content on that deployment's real application path. It never changes a qualification record, has no public ingress and no public-eligibility field, and selects qualification-only data and credential namespaces. Mirrors esp_contracts.eligibility.CandidateAdmissionPolicy; scripts/qualify.py validates a policy against both.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "policy_format",
+    "policy_id",
+    "deployment",
+    "data_namespace",
+    "credential_namespace",
+    "runtimes",
+    "content",
+    "recorded_by",
+    "recorded_at"
+  ],
+  "properties": {
+    "policy_format": {"const": "esp-candidate-policy/1"},
+    "policy_id": {"$ref": "#/$defs/slug"},
+    "deployment": {"$ref": "#/$defs/deployment"},
+    "data_namespace": {
+      "type": "string",
+      "pattern": "^esp-qualification-data(?:-[a-z0-9]+)*$",
+      "maxLength": 63
+    },
+    "credential_namespace": {
+      "type": "string",
+      "pattern": "^qualification/[a-z0-9]+(?:[/-][a-z0-9]+)*$"
+    },
+    "runtimes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/runtime"}},
+    "content": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/content"}},
+    "recorded_by": {"type": "string", "minLength": 1},
+    "recorded_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+    }
+  },
+  "$defs": {
+    "slug": {"type": "string", "pattern": "^qual-[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 63},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nonempty": {"type": "string", "minLength": 1},
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment", "namespace", "deployment_ref", "cluster_uid", "public_ingress"],
+      "properties": {
+        "environment": {"const": "isolated-qualification"},
+        "namespace": {"const": "esp-qualification"},
+        "deployment_ref": {"$ref": "#/$defs/slug"},
+        "cluster_uid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "public_ingress": {"const": false}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "harness_build",
+        "image_digest",
+        "configuration_digest",
+        "transport_digest",
+        "storage_profile",
+        "tool_policy_digest"
+      ],
+      "properties": {
+        "provider": {"enum": ["openai", "xai"]},
+        "model": {"$ref": "#/$defs/nonempty"},
+        "harness_build": {"$ref": "#/$defs/nonempty"},
+        "image_digest": {"$ref": "#/$defs/digest"},
+        "configuration_digest": {"$ref": "#/$defs/digest"},
+        "transport_digest": {"$ref": "#/$defs/nonempty"},
+        "storage_profile": {"$ref": "#/$defs/nonempty"},
+        "tool_policy_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "brain_version",
+        "canonical_brain_sha256",
+        "behavior_version",
+        "behavior_sha256",
+        "corpus_release_id"
+      ],
+      "properties": {
+        "brain_version": {"$ref": "#/$defs/nonempty"},
+        "canonical_brain_sha256": {"$ref": "#/$defs/sha256"},
+        "behavior_version": {"$ref": "#/$defs/nonempty"},
+        "behavior_sha256": {"$ref": "#/$defs/sha256"},
+        "corpus_release_id": {"$ref": "#/$defs/nonempty"}
+      }
+    }
+  }
+}

@@ -1,0 +1,292 @@
+# Default-deny networking for the isolated qualification namespace.
+#
+# Runtime pods may reach only the ESP Inference Gateway, the ESP Knowledge Service (MCP), internal DNS
+# and the telemetry collector, and accept only the backend's authenticated control connections. Only
+# the gateway has egress outside the cluster, limited to HTTPS on public addresses; its exact upstream
+# hosts are the gateway's approved routes. Hostname-level egress filtering would need a CNI-specific
+# policy and is recorded with the CNI identity when used.
+#
+# These objects are configuration. The CNI must enforce them, which only the live probes in
+# tests/qualification/test_egress.py demonstrate (a denied connection, never a provider 401).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-internal-dns
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runtime-egress
+spec:
+  podSelector:
+    matchLabels:
+      esp.openedge.dev/role: harness-runtime
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: inference-gateway
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: knowledge
+      ports:
+        - protocol: TCP
+          port: 8443
+    - to:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: telemetry-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runtime-control-ingress
+spec:
+  podSelector:
+    matchLabels:
+      esp.openedge.dev/role: harness-runtime
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: api
+      ports:
+        - protocol: TCP
+          port: 9443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+spec:
+  podSelector:
+    matchLabels:
+      esp.openedge.dev/role: inference-gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: harness-runtime
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-egress
+spec:
+  podSelector:
+    matchLabels:
+      esp.openedge.dev/role: inference-gateway
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - fc00::/7
+              - fe80::/10
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              esp.openedge.dev/data-plane: isolated-qualification
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 443
+    - to:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: telemetry-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: knowledge-ingress
+spec:
+  podSelector:
+    matchLabels:
+      esp.openedge.dev/role: knowledge
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: harness-runtime
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: api
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: knowledge-egress
+spec:
+  podSelector:
+    matchLabels:
+      esp.openedge.dev/role: knowledge
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: embeddings
+      ports:
+        - protocol: TCP
+          port: 8443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              esp.openedge.dev/data-plane: isolated-qualification
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 443
+    - to:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: telemetry-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: embeddings-ingress
+spec:
+  podSelector:
+    matchLabels:
+      esp.openedge.dev/role: embeddings
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: knowledge
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingress
+spec:
+  podSelector:
+    matchLabels:
+      esp.openedge.dev/role: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: qualification-driver
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-egress
+spec:
+  podSelector:
+    matchLabels:
+      esp.openedge.dev/role: api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: harness-runtime
+      ports:
+        - protocol: TCP
+          port: 9443
+    - to:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: knowledge
+      ports:
+        - protocol: TCP
+          port: 8443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              esp.openedge.dev/data-plane: isolated-qualification
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 443
+    - to:
+        - podSelector:
+            matchLabels:
+              esp.openedge.dev/role: telemetry-collector
+      ports:
+        - protocol: TCP
+          port: 4317

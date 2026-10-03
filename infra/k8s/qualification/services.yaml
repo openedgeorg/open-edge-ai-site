@@ -1,0 +1,368 @@
+# ESP services of the isolated qualification deployment. All are ClusterIP: there is no Ingress,
+# LoadBalancer or NodePort. The qualification driver reaches the application backend from inside
+# the namespace. Every pod runs non-root with a read-only root file system and its own mTLS identity.
+#
+# Credentials come from the qualification-only credential namespace recorded in the candidate policy
+# and are materialised as the Secrets named below by the operator; none is committed. Provider
+# credentials are mounted only into the ESP Inference Gateway, whose upstream routes are the approved
+# allowlist (ApprovedRoute). The backend loads the recorded candidate policy from the ConfigMap that
+# `scripts/qualify.py --deploy` creates; there is no public-eligibility flag.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: esp-api
+  labels:
+    app.kubernetes.io/part-of: esp
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: esp-inference-gateway
+  labels:
+    app.kubernetes.io/part-of: esp
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: esp-knowledge
+  labels:
+    app.kubernetes.io/part-of: esp
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: esp-embeddings
+  labels:
+    app.kubernetes.io/part-of: esp
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: esp-api
+  labels:
+    app.kubernetes.io/part-of: esp
+    esp.openedge.dev/role: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      esp.openedge.dev/role: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: esp
+        esp.openedge.dev/role: api
+    spec:
+      serviceAccountName: esp-api
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: esp-service
+          command: ["python", "-m", "esp_api.main"]
+          env:
+            - name: ESP_DEPLOYMENT_ENVIRONMENT
+              value: isolated-qualification
+            - name: ESP_CANDIDATE_POLICY_PATH
+              value: /etc/esp/candidate-policy/policy.json
+            - name: ESP_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: esp-qualification-api-credentials
+                  key: database-url
+            - name: ESP_VALKEY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: esp-qualification-api-credentials
+                  key: valkey-url
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: mtls
+              mountPath: /etc/esp/mtls
+              readOnly: true
+            - name: candidate-policy
+              mountPath: /etc/esp/candidate-policy
+              readOnly: true
+            - name: signing
+              mountPath: /etc/esp/signing
+              readOnly: true
+      volumes:
+        - name: mtls
+          secret:
+            secretName: esp-api-mtls
+            defaultMode: 0440
+        - name: candidate-policy
+          configMap:
+            name: esp-candidate-policy
+        - name: signing
+          # The backend signing authority's key; never mounted into a runtime, gateway or MCP pod.
+          secret:
+            secretName: esp-qualification-signing-key
+            defaultMode: 0440
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: esp-inference-gateway
+  labels:
+    app.kubernetes.io/part-of: esp
+    esp.openedge.dev/role: inference-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      esp.openedge.dev/role: inference-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: esp
+        esp.openedge.dev/role: inference-gateway
+    spec:
+      serviceAccountName: esp-inference-gateway
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: esp-service
+          command: ["python", "-m", "esp_inference_gateway.main"]
+          env:
+            - name: ESP_OPENAI_UPSTREAM
+              value: https://api.openai.com/v1/responses
+            - name: ESP_XAI_UPSTREAM
+              value: https://api.x.ai/v1/chat/completions
+            - name: ESP_PROVIDER_CREDENTIAL_REF
+              value: file:///etc/esp/provider-credentials
+            - name: ESP_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: esp-qualification-gateway-credentials
+                  key: database-url
+            - name: ESP_EVIDENCE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: esp-qualification-gateway-credentials
+                  key: evidence-key
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: mtls
+              mountPath: /etc/esp/mtls
+              readOnly: true
+            - name: provider-credentials
+              mountPath: /etc/esp/provider-credentials
+              readOnly: true
+      volumes:
+        - name: mtls
+          secret:
+            secretName: esp-inference-gateway-mtls
+            defaultMode: 0440
+        - name: provider-credentials
+          secret:
+            secretName: esp-qualification-provider-credentials
+            defaultMode: 0440
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: esp-knowledge
+  labels:
+    app.kubernetes.io/part-of: esp
+    esp.openedge.dev/role: knowledge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      esp.openedge.dev/role: knowledge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: esp
+        esp.openedge.dev/role: knowledge
+    spec:
+      serviceAccountName: esp-knowledge
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: knowledge
+          image: esp-service
+          command: ["python", "-m", "esp_mcp.main"]
+          env:
+            - name: ESP_INSPECTION_IDENTITY
+              value: esp-qualification-inspection
+            - name: ESP_MCP_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: esp-qualification-knowledge-credentials
+                  key: database-url
+            - name: ESP_KNOWLEDGE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: esp-qualification-knowledge-credentials
+                  key: knowledge-public-key
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: mtls
+              mountPath: /etc/esp/mtls
+              readOnly: true
+      volumes:
+        - name: mtls
+          secret:
+            secretName: esp-knowledge-mtls
+            defaultMode: 0440
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: esp-embeddings
+  labels:
+    app.kubernetes.io/part-of: esp
+    esp.openedge.dev/role: embeddings
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      esp.openedge.dev/role: embeddings
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: esp
+        esp.openedge.dev/role: embeddings
+    spec:
+      serviceAccountName: esp-embeddings
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: embeddings
+          image: esp-embeddings
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: esp-api
+  labels:
+    app.kubernetes.io/part-of: esp
+spec:
+  type: ClusterIP
+  selector:
+    esp.openedge.dev/role: api
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: esp-inference-gateway
+  labels:
+    app.kubernetes.io/part-of: esp
+spec:
+  type: ClusterIP
+  selector:
+    esp.openedge.dev/role: inference-gateway
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: esp-knowledge
+  labels:
+    app.kubernetes.io/part-of: esp
+spec:
+  type: ClusterIP
+  selector:
+    esp.openedge.dev/role: knowledge
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: esp-embeddings
+  labels:
+    app.kubernetes.io/part-of: esp
+spec:
+  type: ClusterIP
+  selector:
+    esp.openedge.dev/role: embeddings
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https
+      protocol: TCP

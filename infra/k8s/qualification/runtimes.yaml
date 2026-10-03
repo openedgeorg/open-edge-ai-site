@@ -1,0 +1,225 @@
+# Candidate runtimes: one pod per Shared Harness Instance (ShaHarIns), one main harness process each.
+#
+# Each pod is one Process Incarnation (ProInc): restartPolicy Never and no controller, so nothing
+# replaces a writer behind ESP's back. A replacement is created only after a positive fence receipt
+# (KubernetesStorageFence). The pods run as a fixed non-root user with a read-only root file system;
+# the native volume is the only writable mount. They hold no provider credential and no signing key:
+# scopes arrive over the mutually authenticated (mTLS) control endpoint, and model traffic reaches
+# providers only through the ESP Inference Gateway.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: esp-codex-runtime
+  labels:
+    app.kubernetes.io/part-of: esp
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: esp-grok-runtime
+  labels:
+    app.kubernetes.io/part-of: esp
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: esp-codex-runtime-0
+  labels:
+    app.kubernetes.io/name: esp-codex-runtime
+    app.kubernetes.io/part-of: esp
+    esp.openedge.dev/role: harness-runtime
+    esp.openedge.dev/provider: openai
+    esp.openedge.dev/harness: codex
+    esp.openedge.dev/shared-harness-instance: codex-0
+  annotations:
+    # Identification only; the supervisor records the actual incarnation when the process starts.
+    esp.openedge.dev/process-incarnation: unassigned
+spec:
+  serviceAccountName: esp-codex-runtime
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  hostNetwork: false
+  hostPID: false
+  hostIPC: false
+  terminationGracePeriodSeconds: 30
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: runtime
+      image: esp-codex-runtime
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: ESP_NATIVE_ROOT
+          value: /var/lib/esp/native
+        - name: HOME
+          value: /var/lib/esp/native/home
+        - name: CODEX_HOME
+          value: /var/lib/esp/native/codex
+        - name: TMPDIR
+          value: /var/lib/esp/native/tmp
+        - name: ESP_GATEWAY_URL
+          value: https://esp-inference-gateway.esp-qualification.svc.cluster.local:8443
+        - name: ESP_KNOWLEDGE_URL
+          value: https://esp-knowledge.esp-qualification.svc.cluster.local:8443
+        - name: ESP_CONTROL_TLS_DIR
+          value: /etc/esp/mtls
+      ports:
+        - name: control
+          containerPort: 9443
+          protocol: TCP
+      securityContext:
+        allowPrivilegeEscalation: false
+        privileged: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        # Placeholders; validated limits come from DA-01 capacity measurements.
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          memory: 4Gi
+      volumeMounts:
+        - name: native
+          mountPath: /var/lib/esp/native
+        - name: mtls
+          mountPath: /etc/esp/mtls
+          readOnly: true
+  volumes:
+    - name: native
+      persistentVolumeClaim:
+        claimName: native-codex-0
+    - name: mtls
+      secret:
+        secretName: esp-codex-runtime-mtls
+        defaultMode: 0440
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: esp-grok-runtime-0
+  labels:
+    app.kubernetes.io/name: esp-grok-runtime
+    app.kubernetes.io/part-of: esp
+    esp.openedge.dev/role: harness-runtime
+    esp.openedge.dev/provider: xai
+    esp.openedge.dev/harness: grok-build
+    esp.openedge.dev/shared-harness-instance: grok-0
+  annotations:
+    esp.openedge.dev/process-incarnation: unassigned
+spec:
+  serviceAccountName: esp-grok-runtime
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  hostNetwork: false
+  hostPID: false
+  hostIPC: false
+  terminationGracePeriodSeconds: 30
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: runtime
+      image: esp-grok-runtime
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: ESP_NATIVE_ROOT
+          value: /var/lib/esp/native
+        - name: HOME
+          value: /var/lib/esp/native/home
+        - name: GROK_HOME
+          value: /var/lib/esp/native/grok
+        - name: GROK_DISABLE_AUTOUPDATER
+          value: "1"
+        - name: TMPDIR
+          value: /var/lib/esp/native/tmp
+        - name: ESP_GATEWAY_URL
+          value: https://esp-inference-gateway.esp-qualification.svc.cluster.local:8443
+        - name: ESP_KNOWLEDGE_URL
+          value: https://esp-knowledge.esp-qualification.svc.cluster.local:8443
+        - name: ESP_CONTROL_TLS_DIR
+          value: /etc/esp/mtls
+      ports:
+        - name: control
+          containerPort: 9443
+          protocol: TCP
+      securityContext:
+        allowPrivilegeEscalation: false
+        privileged: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          memory: 4Gi
+      volumeMounts:
+        - name: native
+          mountPath: /var/lib/esp/native
+        - name: mtls
+          mountPath: /etc/esp/mtls
+          readOnly: true
+  volumes:
+    - name: native
+      persistentVolumeClaim:
+        claimName: native-grok-0
+    - name: mtls
+      secret:
+        secretName: esp-grok-runtime-mtls
+        defaultMode: 0440
+---
+# Authenticated control: only the ESP Application Backend reaches these ports (network-policy.yaml),
+# and the supervisor admits only mTLS-authenticated backend/operator identities.
+apiVersion: v1
+kind: Service
+metadata:
+  name: esp-codex-runtime-0-control
+  labels:
+    app.kubernetes.io/part-of: esp
+spec:
+  type: ClusterIP
+  selector:
+    esp.openedge.dev/role: harness-runtime
+    esp.openedge.dev/shared-harness-instance: codex-0
+  ports:
+    - name: control
+      port: 9443
+      targetPort: control
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: esp-grok-runtime-0-control
+  labels:
+    app.kubernetes.io/part-of: esp
+spec:
+  type: ClusterIP
+  selector:
+    esp.openedge.dev/role: harness-runtime
+    esp.openedge.dev/shared-harness-instance: grok-0
+  ports:
+    - name: control
+      port: 9443
+      targetPort: control
+      protocol: TCP

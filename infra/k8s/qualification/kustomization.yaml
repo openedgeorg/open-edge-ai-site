@@ -1,0 +1,14 @@
+# Isolated qualification deployment (pending). Render offline with `kubectl kustomize`.
+# As committed this is not deployable: image references are bare names and the storage driver is an
+# unselected placeholder. `scripts/qualify.py <network|storage> --provider <p> --deploy` substitutes the
+# recorded environment's digest-pinned images and qualified CSI driver, refuses anything outside the
+# recorded candidate allowlist, and applies only to the recorded disposable cluster context.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: esp-qualification
+resources:
+  - namespace.yaml
+  - storage.yaml
+  - services.yaml
+  - runtimes.yaml
+  - network-policy.yaml
