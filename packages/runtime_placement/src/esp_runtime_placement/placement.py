@@ -9,24 +9,33 @@ same Shared Harness Instance (ShaHarIns), and a provider slot. It answers one of
 - `exhausted`: committed holders fill a needed budget on every compatible instance, or the provider budget;
 - `inconclusive`: capacity could not be established. Committed capacity existed but the rows were locked
   by other transactions or never provisioned, the provider is unhealthy, no ready compatible instance
-  (or not the instance holding the mapping's resident slot) exists, or the chosen incarnation is being
-  revoked. Callers report `service_unavailable`, never busy and never exhaustion.
+  (or not the instance holding the mapping's resident slot) exists, or every hostable candidate was lost
+  to its incarnation: fenced (`incarnation_fenced`) or no longer ready (`incarnation_unavailable`).
+  Callers report `service_unavailable`, never busy and never exhaustion.
 
-Ordering against whole-process revocation: after the claims, placement takes the non-waiting shared fence
-`esp_try_fence(incarnation, mapping, false)` and then re-reads that the instance is still ready on that
-incarnation. The fence stays held until the caller's transaction ends. Revocation marks the instance
+Ordering against whole-process revocation: for each candidate, after claiming its resident and active
+slots, placement takes the non-waiting shared fence `esp_try_fence(incarnation, mapping, false)` on that
+candidate's incarnation and then re-reads that the instance is still ready on that incarnation. The
+chosen candidate's fence stays held until the caller's transaction ends. Revocation marks the instance
 first and only then takes the exclusive incarnation fence and inventories the incarnation's mappings.
-An admitted run is therefore either committed before that inventory, which revokes it, or refused here:
-the fence is unavailable while a revocation holds or awaits it, and once a revocation has committed, the
-re-read sees its mark.
+An admitted run is therefore either committed before that inventory, which revokes it, or not placed on
+that incarnation: the fence is unavailable while a revocation holds or awaits it, and once a revocation
+has committed, the re-read sees its mark.
 
-A non-acquired outcome rolls back its own claims and fence (savepoint), so no partial reservation
-survives in the caller's transaction. Placement does no remote I/O, takes no provider-wide lock and
+The same try fails while a peer mapping's exclusive operation holds the exclusive incarnation key (Task
+5's `clear_terminal_guard`, `register_native_session`, `revoke_mapping`, and `release_unsubmitted`
+outside `starting` take `esp_try_fence(incarnation, mapping, true)`). Such a candidate is skipped like a
+contended one. With no other hostable candidate the answer is `inconclusive` (`incarnation_fenced`).
+
+A candidate that fails any step rolls back its own claims and fence (savepoint) before the next is tried,
+and a non-acquired outcome rolls back everything (outer savepoint), so no partial reservation or stray
+fence survives in the caller's transaction. Placement does no remote I/O, takes no provider-wide lock and
 never retries.
 
 Fair use across instances: candidates are tried in order of most free committed active capacity, then
-most free resident capacity, then instance ID. A contended instance is skipped for the next, so free
-capacity elsewhere is used rather than refused, and sequential admissions spread over instances.
+most free resident capacity, then instance ID. A contended, fenced or no-longer-ready instance is skipped
+for the next, so free capacity elsewhere is used rather than refused, and sequential admissions spread
+over instances.
 """
 
 from __future__ import annotations
@@ -134,6 +143,9 @@ async def choose_compatible_slots(tx: Transaction, request: PlacementRequest) ->
         return instances
     await tx.execute(f"SAVEPOINT {_PLACEMENT}")
     placed = await _claim_instance(tx, request, instances)
+    if isinstance(placed, SlotsInconclusive):
+        await _undo(tx, _PLACEMENT)
+        return placed
     if placed is None:
         await _undo(tx, _PLACEMENT)
         return _instance_failure(instances, request.needs_resident)
@@ -149,10 +161,6 @@ async def choose_compatible_slots(tx: Transaction, request: PlacementRequest) ->
     if provider_slot is None:
         await _undo(tx, _PLACEMENT)
         return _provider_failure(await provider_budget(tx, request.provider))
-    unsettled = await _hold_incarnation(tx, request, instance)
-    if unsettled is not None:
-        await _undo(tx, _PLACEMENT)
-        return unsettled
     await tx.execute(f"RELEASE SAVEPOINT {_PLACEMENT}")
     return SlotsAcquired(
         outcome="acquired",
@@ -198,39 +206,71 @@ async def _candidates(tx: Transaction, request: PlacementRequest) -> list[Instan
 
 async def _claim_instance(
     tx: Transaction, request: PlacementRequest, instances: list[InstanceCapacity]
-) -> tuple[InstanceCapacity, list[ClaimedSlot]] | None:
-    """Try each committed-hostable instance in order; a failed instance's claims roll back at once."""
+) -> tuple[InstanceCapacity, list[ClaimedSlot]] | SlotsInconclusive | None:
+    """Try each committed-hostable instance in order and keep the first one claimed and confirmed.
+
+    Each candidate runs under its own savepoint: claim its resident and active slots, then take its shared
+    incarnation fence and re-read its readiness (`_hold_incarnation`). A candidate that fails any step is
+    rolled back at once, which drops its claims and its fence, and the next candidate is tried.
+
+    Returns `None` when no candidate was placed and the slot claims decide the answer (`_instance_failure`,
+    which is never exhaustion while a hostable candidate exists). Returns `SlotsInconclusive` when every
+    hostable candidate tried was lost to its incarnation; `incarnation_fenced` wins over
+    `incarnation_unavailable`, because a fenced instance may accept a retry once the holder finishes.
+    """
+    lost: set[InconclusiveReason] = set()
+    claims_failed = False
     for instance in instances:
         if not instance.can_host(request.needs_resident):
             continue
         await tx.execute(f"SAVEPOINT {_INSTANCE}")
-        slots: list[ClaimedSlot] = []
-        for scope in request.scopes:
-            if scope == "provider":
-                continue
-            budget = instance.resident if scope == "resident" else instance.active
-            slot = await claim_slot(
-                tx,
-                scope=scope,
-                scope_id=instance.harness_instance_id,
-                claimable_below=budget.claimable_below,
-                holder_provider_session_id=request.provider_session_id,
-                reservation_epoch=request.reservation_epoch,
-            )
-            if slot is None:
-                break
-            slots.append(slot)
+        slots = await _claim_instance_slots(tx, request, instance)
+        if slots is None:
+            claims_failed = True
         else:
-            await tx.execute(f"RELEASE SAVEPOINT {_INSTANCE}")
-            return instance, slots
+            unsettled = await _hold_incarnation(tx, request, instance)
+            if unsettled is None:
+                await tx.execute(f"RELEASE SAVEPOINT {_INSTANCE}")
+                return instance, slots
+            lost.add(unsettled.reason)
         await _undo(tx, _INSTANCE)
+    if lost and not claims_failed:
+        reason: InconclusiveReason = "incarnation_fenced" if "incarnation_fenced" in lost else "incarnation_unavailable"
+        return SlotsInconclusive(outcome="inconclusive", reason=reason)
     return None
+
+
+async def _claim_instance_slots(
+    tx: Transaction, request: PlacementRequest, instance: InstanceCapacity
+) -> list[ClaimedSlot] | None:
+    """Claim the instance's resident (when needed) and active slots without waiting; `None` if one is missing."""
+    slots: list[ClaimedSlot] = []
+    for scope in request.scopes:
+        if scope == "provider":
+            continue
+        budget = instance.resident if scope == "resident" else instance.active
+        slot = await claim_slot(
+            tx,
+            scope=scope,
+            scope_id=instance.harness_instance_id,
+            claimable_below=budget.claimable_below,
+            holder_provider_session_id=request.provider_session_id,
+            reservation_epoch=request.reservation_epoch,
+        )
+        if slot is None:
+            return None
+        slots.append(slot)
+    return slots
 
 
 async def _hold_incarnation(
     tx: Transaction, request: PlacementRequest, instance: InstanceCapacity
 ) -> SlotsInconclusive | None:
-    """Take the shared incarnation fence without waiting, then re-read the instance under it."""
+    """Take the candidate's shared incarnation fence without waiting, then re-read the instance under it.
+
+    `esp_try_fence` may leave the shared incarnation key held when only the mapping key fails, so the caller
+    always rolls the candidate's savepoint back on a refusal.
+    """
     fenced = await tx.execute_one(
         "SELECT esp_try_fence(%s, %s, false) AS locked",
         (instance.runtime_incarnation_id, request.provider_session_id),

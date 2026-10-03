@@ -74,6 +74,17 @@ async def revoke_incarnation(db: Db, instance_id: str, incarnation_id: str) -> l
     unavailable or a mapping changed underneath it. A database outage propagates its own error. Either
     way, at most the mark from step 1 persists, and the caller retries. A failure is never reported as
     an empty inventory.
+
+    The ordering in step 3 holds only while every other writer keeps two invariants (Tasks 17 and 21):
+
+    - `failed` is terminal for an `(instance, process_incarnation_id)` pair. Status and heartbeat writers
+      are conditional on the incarnation and never move a `failed` incarnation back to `ready`; a
+      restarted process registers a new `process_incarnation_id`. Otherwise a stale process could
+      heartbeat its revoked incarnation back to `ready` after this inventory, and a later placement
+      there would never be revoked.
+    - Every writer that assigns a mapping to an incarnation (admission placement today; recovery
+      reassignment later) holds the shared incarnation fence and re-reads readiness under it before it
+      commits.
     """
     async with transaction(db) as tx:
         await tx.execute(

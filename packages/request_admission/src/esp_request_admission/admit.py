@@ -14,14 +14,17 @@ Protocol (Shared Contracts §3), in order:
 3. Release resolution outside the transaction (object-store reads happen here, never under locks).
 4. One transaction with bounded connection acquisition, lock wait and statement time:
    `FOR UPDATE NOWAIT` on the conversation guard, then on the current mapping; recheck the duplicate,
-   guard and run state; recheck eligibility and pins (`select_admission_pins`); claim resident, active
-   and provider slots with `SKIP LOCKED`, then take the non-waiting shared fence on the chosen Process
-   Incarnation (ProInc) and re-read that its instance is still ready on it (`choose_compatible_slots`);
-   create or update the nullable-native-ID mapping with a fresh run, request, epoch, lease and
-   deadline; set the guard. Any failure rolls the whole transaction back, so no partial claim survives.
+   guard and run state; recheck eligibility and pins (`select_admission_pins`); place the run
+   (`choose_compatible_slots`): per candidate instance, claim its resident and active slots with `SKIP
+   LOCKED`, take the non-waiting shared fence on its Process Incarnation (ProInc) and re-read that it is
+   still ready on it, skipping a candidate that fails any step, then claim a provider slot; create or
+   update the nullable-native-ID mapping with a fresh run, request, epoch, lease and deadline; set the
+   guard. Any failure rolls the whole transaction back, so no partial claim survives.
    The fence, held to commit, orders admission against whole-process revocation (`revoke_incarnation`):
-   the admitted run is in the revocation's inventory, or admission is refused (`incarnation_fenced`,
-   `incarnation_unavailable`).
+   the admitted run is in the revocation's inventory, or it is not placed on that incarnation. Only when
+   every hostable candidate is lost that way is admission refused (`incarnation_fenced`,
+   `incarnation_unavailable`). A peer mapping's exclusive operation on the same process holds the
+   exclusive incarnation key too, so on a single instance it also refuses admission while it runs.
 5. After a rollback for contention, a bounded committed re-read decides: duplicate (status), confirmed
    conflicting guard (busy) or committed exhaustion (capacity). Otherwise `service_unavailable`.
    A lock failure or an empty `SKIP LOCKED` result is never by itself busy or exhaustion.

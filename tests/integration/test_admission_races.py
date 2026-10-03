@@ -430,6 +430,130 @@ async def test_free_instance_is_used_when_another_instance_is_contended(admissio
     assert held_on_contended == []
 
 
+async def test_peer_exclusive_operation_on_one_instance_falls_back_to_a_free_instance(
+    admission_lab: AdmissionLab,
+) -> None:
+    # Task 5's per-mapping exclusive operations (clear_terminal_guard, register_native_session, revoke_mapping,
+    # release_unsubmitted outside `starting`) take the exclusive incarnation key. One in flight for a peer
+    # mapping on the first-ordered instance must not refuse a visitor while another instance has capacity.
+    fenced, free = await admission_lab.fresh_pool([(3, 4), (2, 2)], provider_limit=4)
+    peer = admitted(await admission_lab.admit(await admission_lab.conversation()))
+    peer_mapping = peer.reservation.provider_session_id
+    assert peer.reservation.harness_instance_id == fenced
+    peer_operation = await admission_lab.hold_incarnation_fence(
+        peer.reservation.runtime_incarnation_id, exclusive=True, mapping_id=peer_mapping
+    )
+    try:
+        result = admitted(await admission_lab.admit(await admission_lab.conversation()))
+        held = await admission_lab.held_slots()
+    finally:
+        await peer_operation.release()
+    visitor = result.reservation.provider_session_id
+    assert result.reservation.harness_instance_id == free
+    assert result.reservation.runtime_incarnation_id == await admission_lab.incarnation(free)
+    assert sorted((slot.scope, slot.scope_id) for slot in held if slot.holder == visitor) == [
+        ("active", free),
+        ("provider", "openai"),
+        ("resident", free),
+    ]
+    assert [slot for slot in held if slot.scope_id == fenced and slot.holder != peer_mapping] == []
+    within_budget(admission_lab)
+
+
+async def test_instance_revoked_during_admission_is_skipped_for_the_next(admission_lab: AdmissionLab) -> None:
+    # The admission reads both instances as ready, then the first-ordered one is revoked before its fence.
+    revoked_instance, free = await admission_lab.fresh_pool([(2, 3), (2, 2)], provider_limit=4)
+    incarnation = await admission_lab.incarnation(revoked_instance)
+    conv = await admission_lab.conversation()
+    async with (
+        admission_lab.slow_active_claim(revoked_instance, seconds=0.5),
+        admission_lab.slow_mapping_write(conv, seconds=0.5),
+    ):
+        admission = asyncio.create_task(admission_lab.admit(conv, "req-skip-revoked"))
+        await admission_lab.wait_until_sleeping("capacity_slot")
+        revoked = await revoke_incarnation(admission_lab.backends[1].db, revoked_instance, incarnation)
+        # Paused again at its mapping write, after placement moved on: the skipped candidate's fence was
+        # rolled back with its claims, and only the chosen incarnation stays fenced until commit.
+        await admission_lab.wait_until_sleeping("INSERT INTO provider_session")
+        skipped_fence_free = await admission_lab.try_incarnation_fence(incarnation, exclusive=True)
+        chosen_fence_free = await admission_lab.try_incarnation_fence(
+            await admission_lab.incarnation(free), exclusive=True
+        )
+        result = await admission
+    mapping = await admission_lab.mapping(conv)
+
+    assert_never_current_on_revoked(mapping, result, incarnation)
+    assert revoked == []
+    assert (skipped_fence_free, chosen_fence_free) == (True, False)
+    assert admitted(result).reservation.harness_instance_id == free
+    assert mapping is not None and mapping["harness_instance_id"] == free
+    assert [slot for slot in await admission_lab.held_slots() if slot.scope_id == revoked_instance] == []
+    assert await admission_lab.instance_status(revoked_instance) == "failed"
+    within_budget(admission_lab)
+
+
+async def test_candidates_lost_to_their_incarnation_are_never_capacity_exhaustion(
+    admission_lab: AdmissionLab,
+) -> None:
+    instances = await admission_lab.fresh_pool([(1, 1), (1, 1)], provider_limit=4)
+    conv = await admission_lab.conversation()
+    fences = [
+        await admission_lab.hold_incarnation_fence(await admission_lab.incarnation(instance), exclusive=True)
+        for instance in instances
+    ]
+    try:
+        every_candidate_fenced = rejected(await admission_lab.admit(conv))
+        held_during = await admission_lab.held_slots()
+    finally:
+        for fence in fences:
+            await fence.release()
+    assert (every_candidate_fenced.code, every_candidate_fenced.reason, every_candidate_fenced.retryable) == (
+        "service_unavailable",
+        "incarnation_fenced",
+        True,
+    )
+    assert held_during == []
+
+    # The other instance is committed full, so the only hostable candidate is fenced: still not capacity.
+    occupant = admitted(await admission_lab.admit(await admission_lab.conversation()))
+    (remaining,) = [instance for instance in instances if instance != occupant.reservation.harness_instance_id]
+    fence = await admission_lab.hold_incarnation_fence(await admission_lab.incarnation(remaining), exclusive=True)
+    try:
+        only_hostable_fenced = rejected(await admission_lab.admit(conv))
+        held_during = await admission_lab.held_slots()
+    finally:
+        await fence.release()
+    assert (only_hostable_fenced.code, only_hostable_fenced.reason) == ("service_unavailable", "incarnation_fenced")
+    assert {slot.holder for slot in held_during} == {occupant.reservation.provider_session_id}
+    assert await admission_lab.mapping_count(conv) == 0
+    assert admitted(await admission_lab.admit(conv)).reservation.harness_instance_id == remaining
+    within_budget(admission_lab)
+
+
+async def test_one_candidate_revoked_and_the_other_fenced_is_inconclusive(admission_lab: AdmissionLab) -> None:
+    revoked_instance, fenced = await admission_lab.fresh_pool([(2, 3), (2, 2)], provider_limit=4)
+    incarnation = await admission_lab.incarnation(revoked_instance)
+    conv = await admission_lab.conversation()
+    peer_operation = await admission_lab.hold_incarnation_fence(await admission_lab.incarnation(fenced), exclusive=True)
+    try:
+        async with admission_lab.slow_active_claim(revoked_instance, seconds=0.5):
+            admission = asyncio.create_task(admission_lab.admit(conv, "req-all-lost"))
+            await admission_lab.wait_until_sleeping("capacity_slot")
+            revoked = await revoke_incarnation(admission_lab.backends[1].db, revoked_instance, incarnation)
+            result = await admission
+        held_during = await admission_lab.held_slots()
+    finally:
+        await peer_operation.release()
+
+    assert revoked == []
+    refused = rejected(result)
+    assert (refused.code, refused.reason, refused.retryable) == ("service_unavailable", "incarnation_fenced", True)
+    assert held_during == []
+    assert await admission_lab.mapping_count(conv) == 0
+    assert await admission_lab.guard(conv) is None
+    within_budget(admission_lab)
+
+
 async def test_row_locks_alone_never_become_busy_or_capacity_claims(admission_lab: AdmissionLab) -> None:
     await admission_lab.fresh_pool([(2, 2)], provider_limit=4)
     warm = await admission_lab.conversation()

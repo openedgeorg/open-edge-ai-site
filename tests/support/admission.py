@@ -445,15 +445,20 @@ class AdmissionLab:
             (scope, scope_id),
         )
 
-    async def hold_incarnation_fence(self, incarnation_id: str, *, exclusive: bool) -> LockHolder:
+    async def hold_incarnation_fence(
+        self, incarnation_id: str, *, exclusive: bool, mapping_id: str | None = None
+    ) -> LockHolder:
         """Another backend's fence on a Process Incarnation (ProInc), through the production fence function.
 
-        Shared stands for an in-flight dispatch; exclusive for a revocation in progress on that incarnation.
-        The fenced mapping is a fresh ID, so only the incarnation key can contend.
+        Shared stands for an in-flight dispatch. Exclusive stands for a revocation in progress on that
+        incarnation, or for a peer mapping's exclusive operation (Task 5's `clear_terminal_guard`,
+        `register_native_session`, `revoke_mapping`, `release_unsubmitted` outside `starting`), which takes
+        exactly `esp_try_fence(incarnation, mapping, true)`. `mapping_id` names that peer mapping; by
+        default it is a fresh ID, so only the incarnation key can contend.
         """
         connection = await AsyncConnection.connect(APP_ROLE_DSN, autocommit=False)
         cursor = await connection.execute(
-            "SELECT esp_try_fence(%s, %s, %s)", (incarnation_id, str(uuid.uuid4()), exclusive)
+            "SELECT esp_try_fence(%s, %s, %s)", (incarnation_id, mapping_id or str(uuid.uuid4()), exclusive)
         )
         row = await cursor.fetchone()
         holder = LockHolder(connection=connection, locked_rows=1 if row is not None and row[0] is True else 0)
@@ -529,7 +534,11 @@ class AdmissionLab:
 
     @asynccontextmanager
     async def slow_active_claim(self, instance_id: str, *, seconds: float) -> AsyncGenerator[None]:
-        """Stretch an admission at its active-slot claim: after it read the instance as ready, before its fence."""
+        """Stretch an admission at its active-slot claim on this instance.
+
+        The claim comes after the admission read the instance as ready and before it takes that instance's
+        incarnation fence.
+        """
         scope_id = str(uuid.UUID(instance_id))
         async with self._trigger(
             "capacity_slot",
@@ -833,9 +842,13 @@ def _text(value: object) -> str:
 async def _valkey_value(client: Redis, key: bytes | str) -> str | None:
     """One Valkey value rendered as text for a stored-text search; `None` for a type it cannot read.
 
-    The search reports an unreadable key rather than skipping it, so it never passes by not looking.
+    The search reports an unreadable key rather than skipping it, so it never passes by not looking. A key
+    that expired or was deleted between `SCAN` and `TYPE` (type `none`) stores nothing; its name is still
+    searched by the caller.
     """
     kind = _text(await client.type(key))
+    if kind == "none":
+        return ""
     if kind == "string":
         parts: list[object] = [await client.get(key)]
     elif kind == "hash":
