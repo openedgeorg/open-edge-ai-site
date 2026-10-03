@@ -812,7 +812,7 @@
     "isolation": "env -i with temporary HOME and CODEX_HOME; no credentials; no model request",
     "stable": "codex app-server generate-json-schema --out <isolated tmp>"
   },
-  "harness_build": "codex-cli 0.159.3",
+  "harness_build": "codex-cli 0.159.3 sha256:8bf204b36a2f6dd0dab73aa2f639892e67ef9ac8befccb4a05b1496ebf25c479",
   "native_binary": {
     "package_path": "@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
     "sha256": "8bf204b36a2f6dd0dab73aa2f639892e67ef9ac8befccb4a05b1496ebf25c479"

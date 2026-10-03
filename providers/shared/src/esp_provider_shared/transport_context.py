@@ -49,6 +49,15 @@ class TransportContext:
     def bind(self, context: OperationContext) -> None:
         self._contexts[context.native_session_id] = context.model_copy()
 
+    def current(self, native_session_id: str) -> OperationContext | None:
+        """A copy of the session's current binding, including refreshed tokens, or None."""
+        context = self._contexts.get(native_session_id)
+        return None if context is None else context.model_copy()
+
+    def unbind(self, native_session_id: str) -> None:
+        """Drop the session's binding. Later starts and token refreshes for it are unattributed."""
+        self._contexts.pop(native_session_id, None)
+
     def bind_from_stdio_wrapper(self, env: Mapping[str, str]) -> None:
         """Record the wrapper env and bind nothing."""
         self._stdio_attempts.append(dict(env))
@@ -69,6 +78,16 @@ class TransportContext:
 
     def start_model_call(self, native_session_id: str) -> dict[str, str]:
         context = self._require(native_session_id)
+        self._model_starts += 1
+        return {
+            "audience": "inference",
+            "token": context.inference_token,
+            "native_session_id": context.native_session_id,
+        }
+
+    def start_model_call_for(self, context: OperationContext) -> dict[str, str]:
+        """Model start whose owning operation the adapter resolved from the request's own native
+        session and work ids. `context` must come from an earlier explicit `bind`; never from a header."""
         self._model_starts += 1
         return {
             "audience": "inference",

@@ -20,6 +20,7 @@ from esp_contracts.qualification import PrimitiveEvidence, RuntimeProfile
 from esp_contracts.runtime import OperationAuthority, SessionHandle, SessionReservation, SubmissionResult
 from esp_provider_openai.codex_adapter import (
     CODEX_BUILD,
+    CODEX_VERSION,
     CodexHarnessAdapter,
     create_codex_adapter,
 )
@@ -46,12 +47,34 @@ PROV_C = "22222222-2222-4222-8222-222222222223"
 INC = "55555555-5555-4555-8555-555555555551"
 _METHOD_NOT_FOUND = -32601
 _INVALID_REQUEST = -32600
+# Wakes the reader so the next recv_frame raises the queued transport error.
+_RECV_ERROR = b"\x00esp-recv-error"
 
 RelayKind = Literal["turn", "compaction"]
 
 
 def load_capture() -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(CAPTURE_PATH.read_text(encoding="utf-8")))
+
+
+def write_observation(path: Path, **overrides: object) -> Path:
+    """A recorded discovery observation of the frozen build, so CLI tests never execute the installed binary."""
+    capture = load_capture()
+    native = cast(dict[str, Any], capture["native_binary"])
+    values: dict[str, object] = {
+        "binary_found": True,
+        "version": CODEX_VERSION,
+        "binary_sha256": native["sha256"],
+        "native_label": native["package_path"],
+        "capture": capture,
+        "config_accepted": True,
+        "feature_conflicts": [],
+        "provider_capabilities": {},
+        "errors": [],
+    }
+    values.update(overrides)
+    path.write_text(json.dumps(values), encoding="utf-8")
+    return path
 
 
 def lab_profile(**overrides: object) -> RuntimeProfile:
@@ -94,6 +117,7 @@ class RelayRecord:
     forwarded: bool
     token: str | None = None
     attributed_thread: str | None = None
+    attributed_turn: str | None = None
     refused_reason: str | None = None
 
 
@@ -135,7 +159,13 @@ class CapturedCodexPeer:
         self.keep_running: set[str] = set()
         self.keep_loaded_after_unsubscribe = False
         self.reject_next_turn_start = False
+        self.reject_code = _INVALID_REQUEST
         self.record_input_before_rejection = False
+        # A raw stdout line (malformed, non-object or oversize) delivered before the next turn/start ack.
+        self.raw_line_before_next_turn_ack: bytes | None = None
+        # A local read failure raised by the transport before the next turn/start ack is read.
+        self.recv_error_before_next_turn_ack: BaseException | None = None
+        self.sandbox_network_access = False
         self.lose_next_turn_ack = False
         self.fail_next_send = False
         self.steer_next_turn = False
@@ -149,6 +179,7 @@ class CapturedCodexPeer:
         self._waiters = 0
         self._dropped = False
         self._ordinal = 0
+        self._recv_error: BaseException | None = None
 
     # FrameTransport -------------------------------------------------------------------
     async def send_frame(self, payload: bytes) -> None:
@@ -171,6 +202,9 @@ class CapturedCodexPeer:
         self._dequeued += 1
         if payload == b"":
             raise ConnectionError("response lost")
+        if payload == _RECV_ERROR and self._recv_error is not None:
+            error, self._recv_error = self._recv_error, None
+            raise error
         return payload
 
     async def wait_idle(self) -> None:
@@ -206,6 +240,13 @@ class CapturedCodexPeer:
         if self.relay is None:
             raise AssertionError("no relay attached to the captured peer")
         self.relay(json.dumps(body).encode(), kind, thread_id, turn_id)
+
+    def start_background_turn(self, thread_id: str) -> str:
+        """Native work no ESP operation started, announced the way the build announces any turn."""
+        thread = self.threads[thread_id]
+        turn = self._new_turn(thread)
+        self.notify("turn/started", {"threadId": thread.id, "turn": self._turn_object(turn, full=False)})
+        return turn.id
 
     def notify(self, method: str, params: dict[str, Any]) -> None:
         shapes = cast(dict[str, Any], self.capture["notification_shapes"])
@@ -276,6 +317,14 @@ class CapturedCodexPeer:
         for entry in cast(list[object], params.get("input", [])):
             variants = cast(dict[str, Any], self.capture["definitions"]["UserInput"])["variants"]
             self.violations.extend(shape_violations("turn/start input", entry, variants["text"]))
+        if self.raw_line_before_next_turn_ack is not None:
+            raw, self.raw_line_before_next_turn_ack = self.raw_line_before_next_turn_ack, None
+            self._inbox.put_nowait(raw)
+            self._enqueued += 1
+        if self.recv_error_before_next_turn_ack is not None:
+            self._recv_error, self.recv_error_before_next_turn_ack = self.recv_error_before_next_turn_ack, None
+            self._inbox.put_nowait(_RECV_ERROR)
+            self._enqueued += 1
         if self.lose_next_turn_ack:
             self.lose_next_turn_ack = False
             self._record_user_message(thread, params, self._new_turn(thread))
@@ -287,7 +336,7 @@ class CapturedCodexPeer:
             self.reject_next_turn_start = False
             if self.record_input_before_rejection:
                 self._record_user_message(thread, params, self._new_turn(thread))
-            self._error(message, _INVALID_REQUEST, "turn rejected")
+            self._error(message, self.reject_code, "turn rejected")
             return
         if self.hold_turn_acks > 0:
             self._held.append(message)
@@ -461,7 +510,7 @@ class CapturedCodexPeer:
             "approvalPolicy": "never",
             "approvalsReviewer": "user",
             "cwd": "/srv/esp/codex-work",
-            "sandbox": {"type": "readOnly", "networkAccess": False},
+            "sandbox": {"type": "readOnly", "networkAccess": self.sandbox_network_access},
         }
 
     def _thread_object(self, thread: _Thread) -> dict[str, Any]:
@@ -553,10 +602,8 @@ class CodexLab:
         self.capture = load_capture()
         self.peer = CapturedCodexPeer(self.capture)
         self.rpc = NativeRpcClient(self.peer)
-        adapter = create_codex_adapter(self.rpc, lab_profile())
-        if not isinstance(adapter, CodexHarnessAdapter):
-            raise AssertionError("create_codex_adapter must return the Codex adapter")
-        self.adapter: CodexHarnessAdapter = adapter
+        # The factory is typed, so the handshake, compaction and relay hook need no downcast.
+        self.adapter: CodexHarnessAdapter = create_codex_adapter(self.rpc, lab_profile())
         self.adapter.acceptance_confirm_attempts = 2
         self.adapter.acceptance_confirm_interval = 0.0
         self.adapter.unload_confirm_timeout = 0.05
@@ -600,6 +647,7 @@ class CodexLab:
                 forwarded=True,
                 token=scope.token,
                 attributed_thread=scope.native_session_id,
+                attributed_turn=scope.native_work_ref,
             )
         )
 

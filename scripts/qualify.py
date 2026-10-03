@@ -15,10 +15,12 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from esp_contracts.ids import Provider
 from esp_contracts.qualification import (
@@ -35,6 +37,7 @@ from esp_provider_openai.codex_adapter import (
     CODEX_OPT_OUT_NOTIFICATIONS,
     STDIO_READER_LIMIT,
     JsonlFrameTransport,
+    codex_build_id,
 )
 from esp_provider_openai.events import CODEX_EVENT_METHODS
 from esp_provider_shared.rpc import NativeRpcClient
@@ -84,8 +87,9 @@ CODEX_CAPTURE_PATH = ROOT / "providers" / "openai" / "integration" / "protocol-s
 CODEX_CAPTURE_FORMAT = "esp-codex-protocol-capture/1"
 _PROBE_TIMEOUT_SECONDS = 20.0
 
-# Primitives whose native operations must be declared by the installed build's schema. A missing
-# declaration is demonstrated absence. A present declaration is never runtime proof.
+# Primitives whose native operations the frozen mapping names. A present declaration is never runtime
+# proof. A missing one is demonstrated absence only for the exact frozen build (live schema equals the
+# frozen capture); on any other build the mapping does not apply until it is recaptured and reviewed.
 CODEX_DECLARED_PRIMITIVES: dict[str, tuple[str, ...]] = {
     "create": (CODEX_METHODS["create"],),
     "resume": (CODEX_METHODS["resume"],),
@@ -96,6 +100,9 @@ CODEX_DECLARED_PRIMITIVES: dict[str, tuple[str, ...]] = {
     "cancel": (CODEX_METHODS["cancel"],),
     "compaction": (CODEX_METHODS["compact"],),
 }
+# Automatic compaction runs inside an ordinary turn and needs no manual method, so a missing
+# `thread/compact/start` does not show that compaction is absent.
+_DECLARATION_CANNOT_SHOW_ABSENCE = frozenset({"compaction"})
 ESSENTIAL_PRIMITIVES: tuple[str, ...] = tuple(name for name in REQUIRED_PRIMITIVES if not name.startswith("auxiliary_"))
 
 # Definition name -> schema file holding it, relative to the generated bundle.
@@ -192,27 +199,52 @@ class CodexObservation:
     feature_conflicts: list[str] = field(default_factory=lambda: [])
     provider_capabilities: dict[str, bool] = field(default_factory=lambda: {})
     errors: list[str] = field(default_factory=lambda: [])
+    # File name of a recorded observation; None when the installed build was actually executed.
+    recorded_from: str | None = None
 
     @property
     def harness_build(self) -> str | None:
+        """Canonical exact-build identity (`codex_build_id`), or the bare version when no digest exists."""
         if self.version is None:
             return None
         if self.binary_sha256 is None:
             return self.version
-        return f"{self.version} sha256:{self.binary_sha256}"
+        return codex_build_id(self.version, self.binary_sha256)
+
+
+class _RecordedObservation(BaseModel):
+    """Serialized discovery facts. The frozen capture and configuration digest are always read fresh."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    binary_found: bool
+    version: str | None = None
+    binary_sha256: str | None = None
+    native_label: str | None = None
+    capture: dict[str, Any] | None = None
+    config_accepted: bool | None = None
+    feature_conflicts: list[str] = Field(default_factory=lambda: [])
+    provider_capabilities: dict[str, bool] = Field(default_factory=lambda: {})
+    errors: list[str] = Field(default_factory=lambda: [])
 
 
 def codex_capability_report(observation: CodexObservation, profile: RuntimeProfile | None = None) -> CapabilityReport:
     """Declarations can show absence. Only protected live evidence could prove a primitive."""
     notes: list[str] = []
+    if observation.recorded_from is not None:
+        notes.append(
+            f"Observation was loaded from the recorded observation file {observation.recorded_from}; "
+            "the installed build was not executed."
+        )
     if not observation.binary_found:
         notes.append("Candidate binary was not found. Discovery did not install or upgrade one.")
     else:
         notes.append(f"Installed build observed without treating it as proof: {observation.harness_build}")
     live = observation.capture
     frozen = observation.frozen_capture
+    exact = live is not None and frozen is not None and live == frozen
     if live is not None and frozen is not None:
-        if live == frozen:
+        if exact:
             notes.append(f"Installed build schema matches the frozen protocol capture sha256:{_json_digest(frozen)}.")
         else:
             notes.append(
@@ -226,11 +258,23 @@ def codex_capability_report(observation: CodexObservation, profile: RuntimeProfi
     for name in REQUIRED_PRIMITIVES:
         methods = CODEX_DECLARED_PRIMITIVES.get(name)
         state: str = "unproven"
-        if methods is not None and declared is not None and not set(methods) <= declared:
-            state = "absent"
-            notes.append(f"{name}: the installed build does not declare {', '.join(methods)}.")
-        elif methods is not None and declared is not None:
-            notes.append(f"{name}: declared as {', '.join(methods)}; a declaration is not runtime proof.")
+        if methods is not None and declared is not None:
+            missing = [method for method in methods if method not in declared]
+            if not missing:
+                notes.append(f"{name}: declared as {', '.join(methods)}; a declaration is not runtime proof.")
+            elif not exact:
+                notes.append(
+                    f"{name}: the installed build does not declare {', '.join(missing)} from the frozen mapping; "
+                    "recapture and review before deciding absence."
+                )
+            elif name in _DECLARATION_CANNOT_SHOW_ABSENCE:
+                notes.append(
+                    f"{name}: the frozen build does not declare {', '.join(missing)}; that alone does not show "
+                    "the capability is absent."
+                )
+            else:
+                state = "absent"
+                notes.append(f"{name}: the frozen build does not declare {', '.join(missing)}.")
         primitives.append(PrimitiveEvidence.model_validate({"name": name, "state": state, "evidence_ref": None}))
     notes.append(
         "model_context_hook: the build declares client_metadata[\"x-codex-turn-metadata\"] with thread_id and "
@@ -367,25 +411,81 @@ def extract_codex_protocol(
     }
 
 
-def observe_codex(
+def load_codex_observation(
+    path: Path,
     *,
     config_path: Path = CODEX_CONFIG_PATH,
     capture_path: Path = CODEX_CAPTURE_PATH,
 ) -> CodexObservation:
+    """A recorded discovery observation, so ordinary tests never execute the installed build.
+
+    It can only yield pending or demonstrated-absence results, never proof.
+    """
+    recorded = _RecordedObservation.model_validate_json(path.read_bytes())
+    frozen, config_digest, errors = _repository_inputs(config_path, capture_path)
+    return CodexObservation(
+        binary_found=recorded.binary_found,
+        version=recorded.version,
+        binary_sha256=recorded.binary_sha256,
+        native_label=recorded.native_label,
+        capture=recorded.capture,
+        frozen_capture=frozen,
+        config_digest=config_digest,
+        config_accepted=recorded.config_accepted,
+        feature_conflicts=list(recorded.feature_conflicts),
+        provider_capabilities=dict(recorded.provider_capabilities),
+        errors=[*errors, *recorded.errors],
+        recorded_from=path.name,
+    )
+
+
+def _repository_inputs(config_path: Path, capture_path: Path) -> tuple[dict[str, Any] | None, str | None, list[str]]:
+    """Frozen capture and configuration digest. Unreadable inputs become discovery errors, not tracebacks."""
+    errors: list[str] = []
+    frozen: dict[str, Any] | None = None
+    if capture_path.exists():
+        try:
+            frozen = _read_json(capture_path)
+        except (OSError, ValueError) as exc:
+            errors.append(f"frozen protocol capture unreadable: {type(exc).__name__}")
+    config_digest: str | None = None
+    if config_path.exists():
+        try:
+            config_digest = hashlib.sha256(config_path.read_bytes()).hexdigest()
+        except OSError as exc:
+            errors.append(f"runtime configuration unreadable: {type(exc).__name__}")
+    return frozen, config_digest, errors
+
+
+def observe_codex(
+    *,
+    config_path: Path = CODEX_CONFIG_PATH,
+    capture_path: Path = CODEX_CAPTURE_PATH,
+    which: Callable[[str], str | None] = shutil.which,
+) -> CodexObservation:
     """Version, schema and initialize/capability listing only, with an isolated HOME and CODEX_HOME."""
-    frozen = _read_json(capture_path) if capture_path.exists() else None
-    config_digest = hashlib.sha256(config_path.read_bytes()).hexdigest() if config_path.exists() else None
-    wrapper = shutil.which(_OPENAI_BINARIES[0])
+    frozen, config_digest, errors = _repository_inputs(config_path, capture_path)
+    wrapper = which(_OPENAI_BINARIES[0])
     if wrapper is None:
-        return CodexObservation(binary_found=False, frozen_capture=frozen, config_digest=config_digest)
-    native, label = _codex_native_binary(Path(wrapper))
+        return CodexObservation(binary_found=False, frozen_capture=frozen, config_digest=config_digest, errors=errors)
+    try:
+        native, label = _codex_native_binary(Path(wrapper))
+    except OSError as exc:
+        errors.append(f"native binary lookup failed: {type(exc).__name__}")
+        native, label = None, None
     executable = native or Path(wrapper).resolve()
+    binary_sha256: str | None = None
+    try:
+        binary_sha256 = _file_digest(executable)
+    except OSError as exc:
+        errors.append(f"native binary digest failed: {type(exc).__name__}")
     observation = CodexObservation(
         binary_found=True,
-        binary_sha256=_file_digest(executable),
+        binary_sha256=binary_sha256,
         native_label=label or executable.name,
         frozen_capture=frozen,
         config_digest=config_digest,
+        errors=errors,
     )
     with tempfile.TemporaryDirectory(prefix="esp-codex-g0-") as raw_tmp:
         tmp = Path(raw_tmp)
@@ -397,17 +497,18 @@ def observe_codex(
             _run(executable, ["app-server", "generate-json-schema", "--out", str(stable)], env, tmp)
             generate = ["app-server", "generate-json-schema"]
             _run(executable, [*generate, "--experimental", "--out", str(experimental)], env, tmp)
-            if observation.version is not None and observation.binary_sha256 is not None:
+            harness_build = observation.harness_build
+            if harness_build is not None and observation.binary_sha256 is not None:
                 observation.capture = extract_codex_protocol(
                     stable,
                     experimental,
-                    harness_build=observation.version,
+                    harness_build=harness_build,
                     binary_sha256=observation.binary_sha256,
                     native_label=observation.native_label or executable.name,
                 )
         except (OSError, subprocess.SubprocessError, KeyError, ValueError) as exc:
             observation.errors.append(_sanitize(f"schema discovery failed: {exc}", tmp))
-        if config_path.exists():
+        if config_digest is not None:
             _observe_handshake(observation, executable, env, tmp, config_path)
     return observation
 
@@ -416,7 +517,11 @@ def _observe_handshake(
     observation: CodexObservation, executable: Path, env: dict[str, str], tmp: Path, config_path: Path
 ) -> None:
     codex_home = Path(env["CODEX_HOME"])
-    (codex_home / "config.toml").write_bytes(config_path.read_bytes())
+    try:
+        (codex_home / "config.toml").write_bytes(config_path.read_bytes())
+    except OSError as exc:
+        observation.errors.append(f"runtime configuration could not be staged: {type(exc).__name__}")
+        return
     try:
         listing = asyncio.run(_codex_handshake(executable, env, tmp))
     except Exception as exc:
@@ -430,7 +535,11 @@ def _observe_handshake(
         return
     config = cast(dict[str, Any], listing["config"])
     observation.config_accepted = config.get("model_provider") == CODEX_MODEL_PROVIDER
-    configured = tomllib.loads(config_path.read_text(encoding="utf-8")).get("features", {})
+    try:
+        configured = tomllib.loads(config_path.read_text(encoding="utf-8")).get("features", {})
+    except (OSError, ValueError) as exc:
+        observation.errors.append(f"runtime configuration unreadable: {type(exc).__name__}")
+        return
     disabled = {name for name, value in cast(dict[str, object], configured).items() if value is False}
     for feature in cast(list[dict[str, Any]], listing["features"]):
         if feature.get("name") in disabled and feature.get("enabled") is True:
@@ -704,6 +813,12 @@ def build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="openai only: freeze the installed build's sanitized protocol extract for review",
             )
+            command.add_argument(
+                "--observation-file",
+                type=Path,
+                default=None,
+                help="openai only: report a recorded discovery observation instead of executing the installed build",
+            )
     return parser
 
 
@@ -712,14 +827,25 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     provider: Provider = args.provider
     write_capture = bool(getattr(args, "write_protocol_capture", False))
+    observation_file: Path | None = getattr(args, "observation_file", None)
     if write_capture and provider != "openai":
         parser.error("--write-protocol-capture is only defined for --provider openai")
+    if observation_file is not None and provider != "openai":
+        parser.error("--observation-file is only defined for --provider openai")
+    if observation_file is not None and write_capture:
+        parser.error("--observation-file cannot refreeze the protocol capture; that needs real discovery")
     capabilities: CapabilityReport | None = None
     harness_build: str | None = None
     configuration_digest: str | None = None
     if args.command == "inspect":
         if provider == "openai":
-            observation = observe_codex()
+            if observation_file is None:
+                observation = observe_codex()
+            else:
+                try:
+                    observation = load_codex_observation(observation_file)
+                except (OSError, ValueError) as exc:
+                    parser.error(f"--observation-file could not be read: {type(exc).__name__}")
             if write_capture:
                 if observation.capture is None:
                     print("protocol capture unavailable; nothing written", file=sys.stderr)

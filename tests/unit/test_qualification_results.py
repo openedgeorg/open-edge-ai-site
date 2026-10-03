@@ -11,6 +11,7 @@ import pytest
 
 from scripts.qualify import REQUIRED_G1_SCENARIOS, classify_qualification, record_qualification
 from tests.support.candidate_probe import QualificationCases
+from tests.support.codex_capture import write_observation
 
 
 def test_missing_or_empty_evidence_cannot_qualify(qualification_cases: QualificationCases) -> None:
@@ -48,11 +49,15 @@ def test_synthetic_complete_fixture_never_writes_production_row(
     assert json.loads(destination.read_text(encoding="utf-8")) == []
 
 
-def test_cli_pending_and_invalidated_are_nonzero() -> None:
+def test_cli_pending_and_invalidated_are_nonzero(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
+    # A recorded observation keeps the ordinary suite from executing the installed Codex build.
+    recorded = ["--observation-file", str(write_observation(tmp_path / "observation.json"))]
+    hermetic = {"PATH": str(tmp_path / "no-binaries"), "HOME": str(tmp_path)}
     pending = subprocess.run(
-        [sys.executable, "scripts/qualify.py", "inspect", "--provider", "openai"],
+        [sys.executable, "scripts/qualify.py", "inspect", "--provider", "openai", *recorded],
         cwd=root,
+        env=hermetic,
         capture_output=True,
         text=True,
         check=False,
@@ -69,8 +74,17 @@ def test_cli_pending_and_invalidated_are_nonzero() -> None:
     assert xai.returncode != 0
     assert "pending" in xai.stdout
     invalidated = subprocess.run(
-        [sys.executable, "scripts/qualify.py", "inspect", "--provider", "openai", "--assume-essential-absent"],
+        [
+            sys.executable,
+            "scripts/qualify.py",
+            "inspect",
+            "--provider",
+            "openai",
+            "--assume-essential-absent",
+            *recorded,
+        ],
         cwd=root,
+        env=hermetic,
         capture_output=True,
         text=True,
         check=False,

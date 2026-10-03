@@ -5,9 +5,25 @@ of `codex-cli 0.159.3` (`providers/openai/integration/protocol-schema.json`). No
 method is guessed: a primitive the build does not declare is reported unsupported instead.
 
 Acceptance is claimed only after the build's persisted thread history shows the user message
-carrying this request's `clientUserMessageId`. Model requests are attributed from the
-`client_metadata["x-codex-turn-metadata"]` thread and turn ids the build declares it sends on
-every Responses request, never from a process-wide header.
+carrying this request's `clientUserMessageId`. Only a JSON-RPC refusal the build itself sent for
+the request can make a submission `not_submitted`; any failure after the frame was handed to the
+transport keeps the outcome `unconfirmed`.
+
+Model requests are attributed from the `client_metadata["x-codex-turn-metadata"]` thread and
+turn ids the build declares it sends on every Responses request, never from a process-wide
+header. Each turn keeps the scope of the operation that started it. A turn id no operation owns
+is attributable only while a submit or manual compaction on that thread is still waiting for
+the build to name its turn.
+
+Use:
+
+    adapter = create_codex_adapter(rpc, profile)   # inside a running event loop
+    await adapter.initialize()                     # required once, before any other call
+
+The build accepts no other request before the `initialize` request and the `initialized`
+notification. The supervisor-local model relay calls `adapter.attribute_model_request(body)`
+for every Responses request, and manual compaction is `await adapter.compact(handle, authority)`.
+Both are Codex-specific, so the factory returns the typed `CodexHarnessAdapter`.
 """
 
 from __future__ import annotations
@@ -48,7 +64,20 @@ from esp_provider_shared.rpc import (
 )
 from esp_provider_shared.transport_context import OperationContext, TransportContext, UnattributedCall
 
-CODEX_BUILD = "codex-cli 0.159.3"
+CODEX_VERSION = "codex-cli 0.159.3"
+# sha256 of the vendored native binary the frozen protocol capture was generated from.
+CODEX_NATIVE_SHA256 = "8bf204b36a2f6dd0dab73aa2f639892e67ef9ac8befccb4a05b1496ebf25c479"
+
+
+def codex_build_id(version: str, native_sha256: str) -> str:
+    """Canonical exact-build identity: the version string plus the native binary digest.
+
+    The frozen capture, the candidate manifest, `qualify inspect` and the factory all use this form.
+    """
+    return f"{version} sha256:{native_sha256}"
+
+
+CODEX_BUILD = codex_build_id(CODEX_VERSION, CODEX_NATIVE_SHA256)
 # Key of the gateway relay entry in infra/runtime/codex/config.toml `[model_providers]`.
 CODEX_MODEL_PROVIDER = "esp_gateway"
 # ESP primitive -> captured app-server method. Every value is in the capture's client request list.
@@ -88,6 +117,9 @@ MAX_MODEL_REQUEST_BYTES = 1_048_576
 STDIO_READER_LIMIT = FRAME_LIMIT_BYTES + 2
 
 _METHOD_NOT_FOUND = -32601
+# JSON-RPC codes that mean the peer refused the request before running it: parse error, invalid
+# request, method not found, invalid params. Internal and server-defined errors are not refusals.
+_REFUSAL_CODES = frozenset({-32700, -32600, _METHOD_NOT_FOUND, -32602})
 _UNLOAD_STATUSES = frozenset({"unsubscribed", "notSubscribed", "notLoaded"})
 _READ_ERRORS = (RpcProtocolError, ResponseLost, OSError, FrameTooLarge)
 
@@ -174,8 +206,9 @@ class CodexHarnessAdapter(HarnessAdapter):
         self.unload_confirm_timeout = 2.0
         self.model_reroutes = 0
         self.disallowed_items = 0
-        self._contexts: dict[str, OperationContext] = {}
-        # Context of the operation that owns each accepted turn, so late output keeps its own epoch.
+        # Submit or manual compaction whose native turn the build has not named yet, per thread.
+        self._pending: dict[str, OperationContext] = {}
+        # Scope of the operation that owns each turn, so late output and late model requests keep it.
         self._turn_contexts: dict[tuple[str, str], OperationContext] = {}
         self._known_turns: dict[str, set[str]] = {}
         self._closed_turns: dict[str, set[str]] = {}
@@ -252,7 +285,6 @@ class CodexHarnessAdapter(HarnessAdapter):
         if message.conversation_id != handle.conversation_id:
             raise CodexBindingMismatch("conversation_mismatch")
         thread_id = handle.native_session_id
-        self._bind_operation(handle, authority, None)
         known_before = frozenset(self._known_turns.get(thread_id, ()))
         text_elements: list[object] = []
         params: dict[str, object] = {
@@ -260,34 +292,64 @@ class CodexHarnessAdapter(HarnessAdapter):
             "input": [{"type": "text", "text": message.message, "text_elements": text_elements}],
             "clientUserMessageId": message.client_request_id,
         }
+        # SubmitMessage caps the text at 8 KiB, so even fully escaped JSON stays inside the frame limit.
+        pending = self._begin_operation(handle, authority)
         try:
             result = await self._rpc.request(CODEX_METHODS["submit"], params)
-        except ResponseLost:
-            return Unconfirmed(kind="unconfirmed", native_work_ref=None)
-        except OSError:
+        except ConnectionError:
+            # The transport refused before writing anything: conclusively not sent.
+            self._end_pending(thread_id, pending)
             return NotSubmitted(kind="not_submitted", code="not_sent")
-        except RpcProtocolError:
-            # An explicit rejection is conclusive only if persisted history lacks this input.
-            located = await self._locate_input(thread_id, message.client_request_id, None)
-            if located is None:
-                return NotSubmitted(kind="not_submitted", code="native_rejected")
-            return Unconfirmed(kind="unconfirmed", native_work_ref=located if isinstance(located, str) else None)
+        except RpcProtocolError as exc:
+            if not _peer_refusal(exc):
+                # Raised locally (a garbled line failed every in-flight call) or a non-refusal error code:
+                # the build may have read and accepted the input.
+                return Unconfirmed(kind="unconfirmed", native_work_ref=None)
+            return await self._after_refusal(thread_id, message.client_request_id, pending, known_before)
+        except Exception:
+            # Lost or oversize acknowledgement, read failure or a closed stream after the frame was handed
+            # to the transport: the build may have read it, so acceptance stays uncertain.
+            return Unconfirmed(kind="unconfirmed", native_work_ref=None)
         turn_id = _turn_id_of(result)
         if turn_id is None:
             return Unconfirmed(kind="unconfirmed", native_work_ref=None)
         if turn_id in known_before:
-            # The build steered this input into work that already existed. It is not new accepted work.
+            # The build steered this input into work that already existed. It is not new accepted work,
+            # and that turn keeps the scope of the operation that started it.
+            self._end_pending(thread_id, pending)
             return Unconfirmed(kind="unconfirmed", native_work_ref=turn_id)
         self._known_turns.setdefault(thread_id, set()).add(turn_id)
+        # The build named this request's turn, so the turn carries this operation's scope even while
+        # durable acceptance is still unproven.
+        self._claim_turn(thread_id, turn_id, pending)
         attempts = max(1, self.acceptance_confirm_attempts)
         for attempt in range(attempts):
             located = await self._locate_input(thread_id, message.client_request_id, turn_id)
             if located == turn_id:
-                self._bind_operation(handle, authority, turn_id)
                 return Accepted(kind="accepted", work=WorkRef(native_session_id=thread_id, native_work_ref=turn_id))
             if attempt + 1 < attempts:
                 await asyncio.sleep(self.acceptance_confirm_interval)
         return Unconfirmed(kind="unconfirmed", native_work_ref=turn_id)
+
+    async def _after_refusal(
+        self,
+        thread_id: str,
+        client_request_id: str,
+        pending: OperationContext,
+        known_before: frozenset[str],
+    ) -> SubmissionResult:
+        """The build refused the request. That is conclusive only if persisted history lacks the input."""
+        located = await self._locate_input(thread_id, client_request_id, None)
+        if located is None:
+            self._end_pending(thread_id, pending)
+            return NotSubmitted(kind="not_submitted", code="native_rejected")
+        if isinstance(located, _Unreadable):
+            return Unconfirmed(kind="unconfirmed", native_work_ref=None)
+        if located in known_before:
+            self._end_pending(thread_id, pending)
+        else:
+            self._claim_turn(thread_id, located, pending)
+        return Unconfirmed(kind="unconfirmed", native_work_ref=located)
 
     async def continue_work(
         self,
@@ -299,10 +361,22 @@ class CodexHarnessAdapter(HarnessAdapter):
         return NotSubmitted(kind="not_submitted", code="continue_unsupported")
 
     async def compact(self, handle: SessionHandle, authority: OperationAuthority) -> Literal["requested"]:
-        """Manual compaction. The thread is bound first so its model requests carry this scope."""
+        """Manual compaction. The thread is bound first so its model requests carry this scope.
+
+        The binding stays pending until the build announces the compaction turn (`turn/started`).
+        """
         self._require_pins(handle)
-        self._bind_operation(handle, authority, None)
-        result = await self._rpc.request(CODEX_METHODS["compact"], {"threadId": handle.native_session_id})
+        thread_id = handle.native_session_id
+        pending = self._begin_operation(handle, authority)
+        try:
+            result = await self._rpc.request(CODEX_METHODS["compact"], {"threadId": thread_id})
+        except ConnectionError:
+            self._end_pending(thread_id, pending)
+            raise
+        except RpcProtocolError as exc:
+            if _peer_refusal(exc):
+                self._end_pending(thread_id, pending)
+            raise
         _require_object(result, "invalid compaction result")
         return "requested"
 
@@ -395,7 +469,7 @@ class CodexHarnessAdapter(HarnessAdapter):
                 pass
         if await self._is_loaded(thread_id):
             raise UnloadUnconfirmed(thread_id)
-        self._forget_turns(thread_id)
+        self._forget_thread(thread_id)
         return "unloaded"
 
     async def export_history(self, handle: SessionHandle) -> None:
@@ -409,9 +483,14 @@ class CodexHarnessAdapter(HarnessAdapter):
             if exc.args and exc.args[0] == _METHOD_NOT_FOUND:
                 raise UnsupportedPrimitive("delete") from exc
             raise
+        self._forget_thread(handle.native_session_id)
 
     def attribute_model_request(self, body: bytes) -> CodexModelScope:
-        """Per-request model hook used by the supervisor-local relay. Refusals are never forwarded."""
+        """Per-request model hook used by the supervisor-local relay. Refusals are never forwarded.
+
+        The scope is that of the operation owning the request's own turn. A turn no operation owns is
+        refused unless a submit or manual compaction on that thread is still waiting for its turn id.
+        """
         if len(body) > MAX_MODEL_REQUEST_BYTES:
             self._refuse("oversize")
         try:
@@ -424,13 +503,23 @@ class CodexHarnessAdapter(HarnessAdapter):
         thread_id, turn_id = identity
         if turn_id in self._closed_turns.get(thread_id, set()):
             self._refuse("stale_turn")
-        scope = self.transport.start_model_call(thread_id)
+        context = self._owner_context(thread_id, turn_id)
+        if context is None:
+            self._refuse("unbound_turn")
+        scope = self.transport.start_model_call_for(context)
         return CodexModelScope(
             audience="inference",
             token=scope["token"],
             native_session_id=thread_id,
             native_work_ref=turn_id,
         )
+
+    def tracked_threads(self) -> frozenset[str]:
+        """Threads this adapter still holds any state for. Confirmed unload or delete releases all of it."""
+        threads: set[str] = set(self._known_turns) | set(self._closed_turns) | set(self._pending)
+        threads |= {thread_id for thread_id, _ in self._turn_contexts}
+        threads |= set(self._closed_threads) | set(self._run_ids) | self._bound | set(self._events)
+        return frozenset(threads)
 
     # Internals ------------------------------------------------------------------------------
 
@@ -442,10 +531,11 @@ class CodexHarnessAdapter(HarnessAdapter):
         if handle.provider != "openai" or handle.model != self.profile.model:
             raise CodexBindingMismatch("model_pin_mismatch")
 
-    def _bind_operation(self, handle: SessionHandle, authority: OperationAuthority, work_ref: str | None) -> None:
+    def _begin_operation(self, handle: SessionHandle, authority: OperationAuthority) -> OperationContext:
+        """Bind the thread to an operation whose native turn the build has not named yet."""
         context = OperationContext(
             native_session_id=handle.native_session_id,
-            native_work_ref=work_ref,
+            native_work_ref=None,
             provider_session_id=handle.provider_session_id,
             session_generation=handle.session_generation,
             active_agent_run_id=self._remember_run(handle.native_session_id),
@@ -454,18 +544,73 @@ class CodexHarnessAdapter(HarnessAdapter):
             inference_token=authority.inference_token,
             knowledge_token=authority.knowledge_token,
         )
+        self._pending[handle.native_session_id] = context
         self.transport.bind(context)
-        self._contexts[handle.native_session_id] = context
-        if work_ref is not None:
-            self._turn_contexts[(handle.native_session_id, work_ref)] = context
         self._bound.add(handle.native_session_id)
+        return context
 
-    def _forget_turns(self, thread_id: str) -> None:
-        """Per-turn state is bounded by residency: an unloaded thread keeps none."""
+    def _claim_turn(self, thread_id: str, turn_id: str, pending: OperationContext) -> None:
+        """The build named the turn of `pending`. The turn keeps that operation's scope from now on."""
+        ours = self._pending.get(thread_id) is pending
+        live = self.transport.current(thread_id) if ours else None
+        # The transport copy carries any token refresh received while the turn id was unknown.
+        source = live if live is not None and live.native_work_ref is None else pending
+        claimed = source.model_copy(update={"native_work_ref": turn_id})
+        owner = self._turn_contexts.setdefault((thread_id, turn_id), claimed)
+        if not ours:
+            # A newer operation already holds the thread binding, or the turn was claimed on announcement.
+            return
+        del self._pending[thread_id]
+        if turn_id in self._closed_turns.get(thread_id, set()):
+            # The turn finished before its id reached this adapter; nothing of this operation runs any more.
+            self._settle(thread_id)
+        else:
+            self.transport.bind(owner)
+
+    def _end_pending(self, thread_id: str, pending: OperationContext) -> None:
+        """The operation started no turn of its own: release its binding."""
+        if self._pending.get(thread_id) is not pending:
+            return
+        del self._pending[thread_id]
+        self._settle(thread_id)
+
+    def _settle(self, thread_id: str) -> None:
+        """Bind the thread to its newest still-running owned turn, or leave it idle and unbound."""
+        if thread_id in self._pending:
+            return
+        closed = self._closed_turns.get(thread_id, set())
+        for (owner_thread, turn_id), context in reversed(self._turn_contexts.items()):
+            if owner_thread == thread_id and turn_id not in closed:
+                self.transport.bind(context)
+                return
+        self.transport.unbind(thread_id)
+
+    def _owner_context(self, thread_id: str, turn_id: str) -> OperationContext | None:
+        """Scope of the operation that owns this turn, or None when no operation owns it."""
+        current = self.transport.current(thread_id)
+        if current is not None and current.native_work_ref == turn_id:
+            return current
+        owned = self._turn_contexts.get((thread_id, turn_id))
+        if owned is not None:
+            return owned
+        pending = self._pending.get(thread_id)
+        if pending is not None and turn_id not in self._known_turns.get(thread_id, set()):
+            # A submit or manual compaction is in flight and the build has not named its turn yet.
+            return current if current is not None and current.native_work_ref is None else pending
+        return None
+
+    def _forget_thread(self, thread_id: str) -> None:
+        """Residency is bounded: an unloaded or deleted thread keeps no state and no binding."""
         self._known_turns.pop(thread_id, None)
         self._closed_turns.pop(thread_id, None)
         for key in [key for key in self._turn_contexts if key[0] == thread_id]:
             del self._turn_contexts[key]
+        self._pending.pop(thread_id, None)
+        self._closed_threads.pop(thread_id, None)
+        self._run_ids.pop(thread_id, None)
+        self._bound.discard(thread_id)
+        self._events.pop(thread_id, None)
+        self.transport.unbind(thread_id)
 
     def _closed_event(self, thread_id: str) -> asyncio.Event:
         event = self._closed_threads.get(thread_id)
@@ -567,19 +712,21 @@ class CodexHarnessAdapter(HarnessAdapter):
         thread_id = thread_value if isinstance(thread_value, str) and thread_value != "" else None
         if method == "thread/closed":
             if thread_id is not None:
-                self._closed_event(thread_id).set()
+                closed = self._closed_threads.get(thread_id)
+                if closed is not None:
+                    closed.set()
+                # A closed thread runs nothing, so none of its turns may be attributed any more.
+                known = self._known_turns.get(thread_id, set())
+                owned = {turn for owner, turn in self._turn_contexts if owner == thread_id}
+                if known or owned:
+                    self._closed_turns.setdefault(thread_id, set()).update(known | owned)
+                self._pending.pop(thread_id, None)
+                self.transport.unbind(thread_id)
             return
-        if thread_id is not None and method in {"turn/started", "turn/completed"}:
-            turn = _object(params.get("turn"))
-            turn_id = None if turn is None else turn.get("id")
-            if isinstance(turn_id, str) and turn_id != "":
-                self._known_turns.setdefault(thread_id, set()).add(turn_id)
-                if method == "turn/completed":
-                    self._closed_turns.setdefault(thread_id, set()).add(turn_id)
-        context = None if thread_id is None else self._contexts.get(thread_id)
         turn_id = notification_turn_id(method, params)
-        if thread_id is not None and turn_id is not None:
-            context = self._turn_contexts.get((thread_id, turn_id), context)
+        if thread_id is not None and turn_id is not None and method in {"turn/started", "turn/completed"}:
+            self._track_turn(method, thread_id, turn_id)
+        context = None if thread_id is None or turn_id is None else self._owner_context(thread_id, turn_id)
         try:
             event = normalize_codex_notification(method, params, context)
         except CodexEventRejected:
@@ -593,9 +740,27 @@ class CodexHarnessAdapter(HarnessAdapter):
             self.disallowed_items += 1
         self._queue_for(event.native_session_id).put_nowait(event)
 
+    def _track_turn(self, method: str, thread_id: str, turn_id: str) -> None:
+        if method == "turn/started":
+            pending = self._pending.get(thread_id)
+            if pending is not None and (thread_id, turn_id) not in self._turn_contexts:
+                if turn_id not in self._known_turns.get(thread_id, set()):
+                    # One turn runs per thread at a time: a turn announced while an operation waits is its turn.
+                    self._claim_turn(thread_id, turn_id, pending)
+            self._known_turns.setdefault(thread_id, set()).add(turn_id)
+            return
+        self._known_turns.setdefault(thread_id, set()).add(turn_id)
+        self._closed_turns.setdefault(thread_id, set()).add(turn_id)
+        current = self.transport.current(thread_id)
+        if current is not None and current.native_work_ref == turn_id:
+            self._settle(thread_id)
 
-def create_codex_adapter(rpc: NativeRpcClient, profile: RuntimeProfile) -> HarnessAdapter:
-    """Adapter for the frozen build only. Call inside a running event loop."""
+
+def create_codex_adapter(rpc: NativeRpcClient, profile: RuntimeProfile) -> CodexHarnessAdapter:
+    """Adapter for the frozen build only (`CODEX_BUILD`: version plus native binary digest).
+
+    Call inside a running event loop, then `await adapter.initialize()` before any other call.
+    """
     if profile.provider != "openai":
         raise ValueError("profile_provider_mismatch")
     if profile.harness_build != CODEX_BUILD:
@@ -618,11 +783,19 @@ def _checked_thread(result: object, *, model: str, expected: str | None) -> str:
     if body.get("approvalPolicy") != "never":
         raise CodexBindingMismatch("approval_policy_drift")
     sandbox = _object(body.get("sandbox"))
-    if sandbox is None or sandbox.get("type") != "readOnly":
+    # The captured readOnly variant has an optional networkAccess; only absent or false is the pinned policy.
+    if sandbox is None or sandbox.get("type") != "readOnly" or sandbox.get("networkAccess", False) is not False:
         raise CodexBindingMismatch("sandbox_drift")
     if thread.get("ephemeral") is not False:
         raise CodexBindingMismatch("ephemeral_thread")
     return thread_id
+
+
+def _peer_refusal(exc: RpcProtocolError) -> bool:
+    """A refusal the build sent for this request id. `NativeRpcClient` gives a peer error response an
+    integer code; errors it raises locally (garbled stream, invalid result) carry a string code."""
+    code = exc.args[0] if exc.args else None
+    return isinstance(code, int) and not isinstance(code, bool) and code in _REFUSAL_CODES
 
 
 def _turn_id_of(result: object) -> str | None:
