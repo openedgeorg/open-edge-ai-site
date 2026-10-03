@@ -1471,10 +1471,9 @@ with open(record_path, "w", encoding="utf-8") as handle:
 """
 
 
-def test_acp_handshake_sends_only_initialize_and_stops_the_agent(tmp_path: Path) -> None:
+def _stub_handshake(tmp_path: Path, result: dict[str, Any], config_path: Path = CONFIG_PATH) -> GrokObservation:
     """`--acp-handshake` without the installed build: an injected prefix runs a stub agent that answers one line."""
     record = tmp_path / "stub-record.json"
-    result = _initialize_without("list")
     stub = tmp_path / "grok-1.0.46-linux-x86_64"
     stub.write_text(_STUB_AGENT.format(record=str(record), result=json.dumps(result)), encoding="utf-8")
 
@@ -1483,10 +1482,21 @@ def test_acp_handshake_sends_only_initialize_and_stops_the_agent(tmp_path: Path)
             return f"{GROK_VERSION}\n"
         return "Commands:\n  stdio  Run the agent over stdio\n\nOptions:\n"
 
-    observation = observe_grok(
-        which=lambda _name: str(stub), isolation=lambda: [sys.executable], runner=runner, acp_handshake=True
+    return observe_grok(
+        config_path=config_path,
+        which=lambda _name: str(stub),
+        isolation=lambda: [sys.executable],
+        runner=runner,
+        acp_handshake=True,
     )
+
+
+def test_acp_handshake_sends_only_initialize_and_stops_the_agent(tmp_path: Path) -> None:
+    record = tmp_path / "stub-record.json"
+    result = _initialize_without("list")
+    observation = _stub_handshake(tmp_path, result)
     assert observation.errors == []
+    assert observation.config_staged is True
     initialize = observation.acp_initialize
     assert initialize is not None
     assert initialize == sanitize_grok_initialize(result, ["_x.ai/mcp/servers_updated"])
@@ -1510,6 +1520,65 @@ def test_acp_handshake_sends_only_initialize_and_stops_the_agent(tmp_path: Path)
     capture = grok_protocol_capture(observation)
     assert capture is not None
     assert str(observation.config_digest) in capture["acp_initialize"]["provenance"]
+
+
+def test_a_handshake_without_a_configuration_file_claims_nothing_was_staged(tmp_path: Path) -> None:
+    absent = _stub_handshake(tmp_path, _initialize_without("list"), config_path=tmp_path / "absent.toml")
+    assert absent.acp_initialize is not None and absent.config_digest is None
+    capture = grok_protocol_capture(absent)
+    assert capture is not None
+    provenance = capture["acp_initialize"]["provenance"]
+    assert "staged as GROK_HOME/config.toml" not in provenance and "None" not in provenance
+    assert "no runtime configuration staged" in provenance
+
+
+def test_a_configuration_that_could_not_be_staged_is_never_claimed_loaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The file exists and has a digest, but copying it into the isolated GROK_HOME fails.
+    original = Path.write_bytes
+
+    def refuse_config(self: Path, data: bytes) -> int:
+        if self.name == "config.toml":
+            raise PermissionError("staging refused")
+        return original(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", refuse_config)
+    unstaged = _stub_handshake(tmp_path, _initialize_without("list"))
+    monkeypatch.undo()
+    assert unstaged.acp_initialize is not None and unstaged.config_digest is not None
+    assert "runtime configuration could not be staged: PermissionError" in unstaged.errors
+    notes = "\n".join(grok_capability_report(unstaged).notes)
+    assert "loaded by this run's agent start" not in notes
+    assert "no recorded agent start has loaded this exact file (this run did not stage it" in notes
+    capture = grok_protocol_capture(unstaged)
+    assert capture is not None
+    assert "staged as GROK_HOME/config.toml" not in capture["acp_initialize"]["provenance"]
+
+
+def test_a_configuration_that_changed_after_its_digest_is_not_claimed_staged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_bytes(CONFIG_PATH.read_bytes())
+    original = Path.read_bytes
+    reads: list[Path] = []
+
+    def edited_after_first_read(self: Path) -> bytes:
+        data = original(self)
+        if self == config:
+            reads.append(self)
+            if len(reads) > 1:
+                return data + b"\n# edited after the digest was taken\n"
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", edited_after_first_read)
+    observation = _stub_handshake(tmp_path, _initialize_without("list"), config_path=config)
+    monkeypatch.undo()
+    assert len(reads) == 2 and observation.config_digest == hashlib.sha256(config.read_bytes()).hexdigest()
+    assert observation.acp_initialize is not None
+    assert observation.config_staged is False
+    assert all("loaded by this run's agent start" not in note for note in grok_capability_report(observation).notes)
 
 
 def _hermetic_env(tmp_path: Path) -> dict[str, str]:

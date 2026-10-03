@@ -874,6 +874,8 @@ class GrokObservation:
     # Sanitized ACP initialize result; None unless this run re-observed the handshake.
     acp_initialize: dict[str, Any] | None = None
     config_digest: str | None = None
+    # True only when this run copied the runtime configuration into its isolated GROK_HOME.
+    config_staged: bool = False
     network_isolated: bool | None = None
     errors: list[str] = field(default_factory=lambda: [])
     # File name of a recorded observation; None when the installed build was actually executed.
@@ -995,9 +997,13 @@ def observe_grok(
         grok_home.mkdir()
         if config_path.exists():
             try:
-                (grok_home / "config.toml").write_bytes(config_path.read_bytes())
+                staged = config_path.read_bytes()
+                (grok_home / "config.toml").write_bytes(staged)
             except OSError as exc:
                 errors.append(f"runtime configuration could not be staged: {type(exc).__name__}")
+            else:
+                # Only the exact digested file counts as staged.
+                observation.config_staged = hashlib.sha256(staged).hexdigest() == observation.config_digest
         env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "GROK_HOME": str(grok_home), "GROK_DISABLE_AUTOUPDATER": "1"}
         command = [*prefix, str(native)]
         help_texts: dict[str, str] | None = None
@@ -1192,11 +1198,14 @@ def grok_protocol_capture(observation: GrokObservation) -> dict[str, Any] | None
     same_build = frozen.get("harness_build") == harness_build
     initialize: dict[str, Any] | None
     if observation.acp_initialize is not None:
+        if observation.config_staged:
+            staged = f"the runtime configuration sha256:{observation.config_digest} staged as GROK_HOME/config.toml"
+        else:
+            staged = "no runtime configuration staged"
         initialize = {
             **observation.acp_initialize,
             "provenance": (
-                "re-observed by qualify inspect --acp-handshake (initialize only, network-isolated) with the "
-                f"runtime configuration sha256:{observation.config_digest} staged as GROK_HOME/config.toml"
+                f"re-observed by qualify inspect --acp-handshake (initialize only, network-isolated) with {staged}"
             ),
         }
     elif same_build and isinstance(frozen.get("acp_initialize"), dict):
@@ -1316,15 +1325,20 @@ def grok_capability_report(observation: GrokObservation, profile: RuntimeProfile
         frozen_provenance = ""
         if isinstance(frozen_handshake, dict):
             frozen_provenance = str(cast(dict[str, Any], frozen_handshake).get("provenance", ""))
-        if handshake is not None:
+        if handshake is not None and observation.config_staged:
             loaded = "loaded by this run's agent start (initialize only)"
         elif observation.config_digest in frozen_provenance:
             loaded = "loaded by the agent start of the frozen handshake (initialize only)"
         else:
+            # Staged with a handshake is the first branch, so a staged file here served --version and help only.
+            if observation.config_staged:
+                this_run = "this run staged it for --version and help only"
+            else:
+                this_run = "this run did not stage it"
             loaded = (
-                "no recorded agent start has loaded this exact file (this run staged it for --version and help "
-                "only, and the frozen handshake provenance names no such configuration), so a load failure is "
-                "still possible; run inspect --acp-handshake --write-protocol-capture to observe it"
+                f"no recorded agent start has loaded this exact file ({this_run}, and the frozen handshake "
+                "provenance names no such configuration), so a load failure is still possible; run inspect "
+                "--acp-handshake --write-protocol-capture to observe it"
             )
         notes.append(
             f"Runtime configuration sha256:{observation.config_digest}: {loaded}; the build has no strict "
