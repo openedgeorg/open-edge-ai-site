@@ -32,20 +32,36 @@ Setup and acceptance confirmation share one budget (engineering limit, at most 1
 A deadline before the send is not-started; a deadline after it is unconfirmed.
 
 Status (`inspect_submission`) and history (`read_authorized_history`) start no native work and never
-read native files: they call only the adapter's `inspect` and `read_history`. A resident session is read
-in place. A saved, unloaded session is read only under a non-waiting, bounded residency reservation: the
-mapping row is held `FOR SHARE NOWAIT` (so no admission can place or resume it meanwhile and no second
-process can load it), and a free resident slot on a ready instance mounting its storage is locked with
-`SKIP LOCKED` together with that instance's shared incarnation fence, for the duration of the bounded
-read only. The lock is never committed as a claim, so a crashed reader leaves nothing behind. A session
-whose resident instance is not ready, or that is neither resident nor unloaded, is not read elsewhere.
+read native files: they call only the adapter's `inspect` and `read_history`.
+
+- A resident session is read in place, on the instance where it is resident.
+- A saved, unloaded session is read only under a non-waiting, bounded residency reservation, held for
+  the bounded read only:
+  - the mapping row is held `FOR KEY SHARE NOWAIT`, so no admission can place or resume the session
+    meanwhile and no second process can load it;
+  - one free resident slot is locked with `SKIP LOCKED` on an instance that mounts its storage and is
+    ready. Readiness is re-read under that instance's shared incarnation fence, and the fence is given
+    back before the native read. The read therefore never holds off an exclusive fence user on that
+    process: a peer's release or registration, or a revocation.
+
+  Nothing is committed as a claim, so a crashed reader leaves nothing behind.
+- A session whose resident instance is not ready, or that is neither resident nor unloaded, is not
+  read elsewhere.
+
+Task 17 hand-off: an in-place read of a resident session holds no lock while it reads. Unload and
+eviction must not let the session be placed and resumed on another process while such a read may still
+run on the old one. Otherwise a Grok-style read, which loads the session transiently, could load it
+there while another process also has it loaded. In-place reads are bounded by `read_timeout_seconds`.
 
 Status outcomes. "Correlated" means the native harness reports this request ID with its saved input.
 
 - No native session was ever registered and the request is not current: `not_started`, resubmission
   allowed, because nothing can have been submitted.
-- No native session yet and the request is current (setup may still be running on another live
-  request): `not_started`, resubmission not allowed.
+- The request is current and either no native session exists yet or its run is still `starting`
+  (setup may still be running on another live request): `not_started`, resubmission not allowed.
+  Input is sent only after setup has marked the run `running`, so metadata alone proves it was not
+  sent, and status makes no native call. A resident session is admitted directly as `running`, so its
+  setup is not distinguishable this way and is answered as below.
 - Correlated: the native status decides. `running` and `completed` and `failed` map to themselves;
   `interrupted` is `cancelled` when cancellation intent is recorded for the current run; idle, unknown
   and other interruptions are `accepted` (the harness saved the input). Resubmission is not allowed.
@@ -61,7 +77,7 @@ import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import psycopg
 from psycopg import errors as pg_errors
@@ -150,6 +166,17 @@ class ReservationReleaser(Protocol):
     async def release_unsubmitted(self, authority: AdmissionAuthority) -> bool: ...
 
 
+class OperationalTelemetry(Protocol):
+    """Payload-free operational events: names, identifiers and codes only, never input or native content."""
+
+    def emit(self, name: str, attributes: Mapping[str, str]) -> None: ...
+
+
+class _NoTelemetry:
+    def emit(self, name: str, attributes: Mapping[str, str]) -> None:
+        return None
+
+
 class _Skip(Exception):
     """Leave a read-reservation candidate's savepoint, releasing what it locked."""
 
@@ -175,6 +202,14 @@ class _Meta:
     def is_current(self, request_id: str) -> bool:
         return self.mapping_id is not None and self.row["current_request_id"] == request_id
 
+    def in_setup(self, request_id: str) -> bool:
+        """The current run is still `starting`: setup sends input only after marking it `running`."""
+        return (
+            self.is_current(request_id)
+            and self.row["active_agent_run_id"] is not None
+            and self.row["runtime_state"] == "starting"
+        )
+
 
 class SessionManager:
     """The Runtime Session Manager of one backend instance. Holds no input beyond a live call."""
@@ -187,12 +222,14 @@ class SessionManager:
         releaser: ReservationReleaser,
         *,
         limits: SessionLimits | None = None,
+        telemetry: OperationalTelemetry | None = None,
     ) -> None:
         self._db = db
         self._router = router
         self._signer = signer
         self._releaser = releaser
         self._limits = limits or SessionLimits()
+        self._telemetry: OperationalTelemetry = telemetry or _NoTelemetry()
 
     @property
     def limits(self) -> SessionLimits:
@@ -372,13 +409,40 @@ class SessionManager:
         attempts = self._limits.release_attempts
         for attempt in range(attempts):
             if await self._releaser.release_unsubmitted(admission.authority):
-                break
+                return NotSubmitted(kind="not_submitted", code=code)
             if attempt + 1 < attempts:
                 await asyncio.sleep(self._limits.retry_interval_seconds)
+        # The guard stays held for the metadata reconciler. Leave an operator trace of why.
+        self._trace("submission.release_deferred", admission, code=code)
         return NotSubmitted(kind="not_submitted", code=code)
 
     async def _record_work(self, admission: Admitted, handle: SessionHandle, native_work_ref: str) -> bool:
-        """Record the native reference on the same run. Best effort: native history keeps the truth."""
+        """Record the native reference on the same run. Best effort: native history keeps the truth.
+
+        A failure leaves an operator trace (identifiers and a code), because the reconciler then has no
+        recorded reference to settle the run by.
+        """
+        recorded = await self._update_work_ref(admission, handle, native_work_ref)
+        if recorded != "recorded":
+            self._trace("submission.work_ref_unrecorded", admission, native_work_ref=native_work_ref, code=recorded)
+        return recorded == "recorded"
+
+    def _trace(self, name: str, admission: Admitted, **codes: str) -> None:
+        attributes = {
+            "conversation_id": admission.reservation.conversation_id,
+            "provider_session_id": admission.reservation.provider_session_id,
+            "active_agent_run_id": admission.authority.active_agent_run_id,
+            **codes,
+        }
+        try:
+            self._telemetry.emit(name, attributes)
+        except Exception:
+            # Telemetry never changes what the submission proved.
+            return
+
+    async def _update_work_ref(
+        self, admission: Admitted, handle: SessionHandle, native_work_ref: str
+    ) -> Literal["recorded", "record_conflict", "database_unavailable"]:
         try:
             async with _bounded(self._db) as tx:
                 row = await tx.execute_one(
@@ -402,8 +466,8 @@ class SessionManager:
                     },
                 )
         except _DATABASE_ERRORS:
-            return False
-        return row is not None
+            return "database_unavailable"
+        return "recorded" if row is not None else "record_conflict"
 
     # Status and history
 
@@ -412,8 +476,8 @@ class SessionManager:
         if not request_id or len(request_id) > REQUEST_ID_MAX_LENGTH:
             raise ValueError("client_request_id must be 1 to 200 characters")
         meta = await self._read_meta(subject_id, conversation_id)
-        if meta.native_session_id is None:
-            return _view_without_native_session(meta, request_id)
+        if meta.native_session_id is None or meta.in_setup(request_id):
+            return _view_not_started(meta, request_id)
         native = await self._read_native(meta, lambda adapter, handle: adapter.inspect(handle, request_id))
         return _view_with_native_status(meta, request_id, native)
 
@@ -455,6 +519,8 @@ class SessionManager:
                 # Resident on an instance that is not ready: never loaded by a second process meanwhile.
                 raise NativeReadUnavailable("resident_instance_unavailable")
             handle = _handle_from_row(row, row["harness_instance_id"], row["runtime_incarnation_id"])
+            # No lock is held during this read. Task 17's unload and eviction must keep the session from
+            # being placed and resumed elsewhere while it may still run (see the module hand-off).
             return await self._bounded_read(lambda: op(adapter, handle))
         if row["runtime_state"] != "unloaded":
             raise NativeReadUnavailable("session_not_readable")
@@ -526,7 +592,15 @@ _META = """
 
 
 async def _hold_unloaded_mapping(tx: Transaction, meta: _Meta) -> bool:
-    """Hold the mapping row for the read and re-check it is still saved, unloaded and unplaced."""
+    """Hold the mapping row for the read and re-check it is still saved, unloaded and unplaced.
+
+    `FOR KEY SHARE` is the weakest row lock that still conflicts with admission's `FOR UPDATE NOWAIT`.
+    Admission is the only writer that places or resumes a session, so none can do so during the read.
+    A later writer that places or resumes a saved session (Task 21 recovery) must lock the row
+    `FOR UPDATE` in the same way. The lock does not conflict with an update of non-key columns. A
+    revocation that bumps the epoch of a saved session still naming the revoked incarnation is
+    therefore never held off by a read.
+    """
     try:
         row = await tx.execute_one(
             """
@@ -537,7 +611,7 @@ async def _hold_unloaded_mapping(tx: Transaction, meta: _Meta) -> bool:
                    ) AS resident
             FROM provider_session AS ps
             WHERE ps.id = %s::uuid AND ps.is_current
-            FOR SHARE OF ps NOWAIT
+            FOR KEY SHARE OF ps NOWAIT
             """,
             (meta.mapping_id,),
         )
@@ -572,7 +646,10 @@ async def _reserve_read_residency(tx: Transaction, meta: _Meta) -> InstanceCapac
 
 
 async def _lock_read_slot(tx: Transaction, candidate: InstanceCapacity, mapping_id: str) -> bool:
-    """Lock, never claim, one free resident row plus the instance's shared fence, in a savepoint."""
+    """Lock, never claim, one free resident row of a candidate that is ready now, in a savepoint.
+
+    The row lock stays with the held read. The incarnation fence does not: see `_ready_under_brief_fence`.
+    """
     try:
         async with tx.connection.transaction():
             slot = await tx.execute_one(
@@ -588,16 +665,37 @@ async def _lock_read_slot(tx: Transaction, candidate: InstanceCapacity, mapping_
             )
             if slot is None:
                 raise _Skip
-            fenced = await tx.execute_one(
-                "SELECT esp_try_fence(%s, %s, false) AS locked", (candidate.runtime_incarnation_id, mapping_id)
-            )
-            if fenced is None or fenced["locked"] is not True:
-                raise _Skip
-            if not await incarnation_is_ready(tx, candidate.harness_instance_id, candidate.runtime_incarnation_id):
+            if not await _ready_under_brief_fence(tx, candidate, mapping_id):
                 raise _Skip
     except (_Skip, pg_errors.LockNotAvailable, pg_errors.QueryCanceled):
         return False
     return True
+
+
+async def _ready_under_brief_fence(tx: Transaction, candidate: InstanceCapacity, mapping_id: str) -> bool:
+    """Re-read readiness under the shared incarnation fence, then give the fence back before the read.
+
+    The fence is taken and the readiness re-read in a savepoint that is always rolled back. Rolling a
+    savepoint back releases the advisory locks taken inside it at once. Releasing it would hand them to
+    the held read transaction instead, so every exclusive fence user on this process would be refused
+    for the whole native read: a refused peer's `release_unsubmitted`, `register_native_session`,
+    `revoke_mapping`, and whole-process revocation, which waits at most `REVOCATION_LOCK_TIMEOUT`.
+
+    The fence orders only this readiness check against a whole-process revocation, as for every other
+    shared holder. It does not need to cover the read. The read assigns nothing to the incarnation and
+    carries no operation scope. Placement and resumption of the session are excluded for the whole read
+    by the mapping row lock (`_hold_unloaded_mapping`). Residency capacity is excluded by the locked
+    resident row. A revocation that completes during the read can only make the native read fail.
+    """
+    ready = False
+    async with tx.connection.transaction() as fence:
+        fenced = await tx.execute_one(
+            "SELECT esp_try_fence(%s, %s, false) AS locked", (candidate.runtime_incarnation_id, mapping_id)
+        )
+        if fenced is not None and fenced["locked"] is True:
+            ready = await incarnation_is_ready(tx, candidate.harness_instance_id, candidate.runtime_incarnation_id)
+        raise psycopg.Rollback(fence)
+    return ready
 
 
 @asynccontextmanager
@@ -744,8 +842,8 @@ def _handle_from_row(row: Mapping[str, Any], instance_id: object, incarnation_id
         raise NativeReadUnavailable("session_not_readable") from exc
 
 
-def _view_without_native_session(meta: _Meta, request_id: str) -> SubmissionView:
-    """No native session was ever registered, so nothing can have been submitted yet."""
+def _view_not_started(meta: _Meta, request_id: str) -> SubmissionView:
+    """Nothing can have been submitted: no native session was ever registered, or the run is in setup."""
     row = meta.row
     current = meta.is_current(request_id) and row["active_agent_run_id"] is not None
     return SubmissionView(
@@ -803,6 +901,7 @@ __all__ = [
     "READ_TIMEOUT_SECONDS",
     "REQUEST_ID_MAX_LENGTH",
     "NativeReadUnavailable",
+    "OperationalTelemetry",
     "ReservationReleaser",
     "SessionLimits",
     "SessionManager",

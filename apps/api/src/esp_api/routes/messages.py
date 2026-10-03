@@ -25,18 +25,21 @@ reference. Live native events are normalized and relayed by the event route (Tas
 serves reconnects; this route never resubmits.
 
 The submission runs in its own task: an HTTP disconnect or handler cancellation abandons only the
-response, so a reservation is still released or kept exactly as the outcome requires.
+response, so a reservation is still released or kept exactly as the outcome requires. The task's
+outcome is always retrieved. Application shutdown drains these tasks, with a bound
+(`drain_submissions`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import uuid
 from collections.abc import AsyncIterator, Mapping
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 from urllib.parse import quote
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ValidationError
 
@@ -53,6 +56,8 @@ from esp_runtime_harconses.manager import NativeReadUnavailable, SessionManager
 router = APIRouter()
 
 ACCEPTANCE_HEADER = "x-esp-acceptance"
+# A detached submission settles within its acceptance budget; this covers its release or record after it.
+SUBMISSION_DRAIN_MARGIN_SECONDS = 2.0
 _OVERRIDE_KEYS = frozenset({"provider", "harness", "model"})
 _REJECTION_MESSAGES: Mapping[str, str] = {
     "invalid_request": "The request is invalid. Your message was not sent.",
@@ -62,6 +67,10 @@ _REJECTION_MESSAGES: Mapping[str, str] = {
     "service_unavailable": "The conversation service is unavailable right now. Your message was not sent.",
     "rate_limited": "Too many messages right now. Your message was not sent.",
 }
+
+
+class _Telemetry(Protocol):
+    def emit(self, name: str, attributes: Mapping[str, str]) -> None: ...
 
 
 class UnconfirmedBody(BaseModel):
@@ -146,12 +155,55 @@ def _parse(body: object) -> SubmitMessage:
 
 
 async def _submit_detached(request: Request, admitted: Admitted, command: SubmitMessage) -> SubmissionResult:
-    """Run the submission to completion even if this handler is cancelled; await it shielded."""
+    """Run the submission to completion even if this handler is cancelled; await it shielded.
+
+    The done-callback always retrieves the outcome. Once the handler has been cancelled, nothing else
+    awaits the task. A later failure or cancellation then still leaves a payload-free trace, and the
+    failure is never left unretrieved.
+    """
     tasks: set[asyncio.Task[SubmissionResult]] = request.app.state.submissions
     task = asyncio.get_running_loop().create_task(sessions_of(request).submit_message(admitted, command))
     tasks.add(task)
-    task.add_done_callback(tasks.discard)
+    task.add_done_callback(
+        functools.partial(_settled, tasks, request.app.state.telemetry, admitted.reservation.conversation_id)
+    )
     return await asyncio.shield(task)
+
+
+def _settled(
+    tasks: set[asyncio.Task[SubmissionResult]],
+    telemetry: _Telemetry,
+    conversation_id: str,
+    task: asyncio.Task[SubmissionResult],
+) -> None:
+    tasks.discard(task)
+    if task.cancelled():
+        telemetry.emit(
+            "message.submission_cancelled", {"conversation_id": conversation_id, "code": "submission_cancelled"}
+        )
+    elif task.exception() is not None:
+        telemetry.emit("message.submission_failed", {"conversation_id": conversation_id, "code": "submission_error"})
+
+
+async def drain_submissions(app: FastAPI) -> None:
+    """Shutdown: wait, bounded, for detached submissions to settle, then cancel what is left.
+
+    Each submission is bounded by the session manager's acceptance budget. The margin covers its release
+    or record afterwards. A submission cancelled here keeps its guard and capacity for the metadata
+    reconciler, as after a crash, and leaves a `message.submission_cancelled` trace.
+    """
+    tasks: set[asyncio.Task[SubmissionResult]] = app.state.submissions
+    manager = app.state.sessions
+    budget = manager.limits.acceptance_budget_seconds if isinstance(manager, SessionManager) else 0.0
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + budget + SUBMISSION_DRAIN_MARGIN_SECONDS
+    while tasks and (remaining := deadline - loop.time()) > 0:
+        await asyncio.wait(set(tasks), timeout=remaining)
+    unfinished = set(tasks)
+    for task in unfinished:
+        task.cancel()
+    if unfinished:
+        await asyncio.wait(unfinished, timeout=SUBMISSION_DRAIN_MARGIN_SECONDS)
 
 
 def _rejection(rejected: Rejected) -> Response:

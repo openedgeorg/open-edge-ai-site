@@ -22,7 +22,8 @@ server so it is logged there, not in the response.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -35,6 +36,7 @@ from esp_api.boundary import NO_STORE, ApiError, error_response
 from esp_api.config import ApiSettings, ConfigurationError, bind_candidate_policy
 from esp_api.routes.conversations import router as conversations_router
 from esp_api.routes.history import router as history_router
+from esp_api.routes.messages import drain_submissions
 from esp_api.routes.messages import router as messages_router
 from esp_api.routes.status import router as status_router
 from esp_contracts.eligibility import CandidateAdmissionPolicy
@@ -119,9 +121,16 @@ class ApiDependencies:
     session_limits: SessionLimits = field(default_factory=SessionLimits)
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    yield
+    # Detached submissions settle (bounded) before shutdown; what is left keeps its guard.
+    await drain_submissions(app)
+
+
 def build_api(deps: ApiDependencies) -> FastAPI:
     _require_consistent(deps)
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
     app.state.deps = deps
     app.state.identity = deps.identity
     app.state.telemetry = deps.telemetry
@@ -146,6 +155,7 @@ def build_api(deps: ApiDependencies) -> FastAPI:
         deps.signer,
         admission,
         limits=deps.session_limits,
+        telemetry=deps.telemetry,
     )
     submissions: set[asyncio.Task[SubmissionResult]] = set()
     app.state.submissions = submissions

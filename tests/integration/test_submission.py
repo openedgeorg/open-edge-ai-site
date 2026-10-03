@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import gc
 import json
 import time
 import uuid
@@ -19,8 +20,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
+from psycopg import AsyncConnection
 
 from esp_api.config import ConfigurationError
+from esp_api.routes.messages import SUBMISSION_DRAIN_MARGIN_SECONDS
 from esp_api.server import build_api
 from esp_contracts.api import ErrorResponse, SubmissionView, SubmitMessage
 from esp_contracts.ids import Audience
@@ -34,6 +38,7 @@ from esp_request_admission.rate_limits import RatePolicy, open_counter_client
 from esp_runtime_harconses.manager import SessionLimits
 from scripts.migrate import migrate
 from tests.support.admission import LAB_RATE_POLICY, VALKEY_URL
+from tests.support.api_lab import APP_ROLE_DSN
 from tests.support.database import APP_DSN
 from tests.support.submission import (
     DRAFT,
@@ -361,7 +366,7 @@ async def test_lost_acknowledgement_is_a_409_with_status_link(submission_lab: Su
     response = await post_message(visitor, conversation_id, body(conversation_id, "req-http-lost"))
 
     assert response.status_code == 409
-    assert "x-esp-acceptance" not in response.headers or response.headers["x-esp-acceptance"] == "unconfirmed"
+    assert response.headers["x-esp-acceptance"] == "unconfirmed"
     payload = response.json()
     assert payload["error"]["code"] == "submission_unconfirmed"
     assert payload["error"]["retryable"] is False
@@ -533,6 +538,50 @@ async def test_status_reconciles_without_model_work(submission_lab: SubmissionLa
     assert old.outcome == "completed"
     assert old.active_agent_run_id is None
     assert old.native_work_ref == result.work.native_work_ref
+
+
+async def test_status_while_a_saved_session_is_still_in_setup_is_not_started(submission_lab: SubmissionLab) -> None:
+    """A current request whose run is still `starting` was provably not sent: input follows `running`.
+
+    Metadata alone answers, so status starts no native call during setup. Once the run is `running`,
+    a current request the harness does not report stays `submission_unconfirmed`.
+    """
+    conv = await submission_lab.conversation()
+    first = await submission_lab.submit(conv, "req-setup-first")
+    assert isinstance(first, Accepted)
+    native_id = first.work.native_session_id
+    submission_lab.cluster.session_store(native_id).complete(native_id, "req-setup-first", "first answer")
+    await submission_lab.terminal_clear(conv)
+    await submission_lab.unload(conv)
+    admitted = await submission_lab.admit(conv, "req-setup-resume")
+    assert admitted.residency == "resume"
+    inspections = submission_lab.process.calls["session/inspect"]
+
+    in_setup = await submission_lab.manager(1).inspect_submission(
+        conv.subject_id, conv.conversation_id, "req-setup-resume"
+    )
+    assert in_setup.outcome == "not_started"
+    assert not in_setup.resubmission_allowed
+    assert in_setup.active_agent_run_id == admitted.authority.active_agent_run_id
+    assert in_setup.runtime_state == "starting"
+    assert submission_lab.process.calls["session/inspect"] == inspections
+
+    during_send: list[SubmissionView] = []
+
+    async def inspect_before_the_harness_saves(_params: dict[str, Any]) -> None:
+        during_send.append(
+            await submission_lab.manager(1).inspect_submission(
+                conv.subject_id, conv.conversation_id, "req-setup-resume"
+            )
+        )
+
+    submission_lab.process.before["session/submit"] = inspect_before_the_harness_saves
+    result = await submission_lab.manager().submit_message(admitted, submission_lab.message(conv, "req-setup-resume"))
+    assert isinstance(result, Accepted)
+    [sending] = during_send
+    assert sending.outcome == "submission_unconfirmed"
+    assert sending.runtime_state == "running"
+    assert not sending.resubmission_allowed
 
 
 async def test_status_of_an_old_request_without_a_native_session_is_not_started(
@@ -727,3 +776,186 @@ async def test_an_unexpected_failure_after_admission_is_never_a_clean_rejection(
     assert response.json()["submitted"] is None
     assert response.json()["error"]["code"] == "submission_unconfirmed"
     assert submission_lab.cluster.submissions("req-unexpected") == 1
+
+
+# Operational traces: payload-free telemetry (codes and identifiers only)
+
+
+async def test_an_unrecorded_work_reference_leaves_an_operational_trace(submission_lab: SubmissionLab) -> None:
+    conv = await submission_lab.conversation()
+    admitted = await submission_lab.admit(conv, "req-unrecorded")
+
+    async def revoke_before_the_harness_answers(_params: dict[str, Any]) -> None:
+        assert await revoke_mapping(
+            submission_lab.admission.admin,
+            admitted.reservation.provider_session_id,
+            admitted.reservation.ownership_epoch,
+        )
+
+    submission_lab.process.before["session/submit"] = revoke_before_the_harness_answers
+    result = await submission_lab.manager().submit_message(admitted, submission_lab.message(conv, "req-unrecorded"))
+
+    # The harness proved acceptance; only recording its reference on the moved run failed.
+    assert isinstance(result, Accepted)
+    mapping = await submission_lab.mapping(conv)
+    assert mapping is not None and mapping["current_native_work_ref"] is None
+    telemetry = submission_lab.admission.api.telemetry
+    assert [attrs for name, attrs in telemetry.events if name == "submission.work_ref_unrecorded"] == [
+        {
+            "conversation_id": conv.conversation_id,
+            "provider_session_id": admitted.reservation.provider_session_id,
+            "active_agent_run_id": admitted.authority.active_agent_run_id,
+            "native_work_ref": result.work.native_work_ref,
+            "code": "record_conflict",
+        }
+    ]
+    assert all(DRAFT not in value for _name, attrs in telemetry.events for value in attrs.values())
+
+
+async def test_a_release_that_stays_contended_keeps_the_guard_and_leaves_a_trace(
+    submission_lab: SubmissionLab,
+) -> None:
+    """D3: a refused request whose release cannot take the fence stays held for the reconciler, traced."""
+    conv = await submission_lab.conversation()
+    first = await submission_lab.submit(conv, "req-contended-first")
+    assert isinstance(first, Accepted)
+    native_id = first.work.native_session_id
+    submission_lab.cluster.session_store(native_id).complete(native_id, "req-contended-first", "first answer")
+    await submission_lab.terminal_clear(conv)
+    admitted = await submission_lab.admit(conv, "req-contended")
+    # A shared fence on the same process (as a dispatch start holds one) outlasts the release attempts.
+    holder = await AsyncConnection.connect(APP_ROLE_DSN, autocommit=False)
+    try:
+        await holder.execute(
+            "SELECT esp_try_fence(%s, %s, false)", (submission_lab.process.incarnation_id, str(uuid.uuid4()))
+        )
+        submission_lab.process.native_refusal = "native_rejected"
+        result = await submission_lab.manager().submit_message(admitted, submission_lab.message(conv, "req-contended"))
+    finally:
+        await holder.rollback()
+        await holder.close()
+
+    assert isinstance(result, NotSubmitted) and result.code == "native_rejected"
+    assert await submission_lab.guard(conv) == admitted.reservation.provider_session_id
+    telemetry = submission_lab.admission.api.telemetry
+    assert [attrs for name, attrs in telemetry.events if name == "submission.release_deferred"] == [
+        {
+            "conversation_id": conv.conversation_id,
+            "provider_session_id": admitted.reservation.provider_session_id,
+            "active_agent_run_id": admitted.authority.active_agent_run_id,
+            "code": "native_rejected",
+        }
+    ]
+
+
+# Detached submissions: retrieved outcomes and a bounded shutdown drain
+
+
+async def _shut_down(app: FastAPI) -> None:
+    async with app.router.lifespan_context(app):
+        pass
+
+
+async def test_a_failure_after_the_handler_was_abandoned_is_retrieved_and_traced(
+    submission_lab: SubmissionLab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = submission_lab.runtime(0)
+    entered, proceed = asyncio.Event(), asyncio.Event()
+
+    async def fail_after_the_handler_left(_admitted: Admitted, _message: SubmitMessage) -> SubmissionResult:
+        entered.set()
+        await proceed.wait()
+        raise RuntimeError("the manager failed after the handler was gone")
+
+    monkeypatch.setattr(runtime.manager, "submit_message", fail_after_the_handler_left)
+    loop = asyncio.get_running_loop()
+    reported: list[str] = []
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: reported.append(str(context.get("message", ""))))
+    try:
+        visitor = await submission_lab.visitor()
+        conversation_id = await submission_lab.created(visitor)
+        request = asyncio.create_task(post_message(visitor, conversation_id, body(conversation_id, "req-left")))
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        del request
+        proceed.set()
+        deadline = time.monotonic() + 2
+        while runtime.app.state.submissions and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert not runtime.app.state.submissions
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous)
+
+    assert [message for message in reported if "never retrieved" in message] == []
+    telemetry = submission_lab.admission.api.telemetry
+    assert ("message.submission_failed", {"conversation_id": conversation_id, "code": "submission_error"}) in (
+        telemetry.events
+    )
+
+
+async def test_shutdown_waits_for_an_abandoned_submission_to_settle(submission_lab: SubmissionLab) -> None:
+    runtime = submission_lab.runtime(0)
+    visitor = await submission_lab.visitor()
+    conversation_id = await submission_lab.created(visitor)
+    entered, proceed = asyncio.Event(), asyncio.Event()
+
+    async def hold_create(_params: dict[str, Any]) -> None:
+        entered.set()
+        await proceed.wait()
+
+    submission_lab.process.before["session/create"] = hold_create
+    request = asyncio.create_task(post_message(visitor, conversation_id, body(conversation_id, "req-drained")))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+
+    shutdown = asyncio.create_task(_shut_down(runtime.app))
+    await asyncio.sleep(0.2)
+    assert not shutdown.done()
+    proceed.set()
+    await asyncio.wait_for(shutdown, timeout=3)
+
+    assert not runtime.app.state.submissions
+    mapping = await submission_lab.mapping(conversation_id)
+    assert mapping is not None and mapping["current_native_work_ref"] is not None
+    assert submission_lab.cluster.submissions("req-drained") == 1
+
+
+async def test_shutdown_drain_is_bounded_and_traces_what_it_cancels(
+    submission_lab: SubmissionLab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = await submission_lab.restarted_backend(
+        limits=SessionLimits(acceptance_budget_seconds=0.2, read_timeout_seconds=1)
+    )
+    entered = asyncio.Event()
+
+    async def never_settles(_admitted: Admitted, _message: SubmitMessage) -> SubmissionResult:
+        entered.set()
+        await asyncio.Event().wait()
+        raise AssertionError("a submission that never settles")
+
+    monkeypatch.setattr(runtime.manager, "submit_message", never_settles)
+    visitor = await submission_lab.admission.api.visitor(runtime.app)
+    submission_lab.admission.track_counter(visitor.subject_id, LAB_RATE_POLICY)
+    conversation_id = await submission_lab.created(visitor)
+    request = asyncio.create_task(post_message(visitor, conversation_id, body(conversation_id, "req-stuck")))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+
+    started = time.monotonic()
+    await _shut_down(runtime.app)
+    assert time.monotonic() - started < 0.2 + SUBMISSION_DRAIN_MARGIN_SECONDS + 1.0
+    assert not runtime.app.state.submissions
+    telemetry = submission_lab.admission.api.telemetry
+    assert (
+        "message.submission_cancelled",
+        {"conversation_id": conversation_id, "code": "submission_cancelled"},
+    ) in telemetry.events

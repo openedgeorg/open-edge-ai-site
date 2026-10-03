@@ -22,10 +22,15 @@ from esp_contracts.runtime import (
     HistoryItem,
     NativeHistorySnapshot,
     NativeStatus,
+    NotSubmitted,
+    SubmissionResult,
 )
 from esp_event_protocol.history import authorized_history, empty_history
-from esp_runtime_harconses.manager import NativeReadUnavailable
+from esp_execution_bindings.binding import AuthorizationError
+from esp_execution_bindings.dispatch_fence import revoke_incarnation
+from esp_runtime_harconses.manager import NativeReadUnavailable, SessionLimits
 from scripts.migrate import migrate
+from tests.support.admission import Conv
 from tests.support.database import APP_DSN
 from tests.support.submission import DRAFT, SubmissionLab, close_submission_lab, open_submission_lab, post_message
 
@@ -242,6 +247,98 @@ async def test_a_history_read_holds_off_concurrent_placement_of_the_same_session
     assert [item.text for item in snapshot.items] == [DRAFT]
     assert outcomes == ["rejected"]
     assert submission_lab.process.calls["session/resume"] == 0
+
+
+async def _unloaded_beside_a_warm_peer(lab: SubmissionLab) -> tuple[str, str, Conv]:
+    """Conversation A saved and unloaded; peer B resident and idle on the same process incarnation."""
+    subject_id, conversation_id, accepted = await _accepted_conversation(lab, "req-unloaded")
+    native_id = accepted.work.native_session_id
+    lab.cluster.session_store(native_id).complete(native_id, "req-unloaded", lab.native_answer)
+    await lab.terminal_clear(conversation_id)
+    await lab.unload(conversation_id)
+    peer = await lab.conversation()
+    first = await lab.submit(peer, "req-peer-first")
+    assert isinstance(first, Accepted)
+    peer_native = first.work.native_session_id
+    lab.cluster.session_store(peer_native).complete(peer_native, "req-peer-first", "peer answer")
+    await lab.terminal_clear(peer)
+    peer_mapping = await lab.mapping(peer)
+    assert peer_mapping is not None and peer_mapping["runtime_state"] == "warm_idle"
+    assert peer_mapping["runtime_incarnation_id"] == lab.process.incarnation_id
+    return subject_id, conversation_id, peer
+
+
+async def test_a_peer_refused_during_an_unloaded_history_read_is_released(submission_lab: SubmissionLab) -> None:
+    """The read's residency reservation never holds the process's incarnation fence across the native read.
+
+    A peer conversation on the same process that the harness conclusively refuses while the read runs
+    is therefore released at once (its release takes the exclusive fence), so the visitor's manual
+    resubmission is accepted instead of finding the conversation busy.
+    """
+    subject_id, conversation_id, peer = await _unloaded_beside_a_warm_peer(submission_lab)
+    refused: list[SubmissionResult] = []
+
+    async def refuse_the_peer_during_the_read() -> None:
+        submission_lab.process.native_refusal = "native_rejected"
+        refused.append(await submission_lab.submit(peer, "req-peer-refused", backend=1))
+
+    submission_lab.process.during_read = refuse_the_peer_during_the_read
+    snapshot = await submission_lab.manager().read_authorized_history(subject_id, conversation_id)
+    submission_lab.process.during_read = None
+
+    assert [item.text for item in snapshot.items] == [DRAFT, submission_lab.native_answer]
+    [result] = refused
+    assert isinstance(result, NotSubmitted) and result.code == "native_rejected"
+    assert await submission_lab.guard(peer) is None
+    peer_mapping = await submission_lab.mapping(peer)
+    assert peer_mapping is not None
+    assert peer_mapping["active_agent_run_id"] is None
+    assert peer_mapping["current_request_id"] is None
+    resubmitted = await submission_lab.submit(peer, "req-peer-refused")
+    assert isinstance(resubmitted, Accepted)
+    assert submission_lab.cluster.submissions("req-peer-refused") == 1
+
+
+async def test_whole_process_revocation_completes_during_an_unloaded_history_read(tmp_path: Path) -> None:
+    """Revocation of the process the read uses, which the saved session also last named, is not held off.
+
+    The read limit here (4 s) is longer than revocation's 2 s lock bound, so a read that held the
+    incarnation fence, or a mapping row lock that conflicts with revocation's update, would fail it.
+    """
+    await migrate(APP_DSN)
+    lab = await open_submission_lab(
+        tmp_path, limits=SessionLimits(acceptance_budget_seconds=2.0, read_timeout_seconds=4.0)
+    )
+    try:
+        subject_id, conversation_id, _peer = await _unloaded_beside_a_warm_peer(lab)
+        mapping = await lab.mapping(conversation_id)
+        assert mapping is not None
+        assert mapping["runtime_incarnation_id"] == lab.process.incarnation_id
+        outcome: list[list[str] | AuthorizationError] = []
+        elapsed: list[float] = []
+
+        async def revoke_during_the_read() -> None:
+            started = time.monotonic()
+            try:
+                outcome.append(
+                    await revoke_incarnation(lab.admission.admin, lab.instances[0], lab.process.incarnation_id)
+                )
+            except AuthorizationError as exc:
+                outcome.append(exc)
+            elapsed.append(time.monotonic() - started)
+
+        lab.process.during_read = revoke_during_the_read
+        snapshot = await lab.manager().read_authorized_history(subject_id, conversation_id)
+        lab.process.during_read = None
+
+        [revoked] = outcome
+        assert isinstance(revoked, list), revoked
+        assert str(mapping["id"]) in revoked
+        assert elapsed[0] < 1.0
+        # The read carries no operation scope and writes nothing; it returns the saved native history.
+        assert [item.text for item in snapshot.items] == [DRAFT, lab.native_answer]
+    finally:
+        await close_submission_lab(lab)
 
 
 async def test_history_marks_open_output_provisional_and_keeps_only_owned_provenance(
