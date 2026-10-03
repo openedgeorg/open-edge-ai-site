@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import inspect
 import json
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -297,6 +298,43 @@ def test_runtime_pods_expose_their_uid_as_the_incarnation_identity() -> None:
         assert env["ESP_POD_UID"]["valueFrom"] == {"fieldRef": {"fieldPath": "metadata.uid"}}
 
 
+def _workload_specs(documents: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    specs: dict[str, dict[str, Any]] = {}
+    for document in documents:
+        if document["kind"] == "Deployment":
+            specs[document["metadata"]["name"]] = document["spec"]["template"]["spec"]
+        elif document["kind"] == "Pod":
+            specs[document["metadata"]["name"]] = document["spec"]
+    return specs
+
+
+def test_every_workload_holds_its_own_mtls_identity() -> None:
+    documents = render_qualification_manifests()
+    identities: dict[str, str] = {}
+    for name, spec in _workload_specs(documents).items():
+        volumes = spec.get("volumes", [])
+        secrets = {volume["name"]: volume["secret"]["secretName"] for volume in volumes if "secret" in volume}
+        mounts = [
+            mount
+            for container in spec["containers"]
+            for mount in container.get("volumeMounts", [])
+            if mount["mountPath"] == "/etc/esp/mtls"
+        ]
+        assert mounts, name
+        assert all(mount.get("readOnly") is True and mount["name"] in secrets for mount in mounts), name
+        identities[name] = secrets[mounts[0]["name"]]
+    assert {"esp-api", "esp-inference-gateway", "esp-knowledge", "esp-embeddings"} <= set(identities)
+    assert len(set(identities.values())) == len(identities), identities
+    assert not [finding for finding in isolation_findings(documents) if finding.startswith("mtls_identity_missing")]
+
+    without = copy.deepcopy(documents)
+    gateway = _workload_specs(without)["esp-inference-gateway"]
+    gateway["containers"][0]["volumeMounts"] = [
+        mount for mount in gateway["containers"][0]["volumeMounts"] if mount["mountPath"] != "/etc/esp/mtls"
+    ]
+    assert "mtls_identity_missing:esp-inference-gateway" in isolation_findings(without)
+
+
 def test_gateway_egress_excludes_every_reserved_and_translated_range() -> None:
     documents = render_qualification_manifests()
     assert not [finding for finding in isolation_findings(documents) if "reserved_range_open" in finding]
@@ -366,6 +404,18 @@ def test_runtime_images_are_pinned_non_root_and_exact_build() -> None:
         for f in runtime_image_findings(codex + "\nRUN curl -fsSL https://example.invalid/x\n", harness="codex")
     )
     assert any(f.startswith("harness_digest") for f in runtime_image_findings(codex, harness="grok-build"))
+    # Every pip install is hash-checked, the workspace wheels included.
+    for findings in (
+        runtime_image_findings(codex.replace("--require-hashes ", ""), harness="codex"),
+        runtime_image_findings(grok.replace("--require-hashes ", ""), harness="grok-build"),
+    ):
+        assert len([f for f in findings if f.startswith("unhashed_pip_install")]) == 2, findings
+    # The last step removes every shell binary, not just /bin/sh.
+    only_sh = re.sub(r'RUN \["/usr/bin/rm", "-f", [^\n]*\]', 'RUN ["/usr/bin/rm", "-f", "/bin/sh"]', codex)
+    assert only_sh != codex
+    findings = runtime_image_findings(only_sh, harness="codex")
+    assert {"shell_not_removed:/bin/bash", "shell_not_removed:/usr/bin/dash"} <= set(findings), findings
+    assert "shell_not_removed:/bin/sh" not in findings
 
 
 def _record(profile: RuntimeProfile, *, status: str) -> RuntimeQualificationRecord:

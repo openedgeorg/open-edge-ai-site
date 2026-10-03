@@ -2169,6 +2169,8 @@ def _workload_findings(name: str, spec: Mapping[str, Any], labels: Mapping[str, 
     if spec.get("hostPID") or spec.get("hostIPC"):
         findings.append(f"host_namespace:{name}")
     role = labels.get(_ROLE_LABEL)
+    if role is not None and not _mounts_mtls_identity(spec):
+        findings.append(f"mtls_identity_missing:{name}")
     for volume in cast(list[dict[str, Any]], spec.get("volumes") or []):
         if "hostPath" in volume:
             findings.append(f"host_path:{name}/{volume.get('name')}")
@@ -2190,6 +2192,25 @@ def _workload_findings(name: str, spec: Mapping[str, Any], labels: Mapping[str, 
             if "provider-credentials" in str(ref.get("name", "")) and role != "inference-gateway":
                 findings.append(f"provider_credentials_outside_gateway:{name}")
     return findings
+
+
+_MTLS_MOUNT_PATH = "/etc/esp/mtls"
+
+
+def _mounts_mtls_identity(spec: Mapping[str, Any]) -> bool:
+    """Every container mounts a Secret read-only at the mTLS identity path."""
+    volumes = cast(list[dict[str, Any]], spec.get("volumes") or [])
+    secrets = {str(volume.get("name")) for volume in volumes if "secret" in volume}
+    containers = _containers(spec)
+    return bool(containers) and all(
+        any(
+            mount.get("mountPath") == _MTLS_MOUNT_PATH
+            and mount.get("readOnly") is True
+            and str(mount.get("name")) in secrets
+            for mount in cast(list[dict[str, Any]], container.get("volumeMounts") or [])
+        )
+        for container in containers
+    )
 
 
 def _runtime_pod_findings(name: str, spec: Mapping[str, Any]) -> list[str]:
@@ -2339,6 +2360,9 @@ def runtime_image_findings(dockerfile: str, *, harness: Literal["codex", "grok-b
             unpinned_pip = "pip install" in lowered and "--no-index" not in lowered
             if re.search(r"\b(curl|wget)\b|git clone", lowered) or unpinned_pip:
                 findings.append(f"network_fetch:{rest[:60]}")
+            for command in re.split(r"&&|;|\|\|", lowered):
+                if "pip install" in command and "--require-hashes" not in command:
+                    findings.append(f"unhashed_pip_install:{' '.join(command.split())[:200]}")
             if "apt-get update" in lowered and "--snapshot" not in lowered:
                 findings.append("unpinned_packages")
         if keyword == "ADD" and re.search(r"https?://", rest):
@@ -2357,9 +2381,36 @@ def runtime_image_findings(dockerfile: str, *, harness: Literal["codex", "grok-b
     if "infra/runtime/tool-policy.json" not in copies:
         findings.append("tool_policy_not_packaged")
     runs = [rest for keyword, rest in final if keyword == "RUN"]
-    if not runs or not (runs[-1].startswith("[") and '"/bin/sh"' in runs[-1]):
-        findings.append("shell_not_removed")
+    findings.extend(_shell_removal_findings(runs[-1] if runs else None))
     return sorted(set(findings))
+
+
+# Every shell binary the Ubuntu base ships, under both halves of the merged /usr. Removing them is
+# defence in depth: interpreters such as python3 (the runtime entry) and perl-base remain, so the tool
+# policy and its live checks, not the absence of interpreters, keep a tool from running commands.
+RUNTIME_SHELL_PATHS: tuple[str, ...] = (
+    "/bin/sh",
+    "/bin/bash",
+    "/bin/dash",
+    "/bin/rbash",
+    "/usr/bin/sh",
+    "/usr/bin/bash",
+    "/usr/bin/dash",
+    "/usr/bin/rbash",
+)
+
+
+def _shell_removal_findings(last_run: str | None) -> list[str]:
+    """The final RUN must be an exec-form `rm` (it cannot need a shell) naming every shell binary."""
+    try:
+        parsed: object = json.loads(last_run) if last_run is not None and last_run.startswith("[") else None
+    except ValueError:
+        parsed = None
+    argv = [str(item) for item in cast(list[object], parsed)] if isinstance(parsed, list) else []
+    if not argv or argv[0].rsplit("/", 1)[-1] != "rm":
+        return ["shell_not_removed"]
+    removed = set(argv[1:])
+    return [f"shell_not_removed:{path}" for path in RUNTIME_SHELL_PATHS if path not in removed]
 
 
 # Connect-level failures that mean no TCP session left the pod: a dropped SYN (timeout), a local

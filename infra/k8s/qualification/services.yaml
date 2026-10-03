@@ -1,6 +1,14 @@
 # ESP services of the isolated qualification deployment. All are ClusterIP: there is no Ingress,
 # LoadBalancer or NodePort. The qualification driver reaches the application backend from inside
-# the namespace. Every pod runs non-root with a read-only root file system and its own mTLS identity.
+# the namespace. Every pod runs non-root with a read-only root file system and its own mTLS identity
+# (a distinct Secret mounted read-only at /etc/esp/mtls; `isolation_findings` refuses a workload
+# without one).
+#
+# Telemetry: runtime, gateway, knowledge and API egress may reach pods labelled
+# `esp.openedge.dev/role: telemetry-collector` on 4317. The collector itself is not defined here: its
+# configuration is Task 19's (`infra/observability/collector.yaml`). Until it is deployed into this
+# namespace with its own mTLS identity nothing matches that label, so telemetry export simply fails;
+# the correctness evidence store does not depend on telemetry.
 #
 # Credentials come from the qualification-only credential namespace recorded in the candidate policy
 # and are materialised as the Secrets named below by the operator; none is committed. Provider
@@ -302,6 +310,15 @@ spec:
             capabilities:
               drop:
                 - ALL
+          volumeMounts:
+            - name: mtls
+              mountPath: /etc/esp/mtls
+              readOnly: true
+      volumes:
+        - name: mtls
+          secret:
+            secretName: esp-embeddings-mtls
+            defaultMode: 0440
 ---
 apiVersion: v1
 kind: Service

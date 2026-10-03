@@ -7,16 +7,20 @@
 #
 #   docker build -f infra/runtime/codex/Dockerfile \
 #     --build-context codex-native=<directory holding the vendored native binary, named `codex`> \
-#     --build-context wheels=<directory holding requirements.txt and the wheels it lists> .
+#     --build-context wheels=<directory holding the two requirement files and the wheels they list> .
 #
 #   requirements.txt: uv export --frozen --no-dev --no-emit-workspace --package esp-provider-openai
+#   workspace-requirements.txt: one `<name>==<version> --hash=sha256:<digest>` line for each of the
+#           three workspace wheels below, written when they are built (for example with `pip hash`),
+#           so the image installs exactly the wheels whose digests the build recorded.
 #   wheels: the hash-listed third-party wheels plus `uv build --wheel` of esp-contracts,
 #           esp-provider-shared and esp-provider-openai from the same commit.
 #
 # Engineering choices (any change requires requalification): Ubuntu 24.04 pinned by digest, with an
 # apt snapshot pinned for Python 3.12; the harness pinned by the sha256 of its native binary, the same
-# digest CODEX_BUILD names in esp_provider_openai.codex_adapter. The image has no shell, runs as a
-# fixed non-root user, carries no credential and expects a read-only root file system.
+# digest CODEX_BUILD names in esp_provider_openai.codex_adapter. The image has no shell binary
+# (Python and Perl remain; see the last RUN), runs as a fixed non-root user, carries no credential and
+# expects a read-only root file system.
 
 FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS harness
 COPY --from=codex-native codex /staging/codex
@@ -33,13 +37,16 @@ RUN apt-get update --snapshot 20260622T000000Z \
 COPY --from=wheels / /tmp/wheels/
 RUN python3 -m venv /opt/esp/venv \
     && /opt/esp/venv/bin/pip install --no-index --find-links=/tmp/wheels --require-hashes -r /tmp/wheels/requirements.txt \
-    && /opt/esp/venv/bin/pip install --no-index --find-links=/tmp/wheels --no-deps esp-contracts esp-provider-shared esp-provider-openai \
+    && /opt/esp/venv/bin/pip install --no-index --find-links=/tmp/wheels --require-hashes --no-deps -r /tmp/wheels/workspace-requirements.txt \
     && /opt/esp/venv/bin/python -m pip uninstall --yes pip \
     && rm -rf /tmp/wheels
 COPY --from=harness /staging/codex /opt/esp/bin/codex
 COPY infra/runtime/codex/config.toml /etc/esp/codex/config.toml
 COPY infra/runtime/tool-policy.json /etc/esp/tool-policy.json
-# Last: remove every shell so no tool can start an arbitrary command interpreter.
+# Last: remove every shell binary, in exec form because no shell is left. This is defence in depth,
+# not interpreter removal: python3 (the runtime entry) and perl-base (essential in the base) remain.
+# Keeping tools from running commands rests on the tool policy, whose enforcement the live checks in
+# tests/qualification/test_tool_policy.py must still demonstrate.
 RUN ["/usr/bin/rm", "-f", "/bin/sh", "/bin/bash", "/bin/dash", "/bin/rbash", "/usr/bin/sh", "/usr/bin/bash", "/usr/bin/dash", "/usr/bin/rbash"]
 
 LABEL org.opencontainers.image.title="esp-codex-runtime" \
