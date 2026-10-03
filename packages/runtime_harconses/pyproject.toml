@@ -1,0 +1,38 @@
+[project]
+name = "esp-runtime-harconses"
+version = "0.1.0"
+description = "Bounded native setup, explicit acceptance, status reconciliation and owned native history."
+requires-python = ">=3.12"
+dependencies = [
+    "esp-contracts",
+    "esp-db",
+    "esp-espcon",
+    "esp-event-protocol",
+    "esp-execution-bindings",
+    "esp-provider-router",
+    "esp-provider-shared",
+    "esp-request-admission",
+    "esp-runtime-placement",
+    "psycopg[binary,pool]>=3.2",
+]
+
+[tool.uv.sources]
+esp-contracts = { workspace = true }
+esp-db = { workspace = true }
+esp-espcon = { workspace = true }
+esp-event-protocol = { workspace = true }
+esp-execution-bindings = { workspace = true }
+esp-provider-router = { workspace = true }
+esp-provider-shared = { workspace = true }
+esp-request-admission = { workspace = true }
+esp-runtime-placement = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/esp_runtime_harconses"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""

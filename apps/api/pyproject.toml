@@ -7,7 +7,11 @@ dependencies = [
     "esp-contracts",
     "esp-db",
     "esp-espcon",
+    "esp-event-protocol",
     "esp-execution-bindings",
+    "esp-provider-router",
+    "esp-request-admission",
+    "esp-runtime-harconses",
     "fastapi>=0.115",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.10",
@@ -17,7 +21,11 @@ dependencies = [
 esp-contracts = { workspace = true }
 esp-db = { workspace = true }
 esp-espcon = { workspace = true }
+esp-event-protocol = { workspace = true }
 esp-execution-bindings = { workspace = true }
+esp-provider-router = { workspace = true }
+esp-request-admission = { workspace = true }
+esp-runtime-harconses = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

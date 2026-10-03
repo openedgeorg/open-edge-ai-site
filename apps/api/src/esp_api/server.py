@@ -9,6 +9,11 @@ adapter. There are no hidden global dependencies.
 on the Application Database, which status and history need. A provider outage or an unavailable rate
 counter store rejects new input elsewhere and never makes the backend unready.
 
+Message submission composes immediate admission (`AdmissionController`) with the Runtime Session Manager
+(`SessionManager`), which routes each conversation's fixed provider to its own pool (`ProviderRouter`).
+A counter store needs its reviewed rate policy. Without a counter store every new message is refused as
+`503 service_unavailable` before admission reserves anything (P §7.5); status and history still work.
+
 Every response keeps the clean rejection shape. An unexpected exception becomes a fixed-text
 `500 internal_error` that echoes nothing from the exception; the exception still propagates to the
 server so it is logged there, not in the response.
@@ -18,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import psycopg
@@ -29,13 +34,20 @@ from esp_api.auth import SubjectIdentity, identity_router
 from esp_api.boundary import NO_STORE, ApiError, error_response
 from esp_api.config import ApiSettings, ConfigurationError, bind_candidate_policy
 from esp_api.routes.conversations import router as conversations_router
+from esp_api.routes.history import router as history_router
+from esp_api.routes.messages import router as messages_router
+from esp_api.routes.status import router as status_router
 from esp_contracts.eligibility import CandidateAdmissionPolicy
 from esp_contracts.ids import Provider
-from esp_contracts.runtime import SessionHandle, SessionReservation
+from esp_contracts.runtime import SubmissionResult
 from esp_db.client import Db, transaction
 from esp_espcon.brain_registry import BrainRegistry
 from esp_espcon.conversation import ConfiguredRuntime, ConversationService
 from esp_execution_bindings.binding import TokenSigner
+from esp_provider_router.router import NativeRuntimeAdapter, ProviderRouter
+from esp_request_admission.admit import AdmissionController
+from esp_request_admission.rate_limits import CounterStoreUnavailable, RateDecision, RatePolicy
+from esp_runtime_harconses.manager import SessionLimits, SessionManager
 
 __all__ = [
     "ApiDependencies",
@@ -49,16 +61,28 @@ __all__ = [
 _READINESS_TIMEOUT_SECONDS = 2.0
 
 
-class NativeRuntimeAdapter(Protocol):
-    """The fixed provider's native adapter. Conversation creation never calls it."""
-
-    async def create_session(self, reservation: SessionReservation) -> SessionHandle: ...
-
-
 class CounterStore(Protocol):
     """Rate-limit counter store (P §7.5). Its outage rejects new submissions, not status or history."""
 
     async def ping(self) -> bool: ...
+
+    async def check_rate(self, subject_id: str, policy: RatePolicy) -> RateDecision: ...
+
+
+class _AbsentCounterStore:
+    """No counter store is configured: every rate check is an outage, so no new input is admitted."""
+
+    async def ping(self) -> bool:
+        return False
+
+    async def check_rate(self, subject_id: str, policy: RatePolicy) -> RateDecision:
+        raise CounterStoreUnavailable("counter_store_unconfigured")
+
+
+# Never consulted: the absent counter store refuses before reading any policy.
+_UNCONFIGURED_RATE_POLICY = RatePolicy(
+    policy_id="unconfigured", window_seconds=1, capacity=1, refill=1, expiry_seconds=1
+)
 
 
 class Telemetry(Protocol):
@@ -74,7 +98,12 @@ class NullTelemetry:
 
 @dataclass(frozen=True)
 class ApiDependencies:
-    """Everything the Application Backend uses. `signer` mints setup and operation scopes later."""
+    """Everything the Application Backend uses. `signer` mints operation scopes after native setup.
+
+    `adapters` holds one pool client per provider (`NativeRuntimeAdapter`); the router places each under
+    that provider's fixed pool. `rate_policy` is the reviewed visitor rate policy the counter store
+    enforces. `session_limits` bounds setup, acceptance confirmation and native reads.
+    """
 
     db: Db
     settings: ApiSettings
@@ -86,6 +115,8 @@ class ApiDependencies:
     signer: TokenSigner
     counters: CounterStore | None
     telemetry: Telemetry
+    rate_policy: RatePolicy | None = None
+    session_limits: SessionLimits = field(default_factory=SessionLimits)
 
 
 def build_api(deps: ApiDependencies) -> FastAPI:
@@ -94,13 +125,30 @@ def build_api(deps: ApiDependencies) -> FastAPI:
     app.state.deps = deps
     app.state.identity = deps.identity
     app.state.telemetry = deps.telemetry
-    app.state.conversations = ConversationService(
+    conversations = ConversationService(
         deps.db,
         deps.releases,
         release_id=deps.settings.brain_release_id,
         runtimes=deps.runtimes,
         candidate_policy=deps.candidate_policy,
     )
+    app.state.conversations = conversations
+    admission = AdmissionController(
+        deps.db,
+        conversations,
+        rates=deps.counters if deps.counters is not None else _AbsentCounterStore(),
+        rate_policy=deps.rate_policy if deps.rate_policy is not None else _UNCONFIGURED_RATE_POLICY,
+    )
+    app.state.admission = admission
+    app.state.sessions = SessionManager(
+        deps.db,
+        ProviderRouter.for_providers(deps.adapters),
+        deps.signer,
+        admission,
+        limits=deps.session_limits,
+    )
+    submissions: set[asyncio.Task[SubmissionResult]] = set()
+    app.state.submissions = submissions
 
     async def api_error(request: Request, exc: Exception) -> Response:
         if not isinstance(exc, ApiError):
@@ -114,6 +162,9 @@ def build_api(deps: ApiDependencies) -> FastAPI:
     app.add_exception_handler(Exception, unexpected_error)
     app.include_router(identity_router)
     app.include_router(conversations_router)
+    app.include_router(messages_router)
+    app.include_router(status_router)
+    app.include_router(history_router)
 
     @app.get("/livez")
     async def livez() -> JSONResponse:
@@ -141,6 +192,8 @@ def _require_consistent(deps: ApiDependencies) -> None:
         bind_candidate_policy(deps.candidate_policy, settings)
     elif settings.environment == "qualification":
         raise ConfigurationError(["an isolated qualification deployment needs its bound candidate policy"])
+    if deps.counters is not None and deps.rate_policy is None:
+        raise ConfigurationError(["a counter store needs its reviewed rate policy"])
     identity = deps.identity
     if (
         identity.cookie_name != settings.cookie_name

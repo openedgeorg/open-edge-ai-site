@@ -27,7 +27,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 from fastapi import FastAPI
@@ -37,11 +37,18 @@ from psycopg_pool import AsyncConnectionPool
 from esp_api.auth import CSRF_HEADER, SubjectIdentity
 from esp_api.config import ApiSettings, load_candidate_policy, load_runtime_profiles, load_settings
 from esp_api.server import ApiDependencies, NativeRuntimeAdapter, build_api
-from esp_contracts.api import ConversationView
+from esp_contracts.api import ConversationView, SubmitMessage
 from esp_contracts.ids import Provider
 from esp_contracts.qualification import PrimitiveEvidence, RuntimeProfile
 from esp_contracts.release import ReleaseManifest
-from esp_contracts.runtime import SessionHandle, SessionReservation
+from esp_contracts.runtime import (
+    NativeHistorySnapshot,
+    NativeStatus,
+    OperationAuthority,
+    SessionHandle,
+    SessionReservation,
+    SubmissionResult,
+)
 from esp_db.client import Db, open_db, transaction
 from esp_espcon.brain_registry import BrainRegistry
 from esp_espcon.conversation import AdmissionPins, ConversationService, ProviderEligibility
@@ -91,10 +98,29 @@ class CountingRuntime:
     def __init__(self, provider: Provider) -> None:
         self.provider = provider
         self.create_calls = 0
+        self.other_calls = 0
 
     async def create_session(self, reservation: SessionReservation) -> SessionHandle:
         self.create_calls += 1
         raise RuntimeError("conversation creation must not allocate a native session")
+
+    async def resume_session(self, handle: SessionHandle) -> SessionHandle:
+        return self._unexpected()
+
+    async def submit(
+        self, handle: SessionHandle, message: SubmitMessage, authority: OperationAuthority
+    ) -> SubmissionResult:
+        return self._unexpected()
+
+    async def inspect(self, handle: SessionHandle, request_id: str | None = None) -> NativeStatus:
+        return self._unexpected()
+
+    async def read_history(self, handle: SessionHandle) -> NativeHistorySnapshot:
+        return self._unexpected()
+
+    def _unexpected(self) -> NoReturn:
+        self.other_calls += 1
+        raise RuntimeError("conversation metadata routes never reach a native session")
 
 
 class FaultyObjectStore:

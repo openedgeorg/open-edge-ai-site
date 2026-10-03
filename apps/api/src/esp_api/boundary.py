@@ -17,20 +17,27 @@ NO_STORE = {"cache-control": "no-store"}
 
 
 class ApiError(Exception):
-    """A clean rejection: `{error:{code,message,retryable},submitted:false}` with a fixed message."""
+    """A clean rejection: `{error:{code,message,retryable},submitted:false}` with a fixed message.
 
-    def __init__(self, status_code: int, code: str, message: str, *, retryable: bool = False) -> None:
+    `submitted` is `None` where the answer says nothing about whether input was submitted: status and
+    history reads, whose failure must never read as "not submitted".
+    """
+
+    def __init__(
+        self, status_code: int, code: str, message: str, *, retryable: bool = False, submitted: bool | None = False
+    ) -> None:
         super().__init__(code)
         self.status_code = status_code
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.submitted = submitted
 
 
 def error_response(error: ApiError) -> JSONResponse:
     body = ErrorResponse(
         error=ErrorBody(code=error.code, message=error.message, retryable=error.retryable),
-        submitted=False,
+        submitted=error.submitted,
     )
     return JSONResponse(body.model_dump(mode="json"), status_code=error.status_code, headers=NO_STORE)
 

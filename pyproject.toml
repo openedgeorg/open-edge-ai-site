@@ -15,9 +15,11 @@ dependencies = [
     "esp-mcp",
     "esp-object-store",
     "esp-provider-openai",
+    "esp-provider-router",
     "esp-provider-shared",
     "esp-provider-xai",
     "esp-request-admission",
+    "esp-runtime-harconses",
     "esp-runtime-placement",
     "jsonschema>=4.23",
     "pyyaml>=6.0.2",
@@ -44,9 +46,11 @@ esp-inference-gateway = { workspace = true }
 esp-mcp = { workspace = true }
 esp-object-store = { workspace = true }
 esp-provider-openai = { workspace = true }
+esp-provider-router = { workspace = true }
 esp-provider-shared = { workspace = true }
 esp-provider-xai = { workspace = true }
 esp-request-admission = { workspace = true }
+esp-runtime-harconses = { workspace = true }
 esp-runtime-placement = { workspace = true }
 
 [tool.uv.workspace]
@@ -58,7 +62,9 @@ members = [
     "packages/event_protocol",
     "packages/execution_bindings",
     "packages/object_store",
+    "packages/provider_router",
     "packages/request_admission",
+    "packages/runtime_harconses",
     "packages/runtime_placement",
     "services/esp_embeddings",
     "services/esp_inference_gateway",

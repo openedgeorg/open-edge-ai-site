@@ -19,9 +19,11 @@ members = [
     "esp-mcp",
     "esp-object-store",
     "esp-provider-openai",
+    "esp-provider-router",
     "esp-provider-shared",
     "esp-provider-xai",
     "esp-request-admission",
+    "esp-runtime-harconses",
     "esp-runtime-placement",
     "esp-site-tooling",
 ]
@@ -249,7 +251,11 @@ dependencies = [
     { name = "esp-contracts" },
     { name = "esp-db" },
     { name = "esp-espcon" },
+    { name = "esp-event-protocol" },
     { name = "esp-execution-bindings" },
+    { name = "esp-provider-router" },
+    { name = "esp-request-admission" },
+    { name = "esp-runtime-harconses" },
     { name = "fastapi" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic" },
@@ -260,7 +266,11 @@ requires-dist = [
     { name = "esp-contracts", editable = "packages/contracts" },
     { name = "esp-db", editable = "packages/db" },
     { name = "esp-espcon", editable = "packages/espcon" },
+    { name = "esp-event-protocol", editable = "packages/event_protocol" },
     { name = "esp-execution-bindings", editable = "packages/execution_bindings" },
+    { name = "esp-provider-router", editable = "packages/provider_router" },
+    { name = "esp-request-admission", editable = "packages/request_admission" },
+    { name = "esp-runtime-harconses", editable = "packages/runtime_harconses" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.10" },
@@ -433,6 +443,17 @@ requires-dist = [
 ]
 
 [[package]]
+name = "esp-provider-router"
+version = "0.1.0"
+source = { editable = "packages/provider_router" }
+dependencies = [
+    { name = "esp-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "esp-contracts", editable = "packages/contracts" }]
+
+[[package]]
 name = "esp-provider-shared"
 version = "0.1.0"
 source = { editable = "providers/shared" }
@@ -490,6 +511,37 @@ requires-dist = [
 ]
 
 [[package]]
+name = "esp-runtime-harconses"
+version = "0.1.0"
+source = { editable = "packages/runtime_harconses" }
+dependencies = [
+    { name = "esp-contracts" },
+    { name = "esp-db" },
+    { name = "esp-espcon" },
+    { name = "esp-event-protocol" },
+    { name = "esp-execution-bindings" },
+    { name = "esp-provider-router" },
+    { name = "esp-provider-shared" },
+    { name = "esp-request-admission" },
+    { name = "esp-runtime-placement" },
+    { name = "psycopg", extra = ["binary", "pool"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "esp-contracts", editable = "packages/contracts" },
+    { name = "esp-db", editable = "packages/db" },
+    { name = "esp-espcon", editable = "packages/espcon" },
+    { name = "esp-event-protocol", editable = "packages/event_protocol" },
+    { name = "esp-execution-bindings", editable = "packages/execution_bindings" },
+    { name = "esp-provider-router", editable = "packages/provider_router" },
+    { name = "esp-provider-shared", editable = "providers/shared" },
+    { name = "esp-request-admission", editable = "packages/request_admission" },
+    { name = "esp-runtime-placement", editable = "packages/runtime_placement" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
+]
+
+[[package]]
 name = "esp-runtime-placement"
 version = "0.1.0"
 source = { editable = "packages/runtime_placement" }
@@ -522,9 +574,11 @@ dependencies = [
     { name = "esp-mcp" },
     { name = "esp-object-store" },
     { name = "esp-provider-openai" },
+    { name = "esp-provider-router" },
     { name = "esp-provider-shared" },
     { name = "esp-provider-xai" },
     { name = "esp-request-admission" },
+    { name = "esp-runtime-harconses" },
     { name = "esp-runtime-placement" },
     { name = "jsonschema" },
     { name = "pyyaml" },
@@ -552,9 +606,11 @@ requires-dist = [
     { name = "esp-mcp", editable = "services/esp_mcp" },
     { name = "esp-object-store", editable = "packages/object_store" },
     { name = "esp-provider-openai", editable = "providers/openai" },
+    { name = "esp-provider-router", editable = "packages/provider_router" },
     { name = "esp-provider-shared", editable = "providers/shared" },
     { name = "esp-provider-xai", editable = "providers/xai" },
     { name = "esp-request-admission", editable = "packages/request_admission" },
+    { name = "esp-runtime-harconses", editable = "packages/runtime_harconses" },
     { name = "esp-runtime-placement", editable = "packages/runtime_placement" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "pyyaml", specifier = ">=6.0.2" },
