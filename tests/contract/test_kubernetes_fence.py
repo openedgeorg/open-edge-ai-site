@@ -39,9 +39,7 @@ class MemorySink:
         self.records: list[tuple[str, tuple[WriterEvidence, ...]]] = []
         self.refs: list[str] = []
 
-    async def retain(
-        self, unit_id: str, incarnation_id: str, evidence: Sequence[WriterEvidence], decision: str
-    ) -> str:
+    async def retain(self, unit_id: str, incarnation_id: str, evidence: Sequence[WriterEvidence], decision: str) -> str:
         if self.fail:
             raise OSError("evidence store unavailable")
         self.records.append((decision, tuple(evidence)))
@@ -87,9 +85,7 @@ class ScriptedDriver:
         return self._ack
 
 
-def _fence(
-    driver: StorageFenceDriver, *, qualified: Sequence[DriverIdentity] = (QUALIFIED,)
-) -> KubernetesStorageFence:
+def _fence(driver: StorageFenceDriver, *, qualified: Sequence[DriverIdentity] = (QUALIFIED,)) -> KubernetesStorageFence:
     return KubernetesStorageFence(driver, qualified_drivers=qualified, evidence_sink=MemorySink())
 
 
@@ -376,9 +372,9 @@ async def test_a_receipt_rests_on_retained_fence_evidence() -> None:
     # A refusal is retained as well.
     refused = ScriptedDriver(stop=[_evidence("pod_force_deleted")], ack=[_evidence("fence_acknowledged")])
     with pytest.raises(FenceEvidenceMissing):
-        await KubernetesStorageFence(
-            refused, qualified_drivers=[QUALIFIED], evidence_sink=sink
-        ).fence_previous_writer(UNIT, OBSOLETE)
+        await KubernetesStorageFence(refused, qualified_drivers=[QUALIFIED], evidence_sink=sink).fence_previous_writer(
+            UNIT, OBSOLETE
+        )
     assert sink.records[-1][0] == "no_positive_revocation"
     # Evidence that cannot be retained cannot support a receipt.
     with pytest.raises(FenceEvidenceMissing, match="fence_evidence_unretained"):

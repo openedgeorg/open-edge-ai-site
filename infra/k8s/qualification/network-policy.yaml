@@ -6,15 +6,16 @@
 # loopback, link-local, multicast, reserved, IPv4-mapped and NAT64 range is excepted); its exact
 # upstream hosts are the gateway's approved routes (ApprovedRoute). Network-level egress for the
 # gateway is therefore any public address on TCP 443; hostname-level filtering would need a
-# CNI-specific policy and is recorded with the CNI identity when used.
+# CNI-specific policy, which this deployment does not define.
 #
 # Internal DNS: runtime pods may query the cluster resolver (kube-dns) only. A default resolver
 # forwards external names upstream, which gives a runtime a DNS exfiltration channel. The isolated
 # deployment therefore needs a resolver restriction that answers only cluster names for runtime pods
 # (for example a CoreDNS `acl`/`view` rule for the runtime pod addresses, or a CNI DNS policy limited
-# to `*.cluster.local`). That restriction is CNI/DNS specific, is recorded with the infrastructure
-# identity, and is demonstrated by the required live scenario `egress_runtime_dns_internal_only`;
-# until it is, the network prerequisite stays pending.
+# to `*.cluster.local`). That restriction is CNI/DNS specific and is not part of the recorded
+# infrastructure identity: none of its recorded or observed values binds a resolver configuration.
+# Only the required live scenario `egress_runtime_dns_internal_only` demonstrates it; until that
+# scenario is satisfied, the network prerequisite stays pending.
 #
 # These objects are configuration. The CNI must enforce them, which only the live probes in
 # tests/qualification/test_egress.py demonstrate (a denied connection, never a provider 401).
