@@ -3,6 +3,11 @@
 The lab records a pending runtime qualification in PostgreSQL, evaluates the recorded test-only
 candidate policy on the same profile and release, and reads the qualification record back. It never
 inserts or upgrades a validated record.
+
+The lab's release manifest is held in memory only and is never published or written anywhere. It is
+given production status, an evaluation reference and the lab's own qualification record id, so the
+public-eligibility decision is reached only through the record read back from PostgreSQL: the pending
+row is what refuses it, not an incomplete release.
 """
 
 from __future__ import annotations
@@ -102,9 +107,15 @@ class PolicyLab:
     def __init__(self, db: Db, profile: RuntimeProfile, release: ReleaseManifest) -> None:
         self.db = db
         self.profile = profile
-        self.release = release
         suffix = uuid.uuid4().hex[:12]
         self.qualification_id = f"test-qual-{suffix}"
+        self.release = release.model_copy(
+            update={
+                "status": "production",
+                "evaluation_ref": f"test-only-evaluation-{suffix}",
+                "qualification_refs": [self.qualification_id],
+            }
+        )
         self.deployment_ref = f"qual-test-{suffix}"
         self.provider_session_id = str(uuid.uuid4())
         self.policy_bytes = json.dumps(policy_document(profile, release)).encode()

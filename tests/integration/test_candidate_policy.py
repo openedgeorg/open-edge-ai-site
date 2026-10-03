@@ -4,6 +4,9 @@ The candidate policy may admit an allowlisted pending runtime and a non-producti
 isolated deployment's real application path. It must not change public eligibility or any
 qualification record. The manifest and image checks below inspect configuration only; enforced
 egress denial and storage fencing are proved by the live probes in tests/qualification.
+
+The manifest tests need a `kubectl` binary on PATH for the offline `kubectl kustomize` render; no
+context or cluster is used. Without it they fail with `ManifestRenderError: kubectl unavailable`.
 """
 
 from __future__ import annotations
@@ -77,6 +80,31 @@ async def test_candidate_policy_does_not_change_public_eligibility(policy_lab: P
     # Admitting the candidate on the isolated path wrote nothing: the record and the authority view agree.
     assert await policy_lab.qualification_record() == before
     assert await policy_lab.authority_qualification_status() == "pending"
+
+
+async def test_the_pending_database_record_is_what_blocks_public_eligibility(policy_lab: PolicyLab) -> None:
+    # The lab's release is otherwise complete for public creation and references the lab's own record,
+    # so the public decision above depends on the row read back from PostgreSQL.
+    release = policy_lab.release
+    assert release.status == "production" and release.evaluation_ref is not None
+    assert release.qualification_refs == [policy_lab.qualification_id]
+    record = await policy_lab.qualification_record()
+    assert record is not None and record.status == "pending"
+    assert not publicly_eligible(policy_lab.profile, release, record)
+    # In memory only, never written: the same row once reviewed and validated would admit the release.
+    reviewed = record.model_copy(
+        update={
+            "status": "validated",
+            "reviewed_by": "test-only-reviewer",
+            "reviewed_at": datetime(2026, 10, 3, tzinfo=UTC),
+            "evidence_bundle_ref": "test-only-evidence",
+            "acceptance_budgets_ref": "test-only-budgets",
+            "resident_session_limit": 1,
+            "active_turn_limit": 1,
+        }
+    )
+    assert publicly_eligible(policy_lab.profile, release, reviewed)
+    assert await policy_lab.qualification_status() == "pending"
 
 
 def test_policy_admits_only_exact_allowlisted_runtime_and_content() -> None:

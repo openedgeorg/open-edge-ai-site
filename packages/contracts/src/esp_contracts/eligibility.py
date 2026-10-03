@@ -5,6 +5,18 @@ candidate policy. That policy may admit an allowlisted pending runtime profile a
 release on the deployment's real application path. It never changes a qualification record and has
 no public-eligibility field. Public eligibility is a separate decision that takes no policy at all:
 it needs a released Brain and a matching validated runtime qualification record.
+
+What these predicates do not decide, and every caller (Task 14's `ApiDependencies`) must compose:
+
+- Registry withdrawal. Withdrawal is controlled registry selection metadata; immutable manifests are
+  not rewritten, so a withdrawn release usually still reads `status != "withdrawn"` here. Resolve the
+  release through `esp_espcon.brain_registry.BrainRegistry` and refuse a withdrawn selection
+  (`BrainRegistry.publicly_eligible` and `resolve_release` already do) before calling either predicate.
+- Deployment binding. `eligible` compares profile and content identities only; it does not know which
+  deployment is running. The code that loads a candidate policy must refuse it unless
+  `policy.deployment.cluster_uid` and `policy.deployment.deployment_ref` equal the running isolated
+  deployment's own identity, so a policy loaded anywhere else admits nothing. `scripts/qualify.py`
+  checks the cluster UID before it deploys or probes.
 """
 
 from __future__ import annotations
@@ -109,8 +121,10 @@ class RuntimeQualificationRecord(BaseModel):
 def eligible(profile: RuntimeProfile, release: ReleaseManifest, policy: CandidateAdmissionPolicy) -> bool:
     """Whether the isolated deployment may admit this exact profile and release.
 
-    Pending runtimes and draft or reviewed content are admissible when allowlisted. A withdrawn release
-    is never admissible. The answer says nothing about public eligibility or qualification status.
+    Pending runtimes and draft or reviewed content are admissible when allowlisted. A manifest marked
+    withdrawn is refused; registry withdrawal and the policy's deployment binding are the caller's to
+    check (see the module docstring). The answer says nothing about public eligibility or qualification
+    status.
     """
     if release.status == "withdrawn":
         return False
@@ -125,6 +139,7 @@ def publicly_eligible(
     """Public creation: a released Brain and a matching, reviewed, validated runtime qualification.
 
     There is deliberately no candidate-policy parameter, so no isolated allowlist can widen this.
+    Registry withdrawal is the caller's to check first (see the module docstring).
     """
     if release.status != "production" or release.evaluation_ref is None or not release.qualification_refs:
         return False
