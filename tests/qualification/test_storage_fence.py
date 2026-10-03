@@ -11,13 +11,19 @@ a writer that died on its own is legitimately fenced, so that case is inconclusi
 The positive receipt here comes from the kubelet-confirmed stop plus the driver's detach.
 
 Isolated node (`test_partitioned_writer_is_fenced_only_by_driver_revocation`): the operator's recorded
-isolation commands cut the writer's node off (kubelet stopped or node partitioned), so the kubelet
-cannot stop the process. The writer's pod is then force-deleted. A fence attempt right after that
+isolation commands cut the writer's node off (kubelet stopped, or the control-plane path partitioned
+with the storage path intact), so the kubelet cannot stop the process. The probe records when the node
+was first observed not Ready. The writer's pod is then force-deleted. A fence attempt right after that
 must refuse (the vanished pod object is not evidence). The receipt may come only from the qualified
 driver's completed detach (ControllerUnpublishVolume, typically after the attach-detach controller's
 forced-detach wait); a replacement on another node then writes, the node is restored, and a fresh mount
-must show no line from the obsolete writer after its receipt. Without recorded isolation commands the
-scenario fails, so the storage prerequisite stays pending.
+must show no line from the obsolete writer after its receipt. That silence counts only if the same
+fresh mount shows the obsolete writer kept landing lines after isolation was confirmed, up to within
+`REVOCATION_WINDOW_SECONDS` (plus clock skew) of the fence's `volume_access_revoked` observation. A
+writer stopped or frozen with its node, or cut off from storage along with the control plane, cannot
+show that, so the scenario is then inconclusive. Without recorded isolation commands the scenario
+fails, so the storage prerequisite stays pending. Any node an isolate command was issued for is
+restored during cleanup, whether or not the isolation or an earlier restore was confirmed.
 
 Every fence decision is retained with its full evidence in the run directory and the receipt names that
 retained record. Probe volumes are reclaimed: the probe switches each bound PersistentVolume (PV) to the
@@ -33,7 +39,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -63,6 +69,13 @@ COOPERATIVE_DETACH_SECONDS = 360.0
 # unmount wait; allow that plus the driver's ControllerUnpublishVolume.
 ISOLATED_DETACH_SECONDS = 900.0
 FENCE_CLOCK_SKEW_SECONDS = 2.0
+WRITER_PERIOD_SECONDS = 0.5
+FENCE_POLL_SECONDS = 2.0
+API_ROUND_TRIP_SECONDS = 1.0
+# A writer that kept landing writes until the driver revoked its access shows its last line no more
+# than one fence poll, one writer period and one API round trip (plus clock skew, applied by
+# `partitioned_writer_outcome`) before the fence observes `volume_access_revoked`.
+REVOCATION_WINDOW_SECONDS = FENCE_POLL_SECONDS + WRITER_PERIOD_SECONDS + API_ROUND_TRIP_SECONDS
 
 WRITER = r"""
 import os, sys, time
@@ -72,8 +85,8 @@ while True:
         handle.write("%s %.6f\n" % (sys.argv[1], time.time()))
         handle.flush()
         os.fsync(handle.fileno())
-    time.sleep(0.5)
-"""
+    time.sleep(PERIOD)
+""".replace("PERIOD", repr(WRITER_PERIOD_SECONDS))
 
 READER = r"""
 import json, os, time
@@ -166,9 +179,7 @@ class RetainedFenceEvidence:
         self.cluster = cluster
         self.label = label
 
-    async def retain(
-        self, unit_id: str, incarnation_id: str, evidence: Sequence[WriterEvidence], decision: str
-    ) -> str:
+    async def retain(self, unit_id: str, incarnation_id: str, evidence: Sequence[WriterEvidence], decision: str) -> str:
         payload = {
             "storage_unit_id": unit_id,
             "obsolete_incarnation_id": incarnation_id,
@@ -196,6 +207,9 @@ class FenceProbe:
         self.second = str(uuid.uuid4())
         self.pods = {self.first: f"esp-fence-writer-a-{suffix}", self.second: f"esp-fence-writer-b-{suffix}"}
         self.extra_pods: list[str] = []
+        self.node_poll_seconds = 5.0
+        # Nodes an isolate command was issued for and whose restore is not yet confirmed.
+        self.unrestored_nodes: list[str] = []
 
     def fence(
         self, *, act: bool, label: str, detach_timeout: float = COOPERATIVE_DETACH_SECONDS, stop_timeout: float = 120.0
@@ -205,18 +219,21 @@ class FenceProbe:
             kube_context=self.cluster.environment.kube_context,
             namespace=self.cluster.environment.namespace,
             act=act,
+            poll_interval=FENCE_POLL_SECONDS,
             stop_timeout=stop_timeout,
             detach_timeout=detach_timeout,
         )
         sink = RetainedFenceEvidence(self.cluster, f"{self.label}-{label}")
         return KubernetesStorageFence(driver, qualified_drivers=[self.identity], evidence_sink=sink)
 
-    def attempt(self, fence: KubernetesStorageFence, incarnation: str) -> tuple[FenceReceipt | None, list[str]]:
+    def attempt(
+        self, fence: KubernetesStorageFence, incarnation: str
+    ) -> tuple[FenceReceipt | None, tuple[WriterEvidence, ...]]:
         try:
             receipt = asyncio.run(fence.fence_previous_writer(self.unit, incarnation))
         except FenceEvidenceMissing:
             receipt = None
-        return receipt, [item.kind for item in fence.evidence(self.unit, incarnation)]
+        return receipt, fence.evidence(self.unit, incarnation)
 
     def create(self, document: dict[str, Any]) -> None:
         self.cluster.kubectl("create", "-f", "-", stdin=json.dumps(document))
@@ -271,28 +288,46 @@ class FenceProbe:
                 return condition.get("status") == "True"
         return None
 
-    def run_isolation(self, action: str, node: str) -> bool:
+    def run_isolation(self, action: Literal["isolate", "restore"], node: str) -> float | None:
+        """Run the recorded isolation command, then wait for the node's Ready condition to follow it.
+
+        Returns this host's wall-clock time at which the node was first observed not Ready (`isolate`)
+        or Ready again (`restore`). Returns None when no command is recorded, the command failed or
+        timed out, or the condition did not follow within the recorded timeout.
+
+        An isolate command counts as issued as soon as it is started, whatever it returns: it may have
+        cut the node off partly or late. The node stays in `unrestored_nodes` until a restore is
+        confirmed, and `cleanup` restores it.
+        """
         isolation = self.cluster.environment.writer_isolation
         if isolation is None:
-            return False
-        argv = isolation.command("isolate" if action == "isolate" else "restore", node)
+            return None
+        if action == "isolate" and node not in self.unrestored_nodes:
+            self.unrestored_nodes.append(node)
+        argv = isolation.command(action, node)
         try:
             completed = subprocess.run(
                 argv, capture_output=True, text=True, timeout=isolation.timeout_seconds, check=False
             )
         except (OSError, subprocess.TimeoutExpired):
-            return False
+            return None
         if completed.returncode != 0:
-            return False
-        want_ready = action != "isolate"
+            return None
+        want_ready = action == "restore"
         deadline = time.monotonic() + isolation.timeout_seconds
         while time.monotonic() < deadline:
             if self.node_ready(node) is want_ready:
-                return True
-            time.sleep(5.0)
-        return False
+                confirmed_at = time.time()
+                if want_ready and node in self.unrestored_nodes:
+                    self.unrestored_nodes.remove(node)
+                return confirmed_at
+            time.sleep(self.node_poll_seconds)
+        return None
 
     def cleanup(self) -> None:
+        for node in list(self.unrestored_nodes):
+            # An isolate command was issued and no restore was confirmed: bring the node back first.
+            self.run_isolation("restore", node)
         volume = self.cluster.kubectl("get", "pvc", self.unit, "-o", "jsonpath={.spec.volumeName}", check=False)
         volume_name = volume.stdout.strip() if volume.returncode == 0 else ""
         if volume_name:
@@ -307,6 +342,16 @@ class FenceProbe:
             self.cluster.kubectl(
                 "delete", "pv", volume_name, "--ignore-not-found", "--wait=true", timeout=300, check=False
             )
+
+
+def revocation_observed_at(evidence: Sequence[WriterEvidence]) -> float | None:
+    """When the fence observed the driver's completed revocation (`volume_access_revoked`), on this host's clock."""
+    revoked = [item.observed_at.timestamp() for item in evidence if item.kind == "volume_access_revoked"]
+    return max(revoked) if revoked else None
+
+
+def _kinds(evidence: Sequence[WriterEvidence]) -> list[str]:
+    return [item.kind for item in evidence]
 
 
 def _receipt_ref(receipt: FenceReceipt | None) -> str:
@@ -332,7 +377,8 @@ def test_replacement_writer_waits_for_a_real_fence_receipt() -> None:
         # An owner lease that expired without renewal proves nothing about the process: observe only.
         probe.create(_expired_lease(probe.lease, probe.first))
         before = probe.writer_alive(writer, probe.first)
-        receipt, kinds = probe.attempt(probe.fence(act=False, label="lease", detach_timeout=5), probe.first)
+        receipt, evidence = probe.attempt(probe.fence(act=False, label="lease", detach_timeout=5), probe.first)
+        kinds = _kinds(evidence)
         after = probe.writer_alive(writer, probe.first)
         detail = json.dumps({"alive": [before, after], "kinds": kinds})
         lease_receipt = receipt is not None
@@ -361,7 +407,8 @@ def test_replacement_writer_waits_for_a_real_fence_receipt() -> None:
             "label", "pvc", probe.unit, f"esp.openedge.dev/writer-incarnation={probe.second}", "--overwrite"
         )
         before = probe.writer_alive(writer, probe.first)
-        receipt, kinds = probe.attempt(probe.fence(act=False, label="label", detach_timeout=5), probe.first)
+        receipt, evidence = probe.attempt(probe.fence(act=False, label="label", detach_timeout=5), probe.first)
+        kinds = _kinds(evidence)
         after = probe.writer_alive(writer, probe.first)
         detail = json.dumps({"alive": [before, after], "kinds": kinds})
         outcome = insufficient_signal_outcome(
@@ -370,7 +417,8 @@ def test_replacement_writer_waits_for_a_real_fence_receipt() -> None:
         record("fence_volume_label_insufficient", outcome, cluster.keep_raw("fence-label", detail), detail)
 
         # Positive path on a healthy node: kubelet-confirmed stop, driver detach, acknowledgement.
-        receipt, kinds = probe.attempt(probe.fence(act=True, label="positive"), probe.first)
+        receipt, evidence = probe.attempt(probe.fence(act=True, label="positive"), probe.first)
+        kinds = _kinds(evidence)
         if receipt is not None:
             record("fence_positive_receipt", "satisfied", receipt.fence_evidence_ref, _receipt_ref(receipt))
         else:
@@ -413,8 +461,6 @@ def test_partitioned_writer_is_fenced_only_by_driver_revocation() -> None:
         pytest.fail("no writer isolation commands are recorded for this environment")
     probe = FenceProbe(cluster, "isolated")
     writer = probe.pods[probe.first]
-    node = ""
-    isolated = False
     try:
         probe.create(_claim(probe.unit, cluster.environment.infrastructure.storage_class))
         probe.create(_pod(writer, probe.unit, probe.first, probe.image, code=WRITER))
@@ -422,18 +468,21 @@ def test_partitioned_writer_is_fenced_only_by_driver_revocation() -> None:
             pytest.fail("first writer never ran")
         node = probe.node_of(writer)
         alive = probe.writer_alive(writer, probe.first)
-        isolated = alive and probe.run_isolation("isolate", node)
+        # When the node was first observed not Ready; the writer must keep landing writes after this.
+        isolated_at = probe.run_isolation("isolate", node) if alive else None
+        isolated = isolated_at is not None
 
         # The pod object disappears while the process keeps running on the isolated node.
         cluster.kubectl("delete", "pod", writer, "--force", "--grace-period=0", check=False)
-        early, early_kinds = probe.attempt(
+        early, early_evidence = probe.attempt(
             probe.fence(act=True, label="force-deleted", detach_timeout=30, stop_timeout=30), probe.first
         )
-        receipt = early
+        receipt, receipt_evidence = early, early_evidence
         if receipt is None and isolated:
-            receipt, _ = probe.attempt(
+            receipt, receipt_evidence = probe.attempt(
                 probe.fence(act=True, label="driver-revoked", detach_timeout=ISOLATED_DETACH_SECONDS), probe.first
             )
+        revoked_at = revocation_observed_at(receipt_evidence) if receipt is not None else None
 
         replacement_wrote = False
         if receipt is not None:
@@ -445,8 +494,9 @@ def test_partitioned_writer_is_fenced_only_by_driver_revocation() -> None:
                 replacement_wrote = observed is not None and any(who == probe.second for who, _ in observed[1])
 
         # Bring the node back: the old process meets its deleted pod; any write it lands now is visible.
-        restored = probe.run_isolation("restore", node) if isolated else True
-        if restored:
+        isolation_issued = node in probe.unrestored_nodes
+        restored_at = probe.run_isolation("restore", node) if isolation_issued else None
+        if restored_at is not None:
             time.sleep(30)
         cluster.kubectl("delete", "pod", probe.pods[probe.second], "--ignore-not-found", "--wait=true", timeout=180)
         entries = probe.read_volume_once() if receipt is not None else None
@@ -457,16 +507,32 @@ def test_partitioned_writer_is_fenced_only_by_driver_revocation() -> None:
             if receipt is not None and entries is not None
             else []
         )
+        obsolete_writes = [at for who, at in entries if who == probe.first] if entries is not None else None
+        after_isolation = (
+            [at for at in obsolete_writes if at > isolated_at + FENCE_CLOCK_SKEW_SECONDS]
+            if obsolete_writes is not None and isolated_at is not None
+            else []
+        )
+        last_write = max(after_isolation) if after_isolation else None
         detail = json.dumps(
             {
                 "node": node,
                 "writer_alive_before_isolation": alive,
-                "isolated": isolated,
-                "restored": restored,
-                "early_kinds": early_kinds,
+                "isolation_issued": isolation_issued,
+                "isolated_at": isolated_at,
+                "restored_at": restored_at,
+                "early_kinds": _kinds(early_evidence),
                 "receipt": receipt.model_dump(mode="json") if receipt is not None else None,
+                "revoked_at": revoked_at,
                 "replacement_wrote": replacement_wrote,
                 "fresh_mount_read": entries is not None,
+                "obsolete_writes_after_isolation": len(after_isolation),
+                "last_obsolete_write_after_isolation": last_write,
+                "revocation_gap_seconds": (
+                    revoked_at - last_write if revoked_at is not None and last_write is not None else None
+                ),
+                "revocation_window_seconds": REVOCATION_WINDOW_SECONDS,
+                "clock_skew_seconds": FENCE_CLOCK_SKEW_SECONDS,
                 "late_writes": late[:20],
             }
         )
@@ -476,14 +542,17 @@ def test_partitioned_writer_is_fenced_only_by_driver_revocation() -> None:
         )
         cluster.record("storage", "fence_force_delete_insufficient", forced, ref, detail)
         partitioned = partitioned_writer_outcome(
-            isolated=isolated and entries is not None,
+            isolated_at=isolated_at,
+            revoked_at=revoked_at,
+            obsolete_writes=obsolete_writes,
             receipt_issued=receipt is not None,
             replacement_wrote=replacement_wrote,
             late_writes=len(late),
+            window=REVOCATION_WINDOW_SECONDS,
+            skew=FENCE_CLOCK_SKEW_SECONDS,
         )
         cluster.record("storage", "fence_partitioned_writer_revoked", partitioned, ref, detail)
         assert forced == "satisfied" and partitioned == "satisfied", detail
     finally:
-        if isolated and node:
-            probe.run_isolation("restore", node)
+        # Restores every node an isolate command was issued for, confirmed or not, then reclaims.
         probe.cleanup()

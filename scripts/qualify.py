@@ -1626,11 +1626,21 @@ class ProviderAddresses(BaseModel):
 class WriterIsolation(BaseModel):
     """Operator commands that cut one node off from the control plane and bring it back.
 
-    The partitioned-writer storage scenario needs a writer process that keeps running while the kubelet
-    cannot stop it: the node agent stopped, or the node's network partitioned. How that is done is
-    infrastructure specific (an SSH command, a cloud API call, `docker pause` of a kind node), so the
-    environment records it explicitly. Each command is an argv list run without a shell by the live
-    storage probe only; `{node}` is replaced by the writer's node name.
+    The partitioned-writer storage scenario needs a writer process that keeps running, and keeps
+    landing writes on its volume, while the kubelet cannot stop it. Suitable mechanisms stop the node
+    agent (kubelet) and leave the container runtime running, or partition the node's control-plane path
+    while its storage path stays up. How that is done is infrastructure specific (for example an SSH
+    command or a cloud firewall rule), so the environment records it explicitly.
+
+    Mechanisms that stop or freeze the writer cannot satisfy the scenario: powering off or stopping
+    the node (a cloud stop), freezing it (`docker pause` of a kind node), or a partition that also cuts
+    the node's storage network. The writer then lands nothing after isolation is confirmed, or stops
+    landing writes long before the driver's revocation, so its silence after the receipt proves nothing
+    about revocation and `partitioned_writer_outcome` records `inconclusive`.
+
+    Each command is an argv list run without a shell by the live storage probe only; `{node}` is
+    replaced by the writer's node name. The probe restores the node whenever it issued an isolate
+    command, whether or not the command succeeded or the node was seen to change state.
     """
 
     model_config = STRICT
@@ -2596,12 +2606,42 @@ def force_delete_outcome(
 
 
 def partitioned_writer_outcome(
-    *, isolated: bool, receipt_issued: bool, replacement_wrote: bool, late_writes: int
+    *,
+    isolated_at: float | None,
+    revoked_at: float | None,
+    obsolete_writes: Sequence[float] | None,
+    receipt_issued: bool,
+    replacement_wrote: bool,
+    late_writes: int,
+    window: float,
+    skew: float,
 ) -> LiveOutcome:
-    """A writer the kubelet cannot stop is fenced only by driver revocation: no write lands after the receipt."""
+    """A writer the kubelet cannot stop is fenced only by driver revocation: no write lands after the receipt.
+
+    Silence after the receipt shows revocation only if the obsolete writer was demonstrably still
+    running, with a working storage path, until the driver revoked its access. The evidence:
+
+    - `isolated_at`: when the writer's node was first observed not Ready (the probe's clock), or None;
+    - `revoked_at`: when the fence observed the driver's `volume_access_revoked` (the probe's clock), or None;
+    - `obsolete_writes`: the times of the obsolete writer's lines read on a fresh mount after every
+      writer has gone (the writer's clock), or None when the volume could not be read;
+    - `late_writes`: how many of those lines landed after the receipt (beyond clock skew).
+
+    `satisfied` needs a receipt, a replacement that wrote on another node, no late write, at least one
+    landed write after `isolated_at + skew`, and a last landed write no earlier than
+    `revoked_at - window - skew`. A writer that was stopped or frozen with its node (a cloud stop,
+    `docker pause`) lands nothing after isolation; a writer whose storage path was cut with its control
+    path stops landing long before the revocation. Neither proves that the driver revoked anything, so
+    both are `inconclusive`. Any late write is `violated`.
+    """
     if late_writes:
         return "violated"
-    if not (isolated and receipt_issued and replacement_wrote):
+    if not (receipt_issued and replacement_wrote):
+        return "inconclusive"
+    if isolated_at is None or revoked_at is None or obsolete_writes is None or revoked_at <= isolated_at:
+        return "inconclusive"
+    after_isolation = [at for at in obsolete_writes if at > isolated_at + skew]
+    if not after_isolation or max(after_isolation) < revoked_at - window - skew:
         return "inconclusive"
     return "satisfied"
 

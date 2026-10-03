@@ -15,6 +15,7 @@ import socket
 import stat
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -22,6 +23,7 @@ from typing import Any, cast
 import pytest
 
 from esp_contracts.eligibility import CandidateAdmissionPolicy
+from esp_provider_shared.kubernetes_fence import DriverIdentity, WriterEvidence
 from esp_provider_shared.runtime_main import forbidden_runtime_material, key_material_report
 from esp_provider_shared.runtime_main import main as runtime_main
 from scripts.qualify import (
@@ -58,7 +60,7 @@ from scripts.qualify import (
     writes_after_receipt,
 )
 from tests.qualification.test_egress import PROBE as EGRESS_PROBE
-from tests.qualification.test_storage_fence import FenceProbe
+from tests.qualification.test_storage_fence import FenceProbe, revocation_observed_at
 from tests.qualification.test_tool_policy import KEY_PROBE
 from tests.support.policy_lab import CLUSTER_UID, policy_document, synthetic_profile, synthetic_release
 
@@ -671,12 +673,47 @@ def test_writer_activity_and_late_writes_are_read_from_the_volume() -> None:
     assert writes_after_receipt(entries, "a", receipt_at=100.4, skew=0.2) == []
 
 
+def _partitioned(late_writes: int = 0, **overrides: Any) -> str:
+    # Isolation was confirmed (node first seen not Ready) at 1000; the driver's revocation was observed at 1400.
+    # The obsolete writer kept landing lines after isolation, up to just before the revocation.
+    evidence: dict[str, Any] = {
+        "isolated_at": 1000.0,
+        "revoked_at": 1400.0,
+        "obsolete_writes": [990.0, 1100.0, 1250.0, 1398.5],
+        "receipt_issued": True,
+        "replacement_wrote": True,
+        "window": 3.5,
+        "skew": 2.0,
+    }
+    evidence.update(overrides)
+    return partitioned_writer_outcome(late_writes=late_writes, **evidence)
+
+
 def test_partitioned_writer_and_force_delete_verdicts() -> None:
-    complete = {"isolated": True, "receipt_issued": True, "replacement_wrote": True}
-    assert partitioned_writer_outcome(late_writes=0, **complete) == "satisfied"
-    assert partitioned_writer_outcome(late_writes=2, **complete) == "violated"
-    for missing in ("isolated", "receipt_issued", "replacement_wrote"):
-        assert partitioned_writer_outcome(late_writes=0, **{**complete, missing: False}) == "inconclusive"
+    assert _partitioned() == "satisfied"
+    assert _partitioned(late_writes=2) == "violated"
+    for missing in ("receipt_issued", "replacement_wrote"):
+        unmet: dict[str, Any] = {missing: False}
+        assert _partitioned(**unmet) == "inconclusive", missing
+    # Isolation never confirmed, no revocation observed, or no fresh-mount read: nothing to judge.
+    for absent in ("isolated_at", "revoked_at", "obsolete_writes"):
+        unobserved: dict[str, Any] = {absent: None}
+        assert _partitioned(**unobserved) == "inconclusive", absent
+    # A receipt and no late writes, but no write landed after isolation (beyond clock skew): the writer was
+    # stopped or frozen with its node (cloud stop, `docker pause`), so its silence proves nothing about revocation.
+    stopped = [990.0, 995.5, 1001.9]
+    assert _partitioned(obsolete_writes=stopped) == "inconclusive"
+    # The same holds when the revocation came soon after isolation and the last write is inside the window.
+    assert _partitioned(obsolete_writes=stopped, revoked_at=1003.0) == "inconclusive"
+    assert _partitioned(obsolete_writes=[1002.1], revoked_at=1003.0) == "satisfied"
+    # Writes after isolation that stop long before the revocation: something other than the driver cut the
+    # storage path (a partition that also cut the storage network).
+    assert _partitioned(obsolete_writes=[990.0, 1100.0, 1200.0]) == "inconclusive"
+    # The last landed write must fall within window plus skew before the revocation observation.
+    assert _partitioned(obsolete_writes=[1394.5]) == "satisfied"
+    assert _partitioned(obsolete_writes=[1394.4]) == "inconclusive"
+    # A revocation observed before isolation was confirmed is not the partitioned-writer scenario.
+    assert _partitioned(obsolete_writes=[998.0], revoked_at=999.0) == "inconclusive"
     alive = {"isolated": True, "writer_alive_before": True}
     assert force_delete_outcome(early_receipt=False, late_writes=0, **alive) == "satisfied"
     assert force_delete_outcome(early_receipt=True, late_writes=1, **alive) == "violated"
@@ -728,6 +765,109 @@ def test_fence_probe_cleanup_reclaims_the_probe_volume() -> None:
     delete_claim = next(index for index, call in enumerate(flattened) if call.startswith(f"delete pvc {probe.unit}"))
     assert patch < delete_claim
     assert any(call.startswith("delete pv pv-probe-volume") for call in flattened[delete_claim:])
+
+
+class _NodeCluster(_RecordingCluster):
+    """Recording stand-in whose node is Ready unless the isolation marker file exists."""
+
+    def __init__(self, environment: QualificationEnvironment, marker: Path) -> None:
+        super().__init__(environment)
+        self.marker = marker
+
+    def kubectl(self, *args: str, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if args[:2] != ("get", "node"):
+            return super().kubectl(*args, **kwargs)
+        self.calls.append(list(args))
+        status = "Unknown" if self.marker.exists() else "True"
+        document = {"status": {"conditions": [{"type": "Ready", "status": status}]}}
+        return subprocess.CompletedProcess(list(args), 0, json.dumps(document), "")
+
+
+_ISOLATION_STEP = r"""
+import pathlib, sys
+log, marker, action, node, effect = sys.argv[1:6]
+with open(log, "a") as handle:
+    handle.write(f"{action} {node}\n")
+if effect == "cut":
+    pathlib.Path(marker).touch()
+elif effect == "heal":
+    pathlib.Path(marker).unlink(missing_ok=True)
+sys.exit(1 if effect == "fail" else 0)
+"""
+
+
+def _isolation_probe(tmp_path: Path, isolate_effect: str) -> tuple[FenceProbe, _NodeCluster, Path]:
+    log, marker = tmp_path / "isolation.log", tmp_path / "node-cut"
+
+    def step(action: str, effect: str) -> list[str]:
+        return [sys.executable, "-c", _ISOLATION_STEP, str(log), str(marker), action, "{node}", effect]
+
+    environment = _environment(
+        images={"esp-codex-runtime": "registry.test.invalid/esp-codex-runtime@sha256:" + "1" * 64},
+        writer_isolation={
+            "mechanism": "test-only-kubelet-stop",
+            "isolate": step("isolate", isolate_effect),
+            "restore": step("restore", "heal"),
+            "timeout_seconds": 2.0,
+        },
+    )
+    cluster = _NodeCluster(environment, marker)
+    probe = FenceProbe(cast(Any, cluster))
+    probe.node_poll_seconds = 0.05
+    return probe, cluster, log
+
+
+def test_isolation_reports_when_the_node_was_confirmed_cut_off(tmp_path: Path) -> None:
+    probe, _, log = _isolation_probe(tmp_path, "cut")
+    started = time.time()
+    isolated_at = probe.run_isolation("isolate", "node-a")
+    assert isinstance(isolated_at, float) and started <= isolated_at <= time.time()
+    restored_at = probe.run_isolation("restore", "node-a")
+    assert isinstance(restored_at, float) and restored_at >= isolated_at
+    probe.cleanup()
+    # A confirmed restore is not repeated by the cleanup.
+    assert log.read_text().splitlines() == ["isolate node-a", "restore node-a"]
+
+
+@pytest.mark.parametrize("effect", ["none", "fail"])
+def test_an_issued_isolation_is_always_restored(tmp_path: Path, effect: str) -> None:
+    # The command ran (perhaps partly, or it failed) but the node never showed NotReady in time.
+    probe, cluster, log = _isolation_probe(tmp_path, effect)
+    assert probe.run_isolation("isolate", "node-a") is None
+    probe.cleanup()
+    assert log.read_text().splitlines() == ["isolate node-a", "restore node-a"]
+    # The node is brought back before the probe's pods and volume are reclaimed.
+    flattened = [" ".join(call) for call in cluster.calls]
+    restore_check = max(index for index, call in enumerate(flattened) if call.startswith("get node node-a"))
+    first_delete = min(index for index, call in enumerate(flattened) if call.startswith("delete "))
+    assert restore_check < first_delete
+
+
+def test_revocation_time_is_the_drivers_volume_access_revoked_observation() -> None:
+    identity = DriverIdentity(
+        csi_driver="csi.test.invalid", driver_version="0.0.0-test", mechanism="csi-controller-unpublish"
+    )
+    start = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
+
+    def observed(kind: str, seconds: float) -> WriterEvidence:
+        return WriterEvidence.model_validate(
+            {
+                "storage_unit_id": "unit",
+                "obsolete_incarnation_id": "incarnation",
+                "kind": kind,
+                "driver": identity,
+                "observed_at": start + timedelta(seconds=seconds),
+                "evidence_ref": "test-only://evidence",
+            }
+        )
+
+    evidence = [
+        observed("pod_object_absent", 0),
+        observed("volume_access_revoked", 400),
+        observed("fence_acknowledged", 401),
+    ]
+    assert revocation_observed_at(evidence) == (start + timedelta(seconds=400)).timestamp()
+    assert revocation_observed_at([observed("pod_object_absent", 0), observed("attachment_present", 30)]) is None
 
 
 def test_runtime_entry_refuses_provider_and_signing_key_material() -> None:
