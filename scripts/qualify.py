@@ -29,7 +29,7 @@ from typing import Any, Literal, Protocol, cast
 
 import yaml
 from jsonschema import Draft202012Validator
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from esp_contracts.api import STRICT
 from esp_contracts.eligibility import (
@@ -2380,6 +2380,151 @@ def tool_policy_violations(offered: Sequence[OfferedTool] | None, policy: ToolPo
         elif tool.name is None or pattern.fullmatch(tool.name) is None:
             violations.append(f"unapproved_tool:{tool.name}")
     return violations
+
+
+def approved_tool_names(offered: Sequence[OfferedTool] | None, policy: ToolPolicy) -> list[str]:
+    """Offered tools that are approved read-only knowledge tools under the policy's name rule."""
+    if offered is None:
+        return []
+    pattern = re.compile(policy.model_visible.name_pattern)
+    return [
+        tool.name
+        for tool in offered
+        if not tool.malformed
+        and tool.type in policy.model_visible.allowed_types
+        and tool.name is not None
+        and pattern.fullmatch(tool.name) is not None
+    ]
+
+
+FINAL_REQUEST_EXPORT_FORMAT = "esp-final-request-export/1"
+FINAL_REQUEST_INDEX = "index.json"
+
+
+class FinalRequestEntry(BaseModel):
+    """One final model request the gateway recorded, as exported from its protected evidence.
+
+    `request_sha256` is the gateway proof's plaintext request digest (EvidenceRecorder) and
+    `proof_ref` locates that proof, so an auditor can tie the body back to the gateway's record.
+    """
+
+    model_config = STRICT
+    inference_id: str = Field(pattern=r"^inf_[0-9a-f]{32}$")
+    captured_at: AwareDatetime
+    request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    body: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*\.json$")
+    proof_ref: str = Field(min_length=1)
+
+
+class FinalRequestExport(BaseModel):
+    """`<evidence_export_dir>/<provider>/index.json`: the export of one runtime's final requests."""
+
+    model_config = STRICT
+    export_format: Literal["esp-final-request-export/1"]
+    environment_id: str = Field(min_length=1)
+    provider: Provider
+    runtime_image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    exported_at: AwareDatetime
+    requests: list[FinalRequestEntry]
+
+
+class JudgedRequest(BaseModel):
+    model_config = STRICT
+    inference_id: str
+    body: str
+    proof_ref: str
+    sha256: str | None
+    captured_at: datetime
+    bound: bool
+    problems: list[str]
+    violations: list[str]
+    approved_tools: list[str]
+
+
+class OfferedToolsJudgement(BaseModel):
+    model_config = STRICT
+    outcome: LiveOutcome
+    reasons: list[str]
+    requests: list[JudgedRequest]
+
+
+def judge_offered_tools(
+    export_dir: Path,
+    *,
+    provider: Provider,
+    environment_id: str,
+    runtime_image_digest: str,
+    not_before: datetime,
+    now: datetime,
+    policy: ToolPolicy,
+) -> OfferedToolsJudgement:
+    """Judge the final requests that the gateway captured for this environment's running runtime.
+
+    Only bodies listed in the gateway export index count, and only when the export names this
+    environment, provider and running runtime image, each body's SHA-256 equals the digest the gateway
+    recorded, and its capture time lies within the running runtime's lifetime (`not_before`..`now`).
+    Any bound body offering an unapproved tool violates. The scenario is satisfied only when every
+    listed body is bound and at least one offers an approved knowledge tool; otherwise inconclusive.
+    """
+    directory = export_dir / provider
+    try:
+        export = FinalRequestExport.model_validate(_strict_json((directory / FINAL_REQUEST_INDEX).read_bytes()))
+    except OSError:
+        return OfferedToolsJudgement(outcome="inconclusive", reasons=["export_index_missing"], requests=[])
+    except ValueError:
+        return OfferedToolsJudgement(outcome="inconclusive", reasons=["export_index_invalid"], requests=[])
+    reasons: list[str] = []
+    if export.environment_id != environment_id:
+        reasons.append("export_environment_mismatch")
+    if export.provider != provider:
+        reasons.append("export_provider_mismatch")
+    if export.runtime_image_digest != runtime_image_digest:
+        reasons.append("export_runtime_image_mismatch")
+    if reasons:
+        return OfferedToolsJudgement(outcome="inconclusive", reasons=reasons, requests=[])
+    if not export.requests:
+        return OfferedToolsJudgement(outcome="inconclusive", reasons=["no_final_requests"], requests=[])
+    seen: set[str] = set()
+    judged: list[JudgedRequest] = []
+    for entry in export.requests:
+        problems: list[str] = []
+        if entry.inference_id in seen:
+            problems.append("duplicate_inference_id")
+        seen.add(entry.inference_id)
+        if entry.captured_at < not_before:
+            problems.append("captured_before_runtime_start")
+        if entry.captured_at > now:
+            problems.append("captured_after_judgement")
+        try:
+            body = (directory / entry.body).read_bytes()
+        except OSError:
+            body = None
+            problems.append("body_missing")
+        digest = hashlib.sha256(body).hexdigest() if body is not None else None
+        if digest is not None and digest != entry.request_sha256:
+            problems.append("body_digest_mismatch")
+        bound = not problems and body is not None
+        offered = offered_tools(body) if bound and body is not None else None
+        judged.append(
+            JudgedRequest(
+                inference_id=entry.inference_id,
+                body=entry.body,
+                proof_ref=entry.proof_ref,
+                sha256=digest,
+                captured_at=entry.captured_at,
+                bound=bound,
+                problems=problems,
+                violations=tool_policy_violations(offered, policy) if bound else [],
+                approved_tools=approved_tool_names(offered, policy) if bound else [],
+            )
+        )
+    if any(item.violations for item in judged):
+        return OfferedToolsJudgement(outcome="violated", reasons=["unapproved_tool_offered"], requests=judged)
+    reasons = sorted({f"{item.inference_id}:{problem}" for item in judged for problem in item.problems})
+    if not any(item.approved_tools for item in judged):
+        reasons.append("no_approved_tool_offered")
+    outcome: LiveOutcome = "inconclusive" if reasons else "satisfied"
+    return OfferedToolsJudgement(outcome=outcome, reasons=reasons, requests=judged)
 
 
 def read_junit(path: Path) -> JunitSummary:

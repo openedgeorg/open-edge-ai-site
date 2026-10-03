@@ -23,7 +23,7 @@ from esp_provider_shared.kubernetes_fence import (
     KubernetesStorageFence,
 )
 from esp_provider_shared.storage_fence import FenceEvidenceMissing, FenceReceipt
-from tests.support.qualification_cluster import RUNTIME_PYTHON, Outcome, QualificationCluster
+from tests.support.qualification_cluster import RUNTIME_IMAGE_KEYS, RUNTIME_PYTHON, Outcome, QualificationCluster
 
 NATIVE_ROOT = "/var/lib/esp/native"
 LEASE_SECONDS = 30  # P §12.2 database-clock lease; the fence must not treat its expiry as evidence.
@@ -108,8 +108,7 @@ class FenceProbe:
             driver_version=infrastructure.csi_driver_version,
             mechanism=infrastructure.fence_mechanism,
         )
-        key = "esp-codex-runtime" if cluster.provider == "openai" else "esp-grok-runtime"
-        self.image = cluster.environment.images[key]
+        self.image = cluster.environment.images[RUNTIME_IMAGE_KEYS[cluster.provider]]
         suffix = uuid.uuid4().hex[:8]
         self.unit = f"esp-fence-probe-{suffix}"
         self.first = str(uuid.uuid4())

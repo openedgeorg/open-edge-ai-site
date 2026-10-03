@@ -37,6 +37,7 @@ Outcome = Literal["satisfied", "violated", "inconclusive"]
 Gate = Literal["network", "storage"]
 RUNTIME_CONTAINER = "runtime"
 RUNTIME_PYTHON = "/opt/esp/venv/bin/python"
+RUNTIME_IMAGE_KEYS: dict[Provider, str] = {"openai": "esp-codex-runtime", "xai": "esp-grok-runtime"}
 
 
 class QualificationCluster:

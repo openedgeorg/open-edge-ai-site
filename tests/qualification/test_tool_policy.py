@@ -5,23 +5,28 @@ enabled despite its configuration, and the Grok Build ignoring unknown keys. The
 look at what the runtime actually offers and holds: the final requests the gateway captured, the
 container's executables and writable paths, its environment and mounted material, and its control
 endpoint's refusal of an unauthenticated caller.
+
+Final requests come from `<evidence_export_dir>/<provider>/index.json`, the export of the gateway's
+protected evidence (format `esp-final-request-export/1`, see `scripts/qualify.py` FinalRequestExport).
+A body counts only when the index binds it to this environment, the running runtime image, a capture
+time within the running pod's lifetime and the gateway's recorded request digest.
 """
 
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from scripts.qualify import (
     KeyProbeReport,
+    judge_offered_tools,
     key_material_outcomes,
     load_tool_policy,
-    offered_tools,
-    tool_policy_violations,
 )
-from tests.support.qualification_cluster import QualificationCluster
+from tests.support.qualification_cluster import RUNTIME_IMAGE_KEYS, QualificationCluster
 
 ROOT_WRITE_PROBE = r"""
 import json, os
@@ -87,22 +92,27 @@ def test_final_requests_offer_only_the_approved_knowledge_tools(cluster: Qualifi
     export = cluster.environment.evidence_export_dir
     if export is None:
         pytest.fail("no exported final-request evidence for this run")
-    bodies = sorted((Path(export) / cluster.provider).glob("*.json"))
-    if not bodies:
-        pytest.fail("no final requests captured at the gateway for this provider")
-    policy = load_tool_policy()
-    violations: dict[str, list[str]] = {}
-    for path in bodies:
-        found = tool_policy_violations(offered_tools(path.read_bytes()), policy)
-        if found:
-            violations[path.name] = found
-    ref = cluster.keep_raw(
-        f"offered-tools-{cluster.provider}", json.dumps({"files": [p.name for p in bodies], "violations": violations})
+    pod = cluster.runtime_pod()
+    digest = cluster.container_image(pod).rsplit("@", 1)[1]
+    recorded = cluster.environment.images.get(RUNTIME_IMAGE_KEYS[cluster.provider], "")
+    if not recorded.endswith("@" + digest):
+        pytest.fail("the running runtime image is not the recorded environment's image")
+    started = pod.get("status", {}).get("startTime")
+    if not started:
+        pytest.fail("the runtime pod has no start time")
+    judgement = judge_offered_tools(
+        Path(export),
+        provider=cluster.provider,
+        environment_id=cluster.environment.environment_id,
+        runtime_image_digest=digest,
+        not_before=datetime.fromisoformat(str(started)),
+        now=datetime.now(UTC),
+        policy=load_tool_policy(),
     )
-    cluster.record(
-        "network", "tools_offered_only_approved", "violated" if violations else "satisfied", ref, json.dumps(violations)
-    )
-    assert violations == {}
+    # The retained record names every judged body by inference id, gateway proof and SHA-256.
+    ref = cluster.keep_raw(f"offered-tools-{cluster.provider}", judgement.model_dump_json())
+    cluster.record("network", "tools_offered_only_approved", judgement.outcome, ref, json.dumps(judgement.reasons))
+    assert judgement.outcome == "satisfied", judgement.reasons
 
 
 def test_runtime_container_has_no_shell(cluster: QualificationCluster) -> None:

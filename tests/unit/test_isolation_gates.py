@@ -15,6 +15,7 @@ import socket
 import stat
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -32,6 +33,7 @@ from scripts.qualify import (
     JunitSummary,
     KeyProbeReport,
     LiveObservation,
+    OfferedToolsJudgement,
     QualificationEnvironment,
     classify_egress_attempt,
     classify_qualification,
@@ -39,6 +41,7 @@ from scripts.qualify import (
     dns_internal_only_outcome,
     evaluate_live_evidence,
     forward_proxy_outcome,
+    judge_offered_tools,
     key_material_outcomes,
     load_candidate_policy,
     load_tool_policy,
@@ -507,6 +510,106 @@ def test_live_key_probe_runs_the_runtime_images_scan(tmp_path: Path) -> None:
     assert report.files.provider == [str(Path(environ["CODEX_HOME"]) / "auth.json")]
     provider, signing = key_material_outcomes([], report)
     assert provider.outcome == "violated" and signing.outcome == "satisfied"
+
+
+RUNTIME_IMAGE_DIGEST = "sha256:" + "1" * 64
+POD_STARTED = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
+JUDGED_AT = datetime(2026, 10, 3, 13, 0, tzinfo=UTC)
+APPROVED_TOOLS: list[dict[str, Any]] = [
+    {"type": "function", "name": "mcp__esp_knowledge__esp_search", "parameters": {}},
+    {"type": "function", "name": "mcp__esp_knowledge__esp_get_claim", "parameters": {}},
+]
+APPROVED_REQUEST: dict[str, Any] = {"model": "gpt-6-astra", "tools": APPROVED_TOOLS}
+
+
+def _export(
+    tmp_path: Path,
+    bodies: list[tuple[dict[str, Any], datetime]],
+    **overrides: object,
+) -> Path:
+    """A gateway final-request export: bodies plus an index tied to the gateway's evidence proofs."""
+    root = tmp_path / "export"
+    directory = root / "openai"
+    directory.mkdir(parents=True, exist_ok=True)
+    entries: list[dict[str, object]] = []
+    for number, (document, captured) in enumerate(bodies):
+        body = json.dumps(document).encode()
+        name = f"request-{number}.json"
+        (directory / name).write_bytes(body)
+        entries.append(
+            {
+                "inference_id": f"inf_{number:032x}",
+                "captured_at": captured.isoformat(),
+                "request_sha256": hashlib.sha256(body).hexdigest(),
+                "body": name,
+                "proof_ref": f"esp-object://evidence/inf_{number:032x}/proof#{'a' * 64}",
+            }
+        )
+    index: dict[str, object] = {
+        "export_format": "esp-final-request-export/1",
+        "environment_id": "qual-test-a",
+        "provider": "openai",
+        "runtime_image_digest": RUNTIME_IMAGE_DIGEST,
+        "exported_at": JUDGED_AT.isoformat(),
+        "requests": entries,
+    }
+    index.update(overrides)
+    (directory / "index.json").write_text(json.dumps(index), encoding="utf-8")
+    return root
+
+
+def _judge(root: Path) -> OfferedToolsJudgement:
+    return judge_offered_tools(
+        root,
+        provider="openai",
+        environment_id="qual-test-a",
+        runtime_image_digest=RUNTIME_IMAGE_DIGEST,
+        not_before=POD_STARTED,
+        now=JUDGED_AT,
+        policy=load_tool_policy(),
+    )
+
+
+def test_offered_tools_are_judged_only_on_bound_gateway_evidence(tmp_path: Path) -> None:
+    during = POD_STARTED + timedelta(minutes=5)
+    judged = _judge(_export(tmp_path / "ok", [(APPROVED_REQUEST, during)]))
+    assert judged.outcome == "satisfied", judged.reasons
+    # Each judged body is identified by its digest and the gateway inference it was captured for.
+    body = json.dumps(APPROVED_REQUEST).encode()
+    assert [item.sha256 for item in judged.requests] == [hashlib.sha256(body).hexdigest()]
+    assert judged.requests[0].inference_id == f"inf_{0:032x}"
+    assert judged.requests[0].approved_tools == ["mcp__esp_knowledge__esp_search", "mcp__esp_knowledge__esp_get_claim"]
+    hostile: dict[str, Any] = {"tools": [{"type": "function", "name": "exec_command"}, *APPROVED_TOOLS]}
+    assert _judge(_export(tmp_path / "bad", [(APPROVED_REQUEST, during), (hostile, during)])).outcome == "violated"
+
+
+def test_vacuous_stale_foreign_or_unbound_tool_evidence_is_inconclusive(tmp_path: Path) -> None:
+    during = POD_STARTED + timedelta(minutes=5)
+    # A body offering no tool at all says nothing about the approved tools.
+    assert _judge(_export(tmp_path / "empty", [({}, during)])).outcome == "inconclusive"
+    assert _judge(_export(tmp_path / "none", [])).outcome == "inconclusive"
+    # Captured before this runtime pod started, or claimed for the future.
+    stale = POD_STARTED - timedelta(minutes=1)
+    assert _judge(_export(tmp_path / "stale", [(APPROVED_REQUEST, stale)])).outcome == "inconclusive"
+    future = JUDGED_AT + timedelta(minutes=1)
+    assert _judge(_export(tmp_path / "future", [(APPROVED_REQUEST, future)])).outcome == "inconclusive"
+    # Another environment's or another image's export.
+    foreign = _export(tmp_path / "foreign", [(APPROVED_REQUEST, during)], environment_id="qual-test-b")
+    assert _judge(foreign).outcome == "inconclusive"
+    other_image = _export(tmp_path / "image", [(APPROVED_REQUEST, during)], runtime_image_digest="sha256:" + "9" * 64)
+    assert _judge(other_image).outcome == "inconclusive"
+    # A body that is not the request the gateway recorded.
+    tampered = _export(tmp_path / "tampered", [(APPROVED_REQUEST, during)])
+    (tampered / "openai" / "request-0.json").write_text(json.dumps({"tools": []}), encoding="utf-8")
+    assert _judge(tampered).outcome == "inconclusive"
+    # Loose hand-placed files without the gateway index are not evidence.
+    loose = tmp_path / "loose" / "openai"
+    loose.mkdir(parents=True)
+    (loose / "request.json").write_text(json.dumps(APPROVED_REQUEST), encoding="utf-8")
+    assert _judge(tmp_path / "loose").outcome == "inconclusive"
+    # A stale body that shows a violation is not counted against this runtime either.
+    hostile = {"tools": [{"type": "function", "name": "exec_command"}]}
+    assert _judge(_export(tmp_path / "old-hostile", [(hostile, stale)])).outcome == "inconclusive"
 
 
 def test_runtime_entry_refuses_provider_and_signing_key_material() -> None:
