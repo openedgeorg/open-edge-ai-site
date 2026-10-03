@@ -20,6 +20,13 @@ wait is therefore `unconfirmed` with its deterministic reference, and status rec
 saved input from the replay once the turn ends. A read of a session this process has not loaded (closed,
 or never created or resumed here) is load, collect, close: reads never change residency.
 
+These guarantees follow the native request, not the caller. Once a load, close or resume is about to be
+sent, it runs in an adapter-owned task that holds the session lock (and, for a load, the replay window)
+until the build answers or the connection ends, and then does the follow-up (the transient close,
+forgetting a closed session, tracking a resumed one). A caller that is cancelled, for example by a bounded
+wait, abandons only its own wait. A garbled frame, which fails every pending request locally, is the one
+known exception (the README's Gate 1 list).
+
 Attribution. ACP updates name the session, not a turn, so the work reference is the prompt this
 adapter sent on that session, and only while it is in flight. Model requests are attributed from the
 `x-grok-session-id` header the build's model-request client names; MCP requests from the
@@ -43,7 +50,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -328,6 +335,8 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
         self._terminals: dict[str, dict[str, _Terminal]] = {}
         self._replays: dict[str, list[dict[str, Any]]] = {}
         self._locks: dict[str, _SessionLock] = {}
+        # Native session requests whose callers may have stopped waiting; see `_finish_under_lock`.
+        self._owned_requests: set[asyncio.Task[object]] = set()
         # Sessions loaded in this process by this adapter: created or resumed, and not closed since.
         self._known: set[str] = set()
         self._subscribers: dict[str, int] = {}
@@ -375,14 +384,18 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
     async def resume_session(self, handle: SessionHandle) -> SessionHandle:
         self._require_pins(handle)
         session_id = handle.native_session_id
-        async with self._exclusive(session_id):
-            result = await self._rpc.request(
-                GROK_METHODS["resume"], {"sessionId": session_id, "cwd": GROK_SESSION_CWD, "mcpServers": []}
-            )
-            _check_model(_require_object(result, "invalid resume result"))
-            self._known.add(session_id)
-            self._remember_run(session_id)
+        entry = await self._acquire(session_id)
+        await self._finish_under_lock(session_id, entry, lambda: self._resume(session_id))
         return handle
+
+    async def _resume(self, session_id: str) -> None:
+        """`session/resume`; the session is tracked as loaded here once the build answers."""
+        result = await self._rpc.request(
+            GROK_METHODS["resume"], {"sessionId": session_id, "cwd": GROK_SESSION_CWD, "mcpServers": []}
+        )
+        _check_model(_require_object(result, "invalid resume result"))
+        self._known.add(session_id)
+        self._remember_run(session_id)
 
     async def submit(
         self,
@@ -551,17 +564,22 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
 
     async def unload(self, handle: SessionHandle) -> Literal["unloaded", "unsupported"]:
         session_id = handle.native_session_id
-        async with self._exclusive(session_id):
-            if self._in_flight(session_id) is not None:
-                raise GrokSessionBusy(session_id)
-            try:
-                result = await self._rpc.request(GROK_METHODS["unload"], {"sessionId": session_id})
-            except RpcProtocolError as exc:
-                if exc.args and exc.args[0] == _METHOD_NOT_FOUND:
-                    return "unsupported"
-                raise
-            _require_object(result, "invalid close result")
-            self._forget_session(session_id)
+        entry = await self._acquire(session_id)
+        if self._in_flight(session_id) is not None:
+            self._release(session_id, entry)
+            raise GrokSessionBusy(session_id)
+        return await self._finish_under_lock(session_id, entry, lambda: self._close(session_id))
+
+    async def _close(self, session_id: str) -> Literal["unloaded", "unsupported"]:
+        """`session/close`; the session is forgotten here once the build answers."""
+        try:
+            result = await self._rpc.request(GROK_METHODS["unload"], {"sessionId": session_id})
+        except RpcProtocolError as exc:
+            if exc.args and exc.args[0] == _METHOD_NOT_FOUND:
+                return "unsupported"
+            raise
+        _require_object(result, "invalid close result")
+        self._forget_session(session_id)
         return "unloaded"
 
     async def export_history(self, handle: SessionHandle) -> None:
@@ -645,19 +663,64 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
 
     @asynccontextmanager
     async def _exclusive(self, session_id: str) -> AsyncGenerator[None]:
-        """Hold the session's lock. Its entry exists only while someone holds or waits for it."""
+        """Hold the session's lock around a step that never waits for the build: a prompt or compaction
+        start, whose prompt then runs in its own task and is tracked by `_in_flight`. A request whose answer
+        is awaited goes through `_finish_under_lock` instead."""
+        entry = await self._acquire(session_id)
+        try:
+            yield
+        finally:
+            self._release(session_id, entry)
+
+    async def _acquire(self, session_id: str) -> _SessionLock:
+        """Take the session's lock. Its entry exists only while someone holds or waits for it."""
         entry = self._locks.get(session_id)
         if entry is None:
             entry = _SessionLock()
             self._locks[session_id] = entry
         entry.users += 1
         try:
-            async with entry.lock:
-                yield
-        finally:
-            entry.users -= 1
-            if entry.users == 0 and self._locks.get(session_id) is entry:
-                del self._locks[session_id]
+            await entry.lock.acquire()
+        except BaseException:
+            # Cancelled while queued: the lock was not taken.
+            self._leave(session_id, entry)
+            raise
+        return entry
+
+    def _release(self, session_id: str, entry: _SessionLock) -> None:
+        entry.lock.release()
+        self._leave(session_id, entry)
+
+    def _leave(self, session_id: str, entry: _SessionLock) -> None:
+        entry.users -= 1
+        if entry.users == 0 and self._locks.get(session_id) is entry:
+            del self._locks[session_id]
+
+    async def _finish_under_lock[T](
+        self, session_id: str, entry: _SessionLock, request: Callable[[], Awaitable[T]]
+    ) -> T:
+        """Send a native session request, with its follow-up, in an adapter-owned task that releases the
+        session lock (taken by the caller) only when the RPC client stops expecting an answer: the build
+        answers or refuses, or the connection ends. The caller awaits it shielded, so cancelling the caller
+        abandons only its wait.
+
+        The lock, and with it a load's replay window, therefore lives as long as the request on the wire:
+        no prompt starts while that load is outstanding, and a load's transient close or a close's
+        forgetting still happens after its caller has gone. One known limit is shared with prompts: a
+        garbled frame makes the RPC client fail every pending request locally, while the build may still
+        be answering them.
+        """
+
+        async def owned() -> T:
+            try:
+                return await request()
+            finally:
+                self._release(session_id, entry)
+
+        task = asyncio.get_running_loop().create_task(owned(), name=f"grok-session-request-{session_id}")
+        self._owned_requests.add(task)
+        task.add_done_callback(self._owned_requests.discard)
+        return await asyncio.shield(task)
 
     def _refuse(self, reason: str) -> NoReturn:
         self.transport.unattributed_starts += 1
@@ -757,32 +820,42 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
         Every update for the session that arrives while the load is outstanding is treated as history, so
         the window never overlaps a prompt of ours: the session lock keeps prompts from starting during
         it, and no load is sent while one runs. A session this process has not loaded is closed again
-        after the replay, so a read never makes it resident.
+        after the replay, so a read never makes it resident. The load and that close finish under the lock
+        even when the caller stops waiting (`_finish_under_lock`).
         """
-        async with self._exclusive(session_id):
+        entry = await self._acquire(session_id)
+        try:
             # Let the RPC reader and the notification consumer run, so updates already received are
             # handled as live work before the replay window opens.
             for _ in range(2):
                 await asyncio.sleep(0)
-            running = self._in_flight(session_id)
-            if running is not None:
-                return running
-            resident = session_id in self._known
-            collected: list[dict[str, Any]] = []
-            self._replays[session_id] = collected
-            try:
-                result = await self._rpc.request(
-                    GROK_METHODS["history"], {"sessionId": session_id, "cwd": GROK_SESSION_CWD, "mcpServers": []}
-                )
-            finally:
-                self._replays.pop(session_id, None)
-            if not resident:
-                # `session/load` made the session resident in the shared process. Close it again before
-                # anything else can use the session; a failure here fails the read.
-                closed = await self._rpc.request(GROK_METHODS["unload"], {"sessionId": session_id})
-                _require_object(closed, "invalid close result")
-            _check_model(_require_object(result, "invalid load result"))
-            return collected
+        except BaseException:
+            self._release(session_id, entry)
+            raise
+        running = self._in_flight(session_id)
+        if running is not None:
+            self._release(session_id, entry)
+            return running
+        return await self._finish_under_lock(session_id, entry, lambda: self._load_window(session_id))
+
+    async def _load_window(self, session_id: str) -> list[dict[str, Any]]:
+        """`session/load` with its replay window open until the build answers, then the transient close."""
+        resident = session_id in self._known
+        collected: list[dict[str, Any]] = []
+        self._replays[session_id] = collected
+        try:
+            result = await self._rpc.request(
+                GROK_METHODS["history"], {"sessionId": session_id, "cwd": GROK_SESSION_CWD, "mcpServers": []}
+            )
+        finally:
+            self._replays.pop(session_id, None)
+        if not resident:
+            # `session/load` made the session resident in the shared process. Close it again before
+            # anything else can use the session; a failure here fails the read.
+            closed = await self._rpc.request(GROK_METHODS["unload"], {"sessionId": session_id})
+            _require_object(closed, "invalid close result")
+        _check_model(_require_object(result, "invalid load result"))
+        return collected
 
     async def _locate_input(self, session_id: str, message_id: str) -> str | None | _Unreadable:
         try:

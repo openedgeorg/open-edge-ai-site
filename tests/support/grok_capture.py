@@ -183,10 +183,14 @@ class CapturedGrokPeer:
         self.live_updates_during_load: dict[str, list[tuple[dict[str, Any], bool]]] = {}
         # Hold `session/load` answers (replay plus result) until `release_loads`.
         self.hold_loads = False
+        # Hold `session/close` and `session/resume` answers until `release_closes` and `release_resumes`. The
+        # build applies a held request (unloads or loads the session) when it answers it.
+        self.hold_closes = False
+        self.hold_resumes = False
         # What the `compact` command streams and whether the build persists the command like a user message.
         self.compaction_output: str | None = None
         self.persist_compaction_command = False
-        self._held_loads: list[dict[str, Any]] = []
+        self._held: dict[str, list[dict[str, Any]]] = {}
         self._inbox: asyncio.Queue[bytes] = asyncio.Queue()
         self._enqueued = 0
         self._dequeued = 0
@@ -296,9 +300,18 @@ class CapturedGrokPeer:
 
     def release_loads(self) -> None:
         """Answer every held `session/load`: replay first, then the result, as the build does."""
-        held, self._held_loads = self._held_loads, []
-        for message in held:
+        for message in self._held.pop("session/load", []):
             self._answer_load(message, cast(dict[str, Any], message.get("params", {})))
+
+    def release_closes(self) -> None:
+        """Answer every held `session/close`; the session is unloaded as the build answers."""
+        for message in self._held.pop("session/close", []):
+            self._answer_close(message, cast(dict[str, Any], message.get("params", {})))
+
+    def release_resumes(self) -> None:
+        """Answer every held `session/resume`; the session is loaded as the build answers."""
+        for message in self._held.pop("session/resume", []):
+            self._answer_resume(message, cast(dict[str, Any], message.get("params", {})))
 
     def release(self, session_id: str, stop_reason: str = "end_turn") -> None:
         """Finish a held prompt turn the way the build ends any prompt turn."""
@@ -368,8 +381,7 @@ class CapturedGrokPeer:
         self._reply(message, "session/new", {"sessionId": session_id, **self._session_options(session)})
 
     def _on_session_load(self, message: dict[str, Any], params: dict[str, Any]) -> None:
-        if self.hold_loads:
-            self._held_loads.append(message)
+        if self._hold("session/load", message, self.hold_loads):
             return
         self._answer_load(message, params)
 
@@ -388,6 +400,11 @@ class CapturedGrokPeer:
         self._reply(message, "session/load", self._session_options(session))
 
     def _on_session_resume(self, message: dict[str, Any], params: dict[str, Any]) -> None:
+        if self._hold("session/resume", message, self.hold_resumes):
+            return
+        self._answer_resume(message, params)
+
+    def _answer_resume(self, message: dict[str, Any], params: Mapping[str, Any]) -> None:
         session = self._session(message, params)
         if session is None:
             return
@@ -396,6 +413,11 @@ class CapturedGrokPeer:
         self._reply(message, "session/resume", self._session_options(session))
 
     def _on_session_close(self, message: dict[str, Any], params: dict[str, Any]) -> None:
+        if self._hold("session/close", message, self.hold_closes):
+            return
+        self._answer_close(message, params)
+
+    def _answer_close(self, message: dict[str, Any], params: Mapping[str, Any]) -> None:
         session = self._session(message, params)
         if session is None:
             return
@@ -485,6 +507,12 @@ class CapturedGrokPeer:
         held, session.held = session.held, None
         self.keep_running.discard(session.id)
         self._prompt_result(held, "cancelled")
+
+    def _hold(self, method: str, message: dict[str, Any], hold: bool) -> bool:
+        """Defer the answer to this request until the matching `release_*` call."""
+        if hold:
+            self._held.setdefault(method, []).append(message)
+        return hold
 
     # Objects ----------------------------------------------------------------------------
     def _prompt_result(self, message: dict[str, Any], stop_reason: str) -> None:

@@ -10,7 +10,7 @@ import json
 import subprocess
 import sys
 import tomllib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, cast, get_args
 
@@ -640,6 +640,134 @@ async def test_resume_waits_for_a_history_read_that_reopens_an_unloaded_session(
     assert _session_methods(grok_lab, session_a)[-3:] == ["session/load", "session/close", "session/resume"]
     assert grok_lab.peer.sessions[session_a].loaded is True
     assert session_a in grok_lab.adapter.tracked_sessions()
+
+
+# A caller that stops waiting (cancellation, a bounded wait) abandons only its wait. The native request is
+# still outstanding on the wire, so the session stays as closed to other work as it was while the caller
+# waited, and the request's follow-up (the transient close, forgetting a closed session) still happens.
+
+
+async def _read(lab: GrokLab, read: str) -> object:
+    if read == "inspect":
+        return await lab.adapter.inspect(lab.handle_a)
+    return await lab.adapter.read_history(lab.handle_a)
+
+
+async def _abandon(task: asyncio.Task[Any]) -> None:
+    """Cancel the caller's wait, which must end at once even though the native request is held."""
+    task.cancel()
+    await asyncio.wait({task}, timeout=RPC_TIMEOUT)
+    assert task.cancelled()
+
+
+async def _until(condition: Callable[[], bool]) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + RPC_TIMEOUT
+    while not condition():
+        if loop.time() > deadline:
+            raise AssertionError("condition not reached")
+        await asyncio.sleep(0.005)
+
+
+@pytest.mark.parametrize("read", ["read_history", "inspect"])
+async def test_a_cancelled_read_keeps_prompts_off_its_session_until_the_build_answers_the_load(
+    grok_lab: GrokLab, read: str
+) -> None:
+    session_a = grok_lab.handle_a.native_session_id
+    shell = {"sessionUpdate": "tool_call", "toolCallId": "s1", "title": "Run", "kind": "execute"}
+    grok_lab.peer.updates_during_next_prompt = [{**shell, "toolName": "run_terminal_command"}]
+    assert isinstance(await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a), Accepted)
+    await _drain(grok_lab, grok_lab.handle_a)
+    refused = grok_lab.adapter.disallowed_items
+    assert refused == 1
+    prompts = len(grok_lab.peer.requests_for("session/prompt"))
+    grok_lab.peer.hold_loads = True
+    reading = asyncio.create_task(_read(grok_lab, read))
+    await grok_lab.peer.wait_for_requests("session/load", len(grok_lab.peer.requests_for("session/load")) + 1)
+    await _abandon(reading)
+    grok_lab.peer.keep_running.add(session_a)
+    second = SubmitMessage(conversation_id=CONV_A, client_request_id="req-a-2", message="second question")
+    submitting = asyncio.create_task(grok_lab.adapter.submit(grok_lab.handle_a, second, grok_lab.authority_a))
+    await asyncio.sleep(0.05)
+    # The abandoned load is still outstanding, so its replay window is still open: no prompt starts.
+    assert len(grok_lab.peer.requests_for("session/prompt")) == prompts
+    grok_lab.peer.hold_loads = False
+    grok_lab.peer.release_loads()
+    result = await asyncio.wait_for(submitting, RPC_TIMEOUT)
+    assert result == Unconfirmed(kind="unconfirmed", native_work_ref=grok_message_id(session_a, "req-a-2"))
+    await grok_lab.peer.wait_idle()
+    # The abandoned replay (old reply, old shell call) never reaches the new prompt's stream or its counts.
+    assert _kinds(await _drain(grok_lab, grok_lab.handle_a)) == [("text_delta", "reply to second question")]
+    assert grok_lab.adapter.disallowed_items == refused
+    assert _session_methods(grok_lab, session_a)[-2:] == ["session/load", "session/prompt"]
+    grok_lab.peer.release(session_a)
+    await grok_lab.peer.wait_idle()
+    assert grok_lab.peer.violations == []
+
+
+async def test_a_cancelled_read_of_an_unloaded_session_still_closes_it(grok_lab: GrokLab) -> None:
+    session_a = grok_lab.handle_a.native_session_id
+    assert isinstance(await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a), Accepted)
+    assert await grok_lab.adapter.unload(grok_lab.handle_a) == "unloaded"
+    grok_lab.peer.hold_loads = True
+    reading = asyncio.create_task(grok_lab.adapter.read_history(grok_lab.handle_a))
+    await grok_lab.peer.wait_for_requests("session/load", len(grok_lab.peer.requests_for("session/load")) + 1)
+    await _abandon(reading)
+    grok_lab.peer.hold_loads = False
+    grok_lab.peer.release_loads()
+    await _until(lambda: session_a not in grok_lab.adapter.tracked_sessions())
+    await grok_lab.peer.wait_idle()
+    # The read stayed residency-neutral although nobody waited for it.
+    assert grok_lab.peer.sessions[session_a].loaded is False
+    methods = _session_methods(grok_lab, session_a)
+    assert methods[methods.index("session/close") + 1 :] == ["session/load", "session/close"]
+    assert grok_lab.peer.violations == []
+
+
+async def test_a_cancelled_unload_finishes_before_its_session_is_used_again(grok_lab: GrokLab) -> None:
+    session_a = grok_lab.handle_a.native_session_id
+    grok_lab.peer.hold_closes = True
+    unloading = asyncio.create_task(grok_lab.adapter.unload(grok_lab.handle_a))
+    await grok_lab.peer.wait_for_requests("session/close", 1)
+    await _abandon(unloading)
+    submitting = asyncio.create_task(
+        grok_lab.adapter.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a)
+    )
+    await asyncio.sleep(0.05)
+    # The close is still outstanding: nothing else is sent to the session until the build answers it.
+    assert grok_lab.peer.requests_for("session/prompt") == []
+    grok_lab.peer.hold_closes = False
+    grok_lab.peer.release_closes()
+    # Once the build closed the session, the adapter has forgotten it too.
+    result = await asyncio.wait_for(submitting, RPC_TIMEOUT)
+    assert result == NotSubmitted(kind="not_submitted", code="session_not_loaded")
+    assert grok_lab.peer.requests_for("session/prompt") == []
+    assert grok_lab.peer.sessions[session_a].loaded is False
+    assert session_a not in grok_lab.adapter.tracked_sessions()
+    assert grok_lab.peer.violations == []
+
+
+async def test_a_cancelled_resume_is_tracked_once_the_build_answers(grok_lab: GrokLab) -> None:
+    session_a = grok_lab.handle_a.native_session_id
+    assert await grok_lab.adapter.unload(grok_lab.handle_a) == "unloaded"
+    grok_lab.peer.hold_resumes = True
+    resuming = asyncio.create_task(grok_lab.adapter.resume_session(grok_lab.handle_a))
+    await grok_lab.peer.wait_for_requests("session/resume", 1)
+    await _abandon(resuming)
+    loads = len(grok_lab.peer.requests_for("session/load"))
+    reading = asyncio.create_task(grok_lab.adapter.read_history(grok_lab.handle_a))
+    await asyncio.sleep(0.05)
+    # A read waits for the outstanding resume instead of loading, and transiently closing, the session.
+    assert len(grok_lab.peer.requests_for("session/load")) == loads
+    grok_lab.peer.hold_resumes = False
+    grok_lab.peer.release_resumes()
+    await asyncio.wait_for(reading, RPC_TIMEOUT)
+    # The build resumed the session, so the adapter tracks it as loaded and the read left it resident.
+    assert _session_methods(grok_lab, session_a)[-2:] == ["session/resume", "session/load"]
+    assert grok_lab.peer.sessions[session_a].loaded is True
+    assert session_a in grok_lab.adapter.tracked_sessions()
+    assert isinstance(await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a), Accepted)
+    assert grok_lab.peer.violations == []
 
 
 async def test_unload_drops_events_nobody_reads(grok_lab: GrokLab) -> None:
