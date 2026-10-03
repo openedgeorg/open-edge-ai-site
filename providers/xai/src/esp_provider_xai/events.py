@@ -163,9 +163,16 @@ def _payload(
 
 
 def _tool_name(update: Mapping[str, Any]) -> str:
+    """Structured tool identity, or "" when the update carries none.
+
+    The ACP `title` is display text ("Read", "Search") and never identifies a tool, so an update with
+    only a title is disallowed. Which structured field the build sets for MCP tools, and in what form,
+    is unobserved (a Gate 1 item): the binary embeds a sample `tool_call` with a top-level `toolName`,
+    and names an `x.ai/tool` metadata key.
+    """
     meta = _object(update.get("_meta")) or {}
     tool = _object(meta.get("x.ai/tool")) or {}
-    for candidate in (tool.get("name"), update.get("toolName"), update.get("title")):
+    for candidate in (tool.get("name"), update.get("toolName")):
         if isinstance(candidate, str) and candidate != "":
             return candidate
     return ""

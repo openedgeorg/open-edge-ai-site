@@ -1194,7 +1194,10 @@ def grok_protocol_capture(observation: GrokObservation) -> dict[str, Any] | None
     if observation.acp_initialize is not None:
         initialize = {
             **observation.acp_initialize,
-            "provenance": "re-observed by qualify inspect --acp-handshake (initialize only, network-isolated)",
+            "provenance": (
+                "re-observed by qualify inspect --acp-handshake (initialize only, network-isolated) with the "
+                f"runtime configuration sha256:{observation.config_digest} staged as GROK_HOME/config.toml"
+            ),
         }
     elif same_build and isinstance(frozen.get("acp_initialize"), dict):
         initialize = cast(dict[str, Any], frozen["acp_initialize"])
@@ -1310,9 +1313,22 @@ def grok_capability_report(observation: GrokObservation, profile: RuntimeProfile
             "sessions against a custom base_url without signing in is unobserved."
         )
     if observation.config_digest is not None:
+        frozen_provenance = ""
+        if isinstance(frozen_handshake, dict):
+            frozen_provenance = str(cast(dict[str, Any], frozen_handshake).get("provenance", ""))
+        if handshake is not None:
+            loaded = "loaded by this run's agent start (initialize only)"
+        elif observation.config_digest in frozen_provenance:
+            loaded = "loaded by the agent start of the frozen handshake (initialize only)"
+        else:
+            loaded = (
+                "no recorded agent start has loaded this exact file (this run staged it for --version and help "
+                "only, and the frozen handshake provenance names no such configuration), so a load failure is "
+                "still possible; run inspect --acp-handshake --write-protocol-capture to observe it"
+            )
         notes.append(
-            f"Runtime configuration sha256:{observation.config_digest}; the build has no strict configuration mode, "
-            "so acceptance of each key is not demonstrated."
+            f"Runtime configuration sha256:{observation.config_digest}: {loaded}; the build has no strict "
+            "configuration mode, so acceptance of each key is not demonstrated."
         )
     if isinstance(frozen, dict) and exact:
         for record in cast(list[object], frozen.get("g0_observations", [])):

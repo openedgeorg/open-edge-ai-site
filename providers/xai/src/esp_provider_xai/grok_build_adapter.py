@@ -13,6 +13,13 @@ session, replayed through `session/load`, holds a user message carrying this req
 make it `not_submitted`, and only while the persisted session lacks the input; any other failure after
 the frame was handed to the transport keeps it `unconfirmed`.
 
+Replay windows. Replayed and live `session/update` notifications are indistinguishable on the wire, so
+this adapter never sends `session/load` for a session while a prompt of its own is in flight there, and
+never starts a prompt while a load of that session is outstanding. A turn that outlasts the acceptance
+wait is therefore `unconfirmed` with its deterministic reference, and status reconciliation confirms the
+saved input from the replay once the turn ends. A read of a session this process has not loaded (closed,
+or never created or resumed here) is load, collect, close: reads never change residency.
+
 Attribution. ACP updates name the session, not a turn, so the work reference is the prompt this
 adapter sent on that session, and only while it is in flight. Model requests are attributed from the
 `x-grok-session-id` header the build's model-request client names; MCP requests from the
@@ -36,7 +43,8 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, NoReturn, Protocol, cast
@@ -48,6 +56,7 @@ from esp_contracts.qualification import RuntimeProfile
 from esp_contracts.runtime import (
     Accepted,
     HistoryItem,
+    NativeEvent,
     NativeHistorySnapshot,
     NativeStatus,
     NativeWorkStatus,
@@ -143,6 +152,10 @@ class GrokCapabilityMissing(Exception):
 
 class GrokSessionBusy(Exception):
     """A prompt of ours is still in flight on this session; nothing was sent."""
+
+
+class GrokSessionNotLoaded(Exception):
+    """The session is not loaded in this process (closed, or never created or resumed here); nothing was sent."""
 
 
 class _Unreadable:
@@ -290,6 +303,14 @@ class _Terminal:
     echoed_message_id: str | None
 
 
+@dataclass(eq=False)
+class _SessionLock:
+    """Serializes replay windows, prompt starts, resume and close of one session. Exists only while in use."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
 class GrokBuildHarnessAdapter(HarnessAdapter):
     """One Grok Build ACP process. Sessions are addressed only by their explicit `sessionId`."""
 
@@ -297,17 +318,19 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
 
     def __init__(self, rpc: NativeRpcClient, transport: TransportContext, profile: RuntimeProfile) -> None:
         self.profile = profile
-        self.acceptance_confirm_attempts = 8
-        self.acceptance_confirm_interval = 0.25
+        # Seconds `submit` waits for the prompt answer before returning `unconfirmed` for a running turn.
+        self.acceptance_wait = 2.0
         self.model_reroutes = 0
         self.disallowed_items = 0
         self.unbound_updates = 0
+        self.suppressed_compaction_output = 0
         self._operations: dict[str, _Operation] = {}
         self._terminals: dict[str, dict[str, _Terminal]] = {}
         self._replays: dict[str, list[dict[str, Any]]] = {}
-        self._read_locks: dict[str, asyncio.Lock] = {}
-        self._closed: set[str] = set()
+        self._locks: dict[str, _SessionLock] = {}
+        # Sessions loaded in this process by this adapter: created or resumed, and not closed since.
         self._known: set[str] = set()
+        self._subscribers: dict[str, int] = {}
         super().__init__(rpc, transport)
 
     async def initialize(self, *, client_name: str = "esp-supervisor", client_version: str = "1") -> dict[str, object]:
@@ -352,13 +375,13 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
     async def resume_session(self, handle: SessionHandle) -> SessionHandle:
         self._require_pins(handle)
         session_id = handle.native_session_id
-        result = await self._rpc.request(
-            GROK_METHODS["resume"], {"sessionId": session_id, "cwd": GROK_SESSION_CWD, "mcpServers": []}
-        )
-        _check_model(_require_object(result, "invalid resume result"))
-        self._closed.discard(session_id)
-        self._known.add(session_id)
-        self._remember_run(session_id)
+        async with self._exclusive(session_id):
+            result = await self._rpc.request(
+                GROK_METHODS["resume"], {"sessionId": session_id, "cwd": GROK_SESSION_CWD, "mcpServers": []}
+            )
+            _check_model(_require_object(result, "invalid resume result"))
+            self._known.add(session_id)
+            self._remember_run(session_id)
         return handle
 
     async def submit(
@@ -371,22 +394,24 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
         if message.conversation_id != handle.conversation_id:
             raise GrokBindingMismatch("conversation_mismatch")
         session_id = handle.native_session_id
-        if self._in_flight(session_id) is not None:
-            # ACP runs one prompt turn per session; a second prompt would be queued or steered by the
-            # build. Nothing is sent, so this is conclusive.
-            return NotSubmitted(kind="not_submitted", code="prompt_in_flight")
         message_id = grok_message_id(session_id, message.client_request_id)
-        operation = self._start(handle, authority, message_id, "prompt", message.message)
-        attempts = max(1, self.acceptance_confirm_attempts)
-        for _ in range(attempts):
-            # Give the answer (or the build's queued updates) time to arrive before reading history.
-            await asyncio.wait({operation.task}, timeout=self.acceptance_confirm_interval)
-            if operation.task.done():
-                return await self._after_answer(operation)
-            located = await self._locate_input(session_id, message_id)
-            if located == message_id:
-                return Accepted(kind="accepted", work=WorkRef(native_session_id=session_id, native_work_ref=message_id))
-        return Unconfirmed(kind="unconfirmed", native_work_ref=None)
+        async with self._exclusive(session_id):
+            # Holding the session lock means no replay window of this session is open while the prompt starts.
+            if session_id not in self._known:
+                # ACP prompts a session loaded in this process; this adapter never loads one implicitly.
+                return NotSubmitted(kind="not_submitted", code="session_not_loaded")
+            if self._in_flight(session_id) is not None:
+                # ACP runs one prompt turn per session; a second prompt would be queued or steered by the
+                # build. Nothing is sent, so this is conclusive.
+                return NotSubmitted(kind="not_submitted", code="prompt_in_flight")
+            operation = self._start(handle, authority, message_id, "prompt", message.message)
+        await asyncio.wait({operation.task}, timeout=max(0.0, self.acceptance_wait))
+        if operation.task.done():
+            return await self._after_answer(operation)
+        # The turn is still running. Persisted history is not replayed over our own running prompt (the
+        # replay window would swallow its live updates), so acceptance is not confirmed here: the reference
+        # is the deterministic one, and status reconciliation confirms the saved input after the turn.
+        return Unconfirmed(kind="unconfirmed", native_work_ref=message_id)
 
     async def _after_answer(self, operation: _Operation) -> SubmissionResult:
         """The prompt request finished. Decide acceptance from persisted history, never from the answer."""
@@ -430,9 +455,12 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
         """
         self._require_pins(handle)
         session_id = handle.native_session_id
-        if self._in_flight(session_id) is not None:
-            raise GrokSessionBusy(session_id)
-        operation = self._start(handle, authority, str(uuid.uuid4()), "compaction", GROK_COMPACT_COMMAND)
+        async with self._exclusive(session_id):
+            if session_id not in self._known:
+                raise GrokSessionNotLoaded(session_id)
+            if self._in_flight(session_id) is not None:
+                raise GrokSessionBusy(session_id)
+            operation = self._start(handle, authority, str(uuid.uuid4()), "compaction", GROK_COMPACT_COMMAND)
         await asyncio.wait({operation.task})
         exc = None if operation.task.cancelled() else operation.task.exception()
         if isinstance(exc, ConnectionError):
@@ -442,16 +470,25 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
         return cast(NativeWorkStatus, stop_status((_object(operation.task.result()) or {}).get("stopReason")))
 
     async def inspect(self, handle: SessionHandle, request_id: str | None = None) -> NativeStatus:
+        """Status of the session or of one request. While a prompt of ours runs there, nothing is sent.
+
+        The running prompt is reported from this connection's own state with `saved_input_available`
+        false (the replay is not read); asking about another request then raises `GrokSessionBusy`.
+        """
         session_id = handle.native_session_id
         replay = await self._replay(session_id)
+        if isinstance(replay, _Operation):
+            return _running_status(replay, request_id)
         return self._status(session_id, replay, request_id)
 
     async def read_history(self, handle: SessionHandle) -> NativeHistorySnapshot:
+        """Native history from the build's replay. Raises `GrokSessionBusy` (nothing sent) while a prompt
+        of ours runs on the session: its replay window would swallow that prompt's live updates."""
         session_id = handle.native_session_id
         replay = await self._replay(session_id)
-        running = self._in_flight(session_id)
-        provisional_turn = None if running is None else running.message_id
-        items = _history_items(session_id, replay, provisional_turn)
+        if isinstance(replay, _Operation):
+            raise GrokSessionBusy(session_id)
+        items = _history_items(session_id, replay)
         status = self._status(session_id, replay, None)
         return NativeHistorySnapshot(items=items, native_cursor=None, status=status, provenance=[])
 
@@ -514,16 +551,17 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
 
     async def unload(self, handle: SessionHandle) -> Literal["unloaded", "unsupported"]:
         session_id = handle.native_session_id
-        if self._in_flight(session_id) is not None:
-            raise GrokSessionBusy(session_id)
-        try:
-            result = await self._rpc.request(GROK_METHODS["unload"], {"sessionId": session_id})
-        except RpcProtocolError as exc:
-            if exc.args and exc.args[0] == _METHOD_NOT_FOUND:
-                return "unsupported"
-            raise
-        _require_object(result, "invalid close result")
-        self._forget_session(session_id)
+        async with self._exclusive(session_id):
+            if self._in_flight(session_id) is not None:
+                raise GrokSessionBusy(session_id)
+            try:
+                result = await self._rpc.request(GROK_METHODS["unload"], {"sessionId": session_id})
+            except RpcProtocolError as exc:
+                if exc.args and exc.args[0] == _METHOD_NOT_FOUND:
+                    return "unsupported"
+                raise
+            _require_object(result, "invalid close result")
+            self._forget_session(session_id)
         return "unloaded"
 
     async def export_history(self, handle: SessionHandle) -> None:
@@ -574,13 +612,52 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
             native_work_ref=cast(str, context.native_work_ref),
         )
 
+    async def events(self, handle: SessionHandle) -> AsyncIterator[NativeEvent]:
+        """Live events of one session.
+
+        A stream opened before `unload` keeps its queue, so it still receives the session's work after
+        `resume_session`. A queue nobody reads is dropped on unload, and when its last reader leaves a
+        session that is not loaded.
+        """
+        session_id = handle.native_session_id
+        queue = self._queue_for(session_id)
+        self._subscribers[session_id] = self._subscribers.get(session_id, 0) + 1
+        try:
+            while True:
+                yield await queue.get()
+        finally:
+            remaining = self._subscribers.get(session_id, 0) - 1
+            if remaining > 0:
+                self._subscribers[session_id] = remaining
+            else:
+                self._subscribers.pop(session_id, None)
+                if session_id not in self._known and self._events.get(session_id) is queue:
+                    del self._events[session_id]
+
     def tracked_sessions(self) -> frozenset[str]:
-        """Sessions this adapter still holds attribution or status state for. Confirmed unload releases it."""
-        sessions = set(self._operations) | set(self._terminals) | set(self._replays) | set(self._read_locks)
-        sessions |= self._known | set(self._run_ids) | self._bound
+        """Sessions this adapter holds any state for. Confirmed unload releases all of it, except the event
+        queue of a stream that is still open."""
+        sessions = set(self._operations) | set(self._terminals) | set(self._replays) | set(self._locks)
+        sessions |= self._known | set(self._run_ids) | self._bound | set(self._events) | set(self._subscribers)
         return frozenset(sessions)
 
     # Internals ------------------------------------------------------------------------------
+
+    @asynccontextmanager
+    async def _exclusive(self, session_id: str) -> AsyncGenerator[None]:
+        """Hold the session's lock. Its entry exists only while someone holds or waits for it."""
+        entry = self._locks.get(session_id)
+        if entry is None:
+            entry = _SessionLock()
+            self._locks[session_id] = entry
+        entry.users += 1
+        try:
+            async with entry.lock:
+                yield
+        finally:
+            entry.users -= 1
+            if entry.users == 0 and self._locks.get(session_id) is entry:
+                del self._locks[session_id]
 
     def _refuse(self, reason: str) -> NoReturn:
         self.transport.unattributed_starts += 1
@@ -597,9 +674,8 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
         return operation
 
     def _scope_context(self, session_id: str) -> OperationContext:
-        if session_id in self._closed:
-            self._refuse("closed_session")
         if session_id not in self._known:
+            # Never created or resumed here, or closed since: a closed session keeps no state.
             self._refuse("unknown_session")
         operation = self._in_flight(session_id)
         if operation is None:
@@ -633,7 +709,6 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
         )
         self.transport.bind(context)
         self._bound.add(session_id)
-        self._known.add(session_id)
         params = {"sessionId": session_id, "messageId": message_id, "prompt": [{"type": "text", "text": text}]}
         task: asyncio.Task[object] = asyncio.get_running_loop().create_task(
             self._rpc.request(GROK_METHODS["submit"], params), name=f"grok-prompt-{session_id}"
@@ -675,18 +750,24 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
         for event in terminal_events(operation.context, result, compaction=operation.kind == "compaction"):
             queue.put_nowait(event)
 
-    async def _replay(self, session_id: str) -> list[dict[str, Any]]:
-        """Persisted session updates, replayed by the build in answer to `session/load`.
+    async def _replay(self, session_id: str) -> list[dict[str, Any]] | _Operation:
+        """Persisted session updates, replayed by the build in answer to `session/load`, or the prompt of
+        ours in flight on the session, in which case nothing is sent.
 
-        Updates for this session that arrive while the load is outstanding are history, not live work.
-        Reads of one session are serialized so two replays never interleave.
+        Every update for the session that arrives while the load is outstanding is treated as history, so
+        the window never overlaps a prompt of ours: the session lock keeps prompts from starting during
+        it, and no load is sent while one runs. A session this process has not loaded is closed again
+        after the replay, so a read never makes it resident.
         """
-        lock = self._read_locks.setdefault(session_id, asyncio.Lock())
-        async with lock:
+        async with self._exclusive(session_id):
             # Let the RPC reader and the notification consumer run, so updates already received are
             # handled as live work before the replay window opens.
             for _ in range(2):
                 await asyncio.sleep(0)
+            running = self._in_flight(session_id)
+            if running is not None:
+                return running
+            resident = session_id in self._known
             collected: list[dict[str, Any]] = []
             self._replays[session_id] = collected
             try:
@@ -695,6 +776,11 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
                 )
             finally:
                 self._replays.pop(session_id, None)
+            if not resident:
+                # `session/load` made the session resident in the shared process. Close it again before
+                # anything else can use the session; a failure here fails the read.
+                closed = await self._rpc.request(GROK_METHODS["unload"], {"sessionId": session_id})
+                _require_object(closed, "invalid close result")
             _check_model(_require_object(result, "invalid load result"))
             return collected
 
@@ -703,25 +789,28 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
             replay = await self._replay(session_id)
         except (*_READ_ERRORS, GrokBindingMismatch):
             return _UNREADABLE
+        if isinstance(replay, _Operation):
+            # A newer prompt already runs on the session; its replay window cannot be opened now.
+            return _UNREADABLE
         for update in replay:
             if update.get("sessionUpdate") == "user_message_chunk" and update.get("messageId") == message_id:
                 return message_id
         return None
 
     def _forget_session(self, session_id: str) -> None:
-        """Residency is bounded: a closed session keeps no attribution, status or binding state.
+        """Residency is bounded: a closed session keeps no attribution, status, binding or lock state.
 
-        Its event queue is kept, so an `events(handle)` stream opened earlier still receives the work
-        of the same session after `resume_session`.
+        Its event queue is dropped unless an `events(handle)` stream is open; that stream keeps it and
+        still receives the work of the same session after `resume_session`.
         """
         self._operations.pop(session_id, None)
         self._terminals.pop(session_id, None)
         self._replays.pop(session_id, None)
-        self._read_locks.pop(session_id, None)
         self._known.discard(session_id)
         self._run_ids.pop(session_id, None)
         self._bound.discard(session_id)
-        self._closed.add(session_id)
+        if self._subscribers.get(session_id, 0) == 0:
+            self._events.pop(session_id, None)
         self.transport.unbind(session_id)
 
     def _on_notification(self, params: NotificationParams) -> None:
@@ -752,6 +841,10 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
             return
         if event is None:
             return
+        if operation.kind == "compaction" and event.payload_type == "text_delta":
+            # What the `compact` command streams (a summary or a confirmation) is not visitor output.
+            self.suppressed_compaction_output += 1
+            return
         if event.payload_type == "model_rerouted":
             self.model_reroutes += 1
         elif event.payload_type == "disallowed_item":
@@ -779,24 +872,44 @@ def _check_model(body: Mapping[str, Any]) -> None:
         raise GrokBindingMismatch("model_drift")
 
 
-def _history_items(session_id: str, replay: list[dict[str, Any]], provisional_turn: str | None) -> list[HistoryItem]:
-    """Public user and assistant text, grouped per message. Reasoning, plans and tools are filtered."""
+def _running_status(operation: _Operation, request_id: str | None) -> NativeStatus:
+    """Status of the prompt of ours in flight, from this connection's own state. The replay is not read,
+    so the saved input is not claimed; any other request on the session cannot be answered now."""
+    session_id = operation.context.native_session_id
+    if request_id is None:
+        return NativeStatus(status="running", native_work_ref=operation.message_id, saved_input_available=False)
+    if grok_message_id(session_id, request_id) != operation.message_id:
+        raise GrokSessionBusy(session_id)
+    return NativeStatus(
+        status="running", native_work_ref=operation.message_id, request_id=request_id, saved_input_available=False
+    )
+
+
+def _history_items(session_id: str, replay: list[dict[str, Any]]) -> list[HistoryItem]:
+    """Public user and assistant text, grouped per message. Reasoning, plans and tools are filtered, and
+    so is a `compact` command turn: the command and what it streamed are not conversation."""
     items: list[HistoryItem] = []
     turn: str | None = None
     current: tuple[str, str] | None = None
     texts: list[str] = []
+    command_turn = False
 
     def flush() -> None:
+        nonlocal command_turn
         if current is None:
             return
         role, item_id = current
+        text = "".join(texts)
+        if role == "user":
+            command_turn = text.strip() == GROK_COMPACT_COMMAND
+        if command_turn:
+            return
         items.append(
             HistoryItem(
                 native_item_id=item_id,
                 native_work_ref=turn,
                 role=cast(Literal["user", "assistant"], role),
-                text="".join(texts),
-                provisional=role == "assistant" and turn is not None and turn == provisional_turn,
+                text=text,
             )
         )
 

@@ -177,6 +177,16 @@ class CapturedGrokPeer:
         self.declared_session_capabilities: dict[str, object] | None = None
         self.declared_load_session = True
         self.agent_request_responses: list[dict[str, Any]] = []
+        # Live updates of a running turn that the build emits while a `session/load` of that session is
+        # outstanding (between the replay and the load answer), as (update, persisted). Updates that never
+        # met a load are delivered as ordinary live updates by `flush_live_updates`.
+        self.live_updates_during_load: dict[str, list[tuple[dict[str, Any], bool]]] = {}
+        # Hold `session/load` answers (replay plus result) until `release_loads`.
+        self.hold_loads = False
+        # What the `compact` command streams and whether the build persists the command like a user message.
+        self.compaction_output: str | None = None
+        self.persist_compaction_command = False
+        self._held_loads: list[dict[str, Any]] = []
         self._inbox: asyncio.Queue[bytes] = asyncio.Queue()
         self._enqueued = 0
         self._dequeued = 0
@@ -221,6 +231,15 @@ class CapturedGrokPeer:
     # Test controls ----------------------------------------------------------------------
     def requests_for(self, method: str) -> list[dict[str, Any]]:
         return [params for name, params in self.requests if name == method]
+
+    async def wait_for_requests(self, method: str, count: int) -> None:
+        """Wait until the adapter has sent at least `count` requests of `method`."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + RPC_TIMEOUT
+        while len(self.requests_for(method)) < count:
+            if loop.time() > deadline:
+                raise AssertionError(f"adapter sent {len(self.requests_for(method))} {method} requests, not {count}")
+            await asyncio.sleep(0.005)
 
     def emit_model_request(
         self,
@@ -269,6 +288,17 @@ class CapturedGrokPeer:
 
     def notify(self, method: str, params: dict[str, Any]) -> None:
         self._enqueue({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def flush_live_updates(self, session_id: str) -> None:
+        """Deliver the configured live updates that no outstanding `session/load` overlapped."""
+        for update, persist in self.live_updates_during_load.pop(session_id, []):
+            self.update(session_id, update, persist=persist)
+
+    def release_loads(self) -> None:
+        """Answer every held `session/load`: replay first, then the result, as the build does."""
+        held, self._held_loads = self._held_loads, []
+        for message in held:
+            self._answer_load(message, cast(dict[str, Any], message.get("params", {})))
 
     def release(self, session_id: str, stop_reason: str = "end_turn") -> None:
         """Finish a held prompt turn the way the build ends any prompt turn."""
@@ -338,6 +368,12 @@ class CapturedGrokPeer:
         self._reply(message, "session/new", {"sessionId": session_id, **self._session_options(session)})
 
     def _on_session_load(self, message: dict[str, Any], params: dict[str, Any]) -> None:
+        if self.hold_loads:
+            self._held_loads.append(message)
+            return
+        self._answer_load(message, params)
+
+    def _answer_load(self, message: dict[str, Any], params: Mapping[str, Any]) -> None:
         session = self._session(message, params)
         if session is None:
             return
@@ -345,6 +381,10 @@ class CapturedGrokPeer:
         # ACP replays the whole persisted conversation before answering session/load.
         for update in list(session.persisted):
             self.notify("session/update", {"sessionId": session.id, "update": update})
+        # A running turn keeps streaming while the load is outstanding; on the wire these updates look
+        # exactly like the replay.
+        for update, persist in self.live_updates_during_load.pop(session.id, []):
+            self.update(session.id, update, persist=persist)
         self._reply(message, "session/load", self._session_options(session))
 
     def _on_session_resume(self, message: dict[str, Any], params: dict[str, Any]) -> None:
@@ -365,6 +405,10 @@ class CapturedGrokPeer:
     def _on_session_prompt(self, message: dict[str, Any], params: dict[str, Any]) -> None:
         session = self._session(message, params)
         if session is None:
+            return
+        if not session.loaded:
+            self.violations.append(f"session/prompt on session {session.id} that is not loaded in this process")
+            self._error(message, _INVALID_PARAMS, "session not loaded")
             return
         for block in cast(list[object], params.get("prompt", [])):
             self.violations.extend(shape_violations("session/prompt text block", block, self.shapes["TextContent"]))
@@ -392,8 +436,12 @@ class CapturedGrokPeer:
         session.turns += 1
         if text.strip() == GROK_COMPACT_COMMAND:
             # The declared `compact` command: compaction sampling through the same model endpoint.
+            if self.persist_compaction_command:
+                session.persisted.append(user_update)
             self.emit_model_request(session.id, "compaction")
             self.emit_model_request(session.id, "compaction")
+            if self.compaction_output is not None:
+                self.update(session.id, _agent_chunk(f"{session.id}-compact-{session.turns}", self.compaction_output))
             self._prompt_result(message, "end_turn")
             return
         if self.persist_user_messages:
@@ -509,8 +557,7 @@ class GrokLab:
         self.guard = AcpClientGuard(self.peer)
         self.rpc = NativeRpcClient(self.guard)
         self.adapter: GrokBuildHarnessAdapter = create_grok_adapter(self.rpc, lab_profile())
-        self.adapter.acceptance_confirm_attempts = 2
-        self.adapter.acceptance_confirm_interval = 0.02
+        self.adapter.acceptance_wait = 0.04
         self.peer.relay = self.relay
         self.peer.mcp_relay = self.mcp_relay
         self.relay_records: list[RelayRecord] = []

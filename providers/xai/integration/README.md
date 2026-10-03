@@ -18,8 +18,8 @@ The canonical identity is the `grok --version` output of an isolated run (no cha
 `protocol-capabilities.json` holds:
 
 - `static`: the version line, binary label and digest, the `--help`, `agent --help` and `sessions --help` command lists, and a byte-substring scan of the binary for ACP method names, ACP request types (`struct PromptRequest`, `struct LoadSessionRequest`, ...), the `messageId`/`userMessageId` fields, session update kinds, and the model-request header names of the build's `xai-grok-sampler` client (`x-grok-session-id`, `x-grok-conv-id`, `x-grok-req-id`, `x-grok-turn-idx`). `qualify inspect` regenerates this section.
-- `acp_initialize`: the ACP `initialize` result of one isolated, initialize-only G0 run: protocol version 1, `loadSession: true`, `sessionCapabilities` `list`/`resume`/`close`, MCP over HTTP and SSE, the `grok.com` sign-in method, the built-in model catalog and command list. The `hostname`, `currentWorkingDirectory`, `agentId` and `agentInstanceId` fields are withheld.
-- `config_reflections`: settings of this profile that the build was observed to apply, because they changed the `initialize` result.
+- `acp_initialize`: the ACP `initialize` result of one isolated, initialize-only G0 run without configuration: protocol version 1, `loadSession: true`, `sessionCapabilities` `list`/`resume`/`close`, MCP over HTTP and SSE, the `grok.com` sign-in method, the built-in model catalog and command list. The `hostname`, `currentWorkingDirectory`, `agentId` and `agentInstanceId` fields are withheld. This section is a manual transcription of that run's output, not tool output; its `provenance` field says so. A run of `--acp-handshake` replaces it with tool output whose provenance names the staged configuration digest.
+- `config_reflections`: settings that the build was observed to apply, because they changed the `initialize` result. They were observed with earlier draft configurations that set the same values, not with the committed file.
 - `g0_observations`: other facts observed during G0 (see below).
 - `acp_v1`: the ACP version 1 surface this build declares (methods whose name is in the binary and whose gating capability was declared) and the ACP v1 field names the contract tests check against. The build ships no machine-readable schema, so these shapes are the protocol's, corroborated by the binary's request types and fields.
 - `esp_operation_mapping`: the adapter's mapping below.
@@ -34,6 +34,14 @@ uv run --all-packages python scripts/qualify.py inspect --provider xai --observa
 ```
 
 Discovery refuses to execute the build unless it can run it in a new network namespace with no route out (`unshare -rn`). It uses `env -i`, a temporary `HOME` and `GROK_HOME` with this profile's configuration staged, `GROK_DISABLE_AUTOUPDATER=1`, and no credentials. By default it runs only `--version` and the three help commands, then scans the binary file. `--acp-handshake` additionally starts `grok agent --no-leader stdio` and sends `initialize` only. Discovery never creates a session, never sends a prompt and never makes a model request. The ordinary test suite uses `--observation-file`, so it never executes the installed build. A recorded observation is reported as such and can neither refreeze the capture nor run the handshake.
+
+The configuration digest in the candidate manifest names `infra/runtime/grok/config.toml`, a file the build has not loaded. No recorded agent start has used it:
+
+- the default `inspect` stages it but runs only `--version` and help;
+- the G0 handshakes ran without configuration or with earlier drafts;
+- the draft that added `disable_web_search` and `features.backend_tools` was denied and never ran.
+
+A load failure is therefore still possible, and `inspect` says so in its notes. G0 stays open until an operator runs `inspect --provider xai --acp-handshake --write-protocol-capture` with this configuration in the qualification environment and reviews the diff.
 
 A changed binary makes `inspect` report that the frozen mapping does not apply. A missing declaration is then reported for recapture and review, not as absence. Only the exact frozen build with a re-observed handshake can show a primitive absent, and status and compaction are never decided from declarations.
 
@@ -56,19 +64,20 @@ await adapter.initialize()                    # required once, before any other 
 | handshake | `initialize` | `clientCapabilities`: `fs.readTextFile = false`, `fs.writeTextFile = false`, `terminal = false`. |
 | `create_session` | `session/new` | `cwd = /srv/esp/grok-work`, `mcpServers = []` (the Knowledge Service server comes from the configuration). The session's `model` config option must be `esp-grok`; another value is `model_drift`, a missing one `model_unverified`. No token or identity is ever sent in ACP params. |
 | `resume_session` | `session/resume` | Declared by `sessionCapabilities.resume`. Same working directory and model check. No replay. |
-| `submit` | `session/prompt` with `messageId = uuid5(session, client_request_id)` | See acceptance below. A second prompt while one of ours is in flight on the session is refused locally (`not_submitted/prompt_in_flight`, nothing sent), because ACP runs one prompt turn per session and the build would queue or steer it. |
+| `submit` | `session/prompt` with `messageId = uuid5(session, client_request_id)` | See acceptance below. Refused locally with nothing sent in two cases. A session this process has not loaded (closed, or never created or resumed here) gives `not_submitted/session_not_loaded`. A second prompt while one of ours is in flight on the session gives `not_submitted/prompt_in_flight`, because ACP runs one prompt turn per session and the build would queue or steer it. |
 | `continue_work` | none | ACP declares no saved-state continuation; `not_submitted/continue_unsupported`, nothing sent. |
-| `inspect` | `session/load` replay | See status below. |
-| `read_history` | `session/load` replay | Declared by `loadSession`. Only `user_message_chunk` and `agent_message_chunk` text becomes history, grouped per `messageId`; each item's work reference is the user message that started its turn. Reasoning, plans, tool calls and command updates are filtered. Assistant text of our in-flight prompt is `provisional`. |
+| `inspect` | `session/load` replay | See status below. Nothing is sent while a prompt of ours runs on the session. |
+| `read_history` | `session/load` replay | Declared by `loadSession`. Only `user_message_chunk` and `agent_message_chunk` text becomes history, grouped per `messageId`; each item's work reference is the user message that started its turn. Reasoning, plans, tool calls, command updates and a `compact` command turn are filtered. While a prompt of ours runs on the session it raises `GrokSessionBusy` and sends nothing (see the replay section). |
 | `cancel` | `session/cancel` notification | Sent only when the work reference is the prompt we have in flight on that session. ACP cancellation is session-wide, so a stale reference returns `unknown` and sends nothing; it could otherwise interrupt replacement work. |
-| `unload` | `session/close` | Declared by `sessionCapabilities.close`. Refused while a prompt of ours is in flight (`GrokSessionBusy`, nothing sent). A successful close drops every attribution, status and binding record of the session; its event queue is kept, so an `events(handle)` stream opened earlier keeps receiving after `resume_session`. |
-| `compact` | `session/prompt` with `/compact` | The build lists `compact` in its `availableCommands`. Bound to the supplied scope before the frame is sent, refused while a prompt is in flight, and returns when the build ends that prompt turn. |
+| `unload` | `session/close` | Declared by `sessionCapabilities.close`. Refused while a prompt of ours is in flight (`GrokSessionBusy`, nothing sent). A successful close drops every attribution, status, binding and lock record of the session. Its event queue is dropped too, unless an `events(handle)` stream is open; that stream keeps it and keeps receiving after `resume_session`. |
+| `compact` | `session/prompt` with `/compact` | The build lists `compact` in its `availableCommands`. Bound to the supplied scope before the frame is sent. Refused with nothing sent while a prompt is in flight (`GrokSessionBusy`) or when the session is not loaded here (`GrokSessionNotLoaded`). Returns when the build ends that prompt turn. Text the command streams is not published. |
 | `export_history`, `delete_history` | none | ACP declares neither. The build's `grok export` and `grok sessions delete` CLI commands run outside the ACP process; peer-safe deletion and export are left to the privacy task. |
 
 ### Acceptance
 
-ACP answers `session/prompt` only when the prompt turn ends. Neither that answer nor its absence proves durable acceptance. A submission is `accepted` only when the build's persisted session, replayed through `session/load`, holds a `user_message_chunk` whose `messageId` is this request's. The adapter waits briefly for the prompt answer, then reads the replay, and repeats a bounded number of times.
+ACP answers `session/prompt` only when the prompt turn ends. Neither that answer nor its absence proves durable acceptance. A submission is `accepted` only when the build's persisted session, replayed through `session/load`, holds a `user_message_chunk` whose `messageId` is this request's. The adapter waits up to `acceptance_wait` seconds (2 by default) for the prompt answer. Only after the answer does it read the replay.
 
+- A turn still running after the wait is `unconfirmed` with the deterministic reference (this request's `messageId`). The replay is not read over our own running prompt (see below), so mid-turn acceptance is not confirmed. Status reconciliation confirms the saved input from the replay once the turn ends.
 - A terminal answer whose input is not in the replay is `unconfirmed`. The reference is the build's echoed `userMessageId` when it matches ours, otherwise none.
 - `not_submitted` has two causes only:
   - `not_sent`: the transport refused before writing.
@@ -79,18 +88,33 @@ Because the message id is derived from the session and client request id, status
 
 ### Status
 
-ACP declares no per-turn status read. With a request id, `inspect` reports:
+ACP declares no per-turn status read.
 
-- `running` for the prompt in flight;
+While a prompt of ours runs on the session, `inspect` sends nothing and answers from this connection's own state:
+
+- without a request id, or with the running prompt's request id: `running` with that prompt's reference and `saved_input_available = false`, because the replay was not read;
+- with any other request id: `GrokSessionBusy`; ask again after the turn.
+
+Otherwise it reads the replay. With a request id it reports:
+
 - the observed end (`completed`, `interrupted` or `failed`, from the stop reason) when this connection received that prompt's answer;
-- `unknown` when the replay holds the input but no answer was observed, for example after a process replacement;
+- `unknown` when the replay holds the input but no answer was observed, for example after a process replacement or an unload;
 - not found when the replay lacks the input.
 
-`saved_input_available` always comes from the replay.
+`saved_input_available` is true only when the replay shows the input.
 
 ### History replay and the live stream
 
-ACP replay notifications are ordinary `session/update` notifications for the same session. While a `session/load` is outstanding, the adapter treats that session's updates as replay and never publishes them as live events. Reads of one session are serialized. The adapter yields briefly before opening a replay so already-received live updates are published first. A live chunk that the build emits during a replay still lands in the snapshot rather than the live stream, and the client rebuilds from history on reconnect. Whether this build replays on `session/load` while a prompt turn is in flight, and whether it echoes the user message live, is not yet observed (Gate 1).
+ACP replay notifications are ordinary `session/update` notifications for the same session, so replayed and live updates are indistinguishable on the wire. While a `session/load` is outstanding, the adapter treats every update of that session as replay and never publishes it live. A replay window must therefore never overlap live work of ours. Two rules guarantee this:
+
+- No `session/load` is sent for a session while a prompt of ours is in flight there. This covers acceptance, `inspect`, `read_history` and refusal checks.
+- A per-session lock serializes replay windows, prompt and compaction starts, `resume_session` and `unload`. A prompt never starts while a load of its session is outstanding.
+
+Without these rules, a window over a running turn would silently drop live text and turn a Knowledge Service tool call that started inside the window into a false `disallowed_item`. It would also hide a truly disallowed tool call inside the window, and could count a live user-message echo as durable acceptance. The adapter yields briefly before opening a replay, so already-received live updates are published first. Background work the build starts by itself on an idle session is never attributed; if it streams during a replay, it lands in the snapshot.
+
+Reads never change residency. `session/load` loads a session into the shared process. For a session this process has not loaded (closed by `unload`, or never created or resumed here, for example after a process replacement), a read is load, collect, then `session/close` again, under the session lock. A failed close fails the read. `resume_session` waits for such a read to finish, so the close can never undo a resume.
+
+Whether this build replays on `session/load` while a prompt turn is in flight, and whether it echoes the user message live, is not yet observed (Gate 1). Until it is, mid-turn reads are not attempted.
 
 ## Per-operation attribution
 
@@ -102,7 +126,7 @@ The configuration points the `esp-grok` model at a supervisor-local relay on loo
 - parses the body strictly (duplicate keys, non-finite numbers and a byte-order mark are rejected);
 - refuses any model other than the profile's pinned model. Every auxiliary model slot in the configuration (session summary and titles, prompt suggestions, image description, web search) names `esp-auxiliary-disabled`, so such calls are refused;
 - reads the native session id only from the `x-grok-session-id` header, which the build's model-request client names, never from prompt text or arrival order;
-- refuses unknown and closed sessions;
+- refuses sessions this process has not loaded (`unknown_session`): never created or resumed here, or closed since. A closed session keeps no state, so it is refused the same way;
 - refuses a session with no prompt of ours in flight (`unbound_session`). This covers background or auto-wake work on an idle session;
 - returns the in-flight operation's inference scope, including any refreshed token.
 
@@ -118,7 +142,12 @@ Both headers are static evidence only: the session header is a string in the bin
 
 - `agent_message_chunk` text becomes `text_delta`.
 - Reasoning (`agent_thought_chunk`), plans, replayed user input, command lists, mode, session-info and context-gauge updates never become events.
-- A tool call whose name is a qualified Knowledge Service tool (`esp_knowledge__esp.search`, ...) and whose kind does not change state becomes `tool_started` and later `tool_finished`. Every other tool call, including `use_tool`, shell, file, fetch and unknown tools, becomes `disallowed_item` and is counted, so supervision can stop the work and record the violation.
+- A tool call becomes `tool_started`, and later `tool_finished`, only when both hold:
+  - its structured name is a qualified Knowledge Service tool (`esp_knowledge__esp.search`, ...);
+  - its kind does not change state.
+
+  The structured name is `_meta["x.ai/tool"].name` or a top-level `toolName`. The ACP `title` is display text and never identifies a tool. Every other tool call becomes `disallowed_item` and is counted, so supervision can stop the work and record the violation. This includes `use_tool`, shell, file, fetch, unknown tools, and a tool call that carries only a title.
+- Text that the `compact` command streams is not published (`suppressed_compaction_output` counts it).
 - A `config_option_update` that moves the model option away from `esp-grok` becomes `model_rerouted` and is counted.
 - The prompt answer becomes `turn_completed` (or `compaction` for the `compact` command) with the stop reason (`end_turn` completed, `cancelled` interrupted, anything else failed), followed by `usage` when the answer carries it.
 
@@ -147,7 +176,7 @@ All eighteen required primitives are `unproven`. Declarations show that a primit
 - The binary carries `PromptRequest` with a `messageId` field and `PromptResponse` with `userMessageId`, `stopReason` and `usage`.
 - The model-request client module names `x-grok-session-id`, `x-grok-conv-id`, `x-grok-req-id` and `x-grok-turn-idx` headers.
 - The build documents the `{{session_id}}` MCP header template.
-- These settings were observed to apply, because they changed the `initialize` result:
+- These settings were observed to apply in runs with earlier draft configurations, because they changed the `initialize` result. The committed file itself has not been loaded:
   - `models.default` and `models.disabled_models` (catalog reduced to `esp-grok`);
   - recap, voice and cancel-rewind off;
   - goal and workflow commands removed;
@@ -163,7 +192,11 @@ All eighteen required primitives are `unproven`. Declarations show that a primit
 - Capture real chat-completions request bodies through the relay:
   - show `x-grok-session-id` on every request and that it equals the ACP `sessionId`;
   - check the body against the gateway's xAI adapter (system-message shape, tool list, any extra fields). A different required shape needs its own named adapter test, not silent translation.
-- Show `session/load` replay of a session whose prompt turn is in flight, that `user_message_chunk` carries the client `messageId`, and that the user message is not echoed live before it is persisted. Otherwise mid-turn acceptance cannot be confirmed within the setup budget.
+- Load this exact `config.toml` in an agent start: `inspect --provider xai --acp-handshake --write-protocol-capture`, then review the diff.
+- Show `session/load` replay of a session whose prompt turn is in flight, that `user_message_chunk` carries the client `messageId`, and that the user message is not echoed live before it is persisted. Also show how live updates of the turn interleave with the replay. Until then the adapter never reads history over its own running prompt, so a turn that outlasts the acceptance wait is `unconfirmed` and is confirmed by status reconciliation after it ends.
+- Capture real `tool_call` updates for a Knowledge Service tool and for a built-in tool. Which structured field carries the tool identity, and in what form, is guessed: the binary embeds a sample with a top-level `toolName` and names an `x.ai/tool` metadata key. Prefer the captured structured identifier. Until it is captured, a tool call without one is `disallowed_item`, so a real Knowledge Service call may be refused (fail-closed).
+- Show what the `compact` command streams and whether the build persists the command in the session. The adapter suppresses its text and filters a `/compact` turn from history.
+- Show how the build treats visitor text that begins with `/`. ACP commands are sent as prompt text, and `initialize` lists commands such as `compact`, `always-approve`, `context` and `session-info`. A visitor message that names one could run that command instead of reaching the model.
 - Show the offered tool list contains no shell, file, web, subagent or X search tool, and that `dontAsk` is honoured or the guard rejects every prompt.
 - Show automatic and manual compaction requests pass through the relay with the operation's scope, and that two-pass compaction uses the pinned model.
 - Show `session/close` releases residency and that a closed session reloads intact after process replacement on the same storage.

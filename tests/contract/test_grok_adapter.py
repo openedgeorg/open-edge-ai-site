@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import hashlib
 import json
@@ -54,6 +55,7 @@ from esp_provider_xai.grok_build_adapter import (
     GrokBindingMismatch,
     GrokCapabilityMissing,
     GrokSessionBusy,
+    GrokSessionNotLoaded,
     GrokStdioTransport,
     create_grok_adapter,
     grok_build_id,
@@ -64,6 +66,7 @@ from scripts.qualify import (
     GrokObservation,
     essential_absences,
     grok_capability_report,
+    grok_protocol_capture,
     observe_grok,
     sanitize_grok_initialize,
 )
@@ -128,13 +131,25 @@ async def test_accepted_work_is_the_prompt_whose_input_native_history_holds(grok
     prompt_a = next(params for params in prompts if params["sessionId"] == session_a)
     assert prompt_a["messageId"] == expected
     assert prompt_a["prompt"] == [{"type": "text", "text": CANARY_A}]
-    # B is still running natively; its acceptance came from replayed persisted history, not a terminal ack.
-    assert isinstance(grok_lab.result_b, Accepted)
+    # B is still running natively. No replay is read over our own running prompt, so B is unconfirmed with
+    # its deterministic reference, never accepted from a terminal ack or a mid-turn replay.
     session_b = grok_lab.handle_b.native_session_id
-    assert grok_lab.result_b.work.native_session_id == session_b
+    expected_b = grok_message_id(session_b, grok_lab.message_b.client_request_id)
+    assert grok_lab.result_b == Unconfirmed(kind="unconfirmed", native_work_ref=expected_b)
     assert grok_lab.peer.sessions[session_b].held is not None
     loads = [params["sessionId"] for params in grok_lab.peer.requests_for("session/load")]
-    assert session_b in loads
+    assert session_a in loads and session_b not in loads
+    # Status reconciliation after B's turn confirms its saved input from the replay.
+    grok_lab.peer.release(session_b)
+    await grok_lab.peer.wait_idle()
+    reconciled = await asyncio.wait_for(
+        grok_lab.adapter.inspect(grok_lab.handle_b, grok_lab.message_b.client_request_id), RPC_TIMEOUT
+    )
+    assert (reconciled.status, reconciled.native_work_ref, reconciled.saved_input_available) == (
+        "completed",
+        expected_b,
+        True,
+    )
     assert grok_lab.peer.violations == []
 
 
@@ -306,7 +321,7 @@ async def test_handshake_requires_the_declared_session_capabilities(
 async def test_history_is_session_scoped_replay_that_hides_reasoning_and_tools(grok_lab: GrokLab) -> None:
     await grok_lab.submit_a()
     grok_lab.peer.updates_during_next_prompt = [
-        {"sessionUpdate": "tool_call", "toolCallId": "c-1", "title": "esp_knowledge__esp.search", "status": "pending"},
+        _esp_tool_call("c-1"),
         {"sessionUpdate": "plan", "entries": [{"content": "secret plan", "priority": "high", "status": "pending"}]},
     ]
     message = SubmitMessage(conversation_id=CONV_A, client_request_id="req-a-2", message="second question")
@@ -336,12 +351,14 @@ async def test_history_replay_never_enters_the_live_event_stream(grok_lab: GrokL
     assert await _drain(grok_lab, grok_lab.handle_a) == []
 
 
-async def test_in_flight_turn_history_is_provisional(grok_lab: GrokLab) -> None:
+async def test_history_of_a_running_session_is_refused_while_its_peer_stays_readable(grok_lab: GrokLab) -> None:
     await grok_lab.submit_a()
-    snapshot = await asyncio.wait_for(grok_lab.adapter.read_history(grok_lab.handle_b), RPC_TIMEOUT)
-    assistant = [item for item in snapshot.items if item.role == "assistant"]
-    assert assistant and all(item.provisional for item in assistant)
-    assert snapshot.status.status == "running"
+    sent_before = len(grok_lab.peer.requests)
+    with pytest.raises(GrokSessionBusy):
+        await asyncio.wait_for(grok_lab.adapter.read_history(grok_lab.handle_b), RPC_TIMEOUT)
+    assert len(grok_lab.peer.requests) == sent_before
+    assert await grok_lab.history_text(grok_lab.handle_a) == [CANARY_A, f"reply to {CANARY_A}"]
+    assert (await asyncio.wait_for(grok_lab.adapter.inspect(grok_lab.handle_b), RPC_TIMEOUT)).status == "running"
 
 
 async def test_resume_is_explicit_acp_resume_and_history_survives_unload(grok_lab: GrokLab) -> None:
@@ -414,7 +431,8 @@ async def test_unload_closes_only_idle_sessions_and_releases_state(grok_lab: Gro
     assert session_a not in grok_lab.adapter.tracked_sessions()
     assert session_b in grok_lab.adapter.tracked_sessions()
     grok_lab.peer.emit_model_request(session_a, "auxiliary")
-    assert grok_lab.relay_records[-1].refused_reason == "closed_session"
+    # A closed session keeps no state, so it is refused like any session this process has not loaded.
+    assert grok_lab.relay_records[-1].refused_reason == "unknown_session"
 
 
 async def test_event_stream_opened_before_unload_keeps_receiving_after_resume(grok_lab: GrokLab) -> None:
@@ -436,6 +454,235 @@ async def test_event_stream_opened_before_unload_keeps_receiving_after_resume(gr
         consumer.cancel()
     after = grok_message_id(grok_lab.handle_a.native_session_id, "req-a-after")
     assert any(event.native_work_ref == after and event.payload_type == "turn_completed" for event in received)
+
+
+def _esp_tool_call(call_id: str, tool: str = "esp_knowledge__esp.search") -> dict[str, Any]:
+    return {
+        "sessionUpdate": "tool_call",
+        "toolCallId": call_id,
+        "title": "Search",
+        "kind": "read",
+        "status": "pending",
+        "toolName": tool,
+    }
+
+
+def _live_chunk(text: str) -> dict[str, Any]:
+    return {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}, "messageId": "live-m"}
+
+
+def _kinds(events: list[NativeEvent]) -> list[tuple[str, object]]:
+    return [(event.payload_type, event.payload.get("text") or event.payload.get("item_id")) for event in events]
+
+
+async def _running_a(lab: GrokLab) -> str:
+    """Session A with our prompt still in flight, its events so far drained."""
+    session_a = lab.handle_a.native_session_id
+    lab.peer.keep_running.add(session_a)
+    await lab.submit(lab.handle_a, lab.message_a, lab.authority_a)
+    await _drain(lab, lab.handle_a)
+    return session_a
+
+
+def _session_methods(lab: GrokLab, session_id: str) -> list[str]:
+    return [name for name, params in lab.peer.requests if params.get("sessionId") == session_id]
+
+
+async def test_live_output_of_a_running_prompt_survives_a_status_read(grok_lab: GrokLab) -> None:
+    session_a = await _running_a(grok_lab)
+    grok_lab.peer.live_updates_during_load[session_a] = [
+        (_live_chunk("LIVE-DELTA"), True),
+        (_esp_tool_call("live-1"), True),
+    ]
+    await asyncio.wait_for(grok_lab.adapter.inspect(grok_lab.handle_a), RPC_TIMEOUT)
+    grok_lab.peer.flush_live_updates(session_a)
+    grok_lab.peer.update(
+        session_a, {"sessionUpdate": "tool_call_update", "toolCallId": "live-1", "status": "completed"}
+    )
+    grok_lab.peer.release(session_a)
+    await grok_lab.peer.wait_idle()
+    kinds = _kinds(await _drain(grok_lab, grok_lab.handle_a))
+    assert ("text_delta", "LIVE-DELTA") in kinds
+    assert ("tool_started", "live-1") in kinds and ("tool_finished", "live-1") in kinds
+    assert all(kind != "disallowed_item" for kind, _ in kinds)
+    assert grok_lab.adapter.disallowed_items == 0
+
+
+async def test_disallowed_tool_use_during_a_history_read_of_a_running_prompt_is_surfaced(grok_lab: GrokLab) -> None:
+    session_a = await _running_a(grok_lab)
+    shell = {"sessionUpdate": "tool_call", "toolCallId": "s9", "title": "Run", "kind": "execute"}
+    grok_lab.peer.live_updates_during_load[session_a] = [({**shell, "toolName": "run_terminal_command"}, True)]
+    with contextlib.suppress(GrokSessionBusy):
+        await asyncio.wait_for(grok_lab.adapter.read_history(grok_lab.handle_a), RPC_TIMEOUT)
+    grok_lab.peer.flush_live_updates(session_a)
+    grok_lab.peer.release(session_a)
+    await grok_lab.peer.wait_idle()
+    assert ("disallowed_item", "s9") in _kinds(await _drain(grok_lab, grok_lab.handle_a))
+    assert grok_lab.adapter.disallowed_items == 1
+
+
+async def test_a_live_user_echo_is_never_durable_acceptance(grok_lab: GrokLab) -> None:
+    session_a = grok_lab.handle_a.native_session_id
+    expected = grok_message_id(session_a, grok_lab.message_a.client_request_id)
+    grok_lab.peer.keep_running.add(session_a)
+    grok_lab.peer.persist_user_messages = False
+    echo = {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": CANARY_A}, "messageId": expected}
+    grok_lab.peer.live_updates_during_load[session_a] = [(echo, False)]
+    result = await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a)
+    assert result == Unconfirmed(kind="unconfirmed", native_work_ref=expected)
+    assert "session/load" not in _session_methods(grok_lab, session_a)
+
+
+async def test_status_and_history_never_open_a_replay_over_our_running_prompt(grok_lab: GrokLab) -> None:
+    session_a = grok_lab.handle_a.native_session_id
+    request_id = grok_lab.message_a.client_request_id
+    expected = grok_message_id(session_a, request_id)
+    grok_lab.peer.keep_running.add(session_a)
+    result = await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a)
+    # Still running: acceptance is not confirmed mid-turn, but the reference is the deterministic one.
+    assert result == Unconfirmed(kind="unconfirmed", native_work_ref=expected)
+    status = await asyncio.wait_for(grok_lab.adapter.inspect(grok_lab.handle_a), RPC_TIMEOUT)
+    assert (status.status, status.native_work_ref, status.saved_input_available) == ("running", expected, False)
+    by_request = await asyncio.wait_for(grok_lab.adapter.inspect(grok_lab.handle_a, request_id), RPC_TIMEOUT)
+    assert (by_request.status, by_request.native_work_ref, by_request.request_id) == ("running", expected, request_id)
+    assert by_request.saved_input_available is False
+    with pytest.raises(GrokSessionBusy):
+        await asyncio.wait_for(grok_lab.adapter.inspect(grok_lab.handle_a, "older-request"), RPC_TIMEOUT)
+    with pytest.raises(GrokSessionBusy):
+        await asyncio.wait_for(grok_lab.adapter.read_history(grok_lab.handle_a), RPC_TIMEOUT)
+    assert "session/load" not in _session_methods(grok_lab, session_a)
+    # Status reconciliation after the turn confirms the saved input from the replay.
+    grok_lab.peer.release(session_a)
+    await grok_lab.peer.wait_idle()
+    after = await asyncio.wait_for(grok_lab.adapter.inspect(grok_lab.handle_a, request_id), RPC_TIMEOUT)
+    assert (after.status, after.native_work_ref, after.saved_input_available) == ("completed", expected, True)
+
+
+async def test_a_prompt_waits_for_an_outstanding_history_read_of_its_session(grok_lab: GrokLab) -> None:
+    grok_lab.peer.hold_loads = True
+    reading = asyncio.create_task(grok_lab.adapter.read_history(grok_lab.handle_a))
+    await grok_lab.peer.wait_for_requests("session/load", 1)
+    submitting = asyncio.create_task(
+        grok_lab.adapter.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a)
+    )
+    await asyncio.sleep(0.05)
+    # The prompt is not sent while a replay window of the same session is open.
+    assert grok_lab.peer.requests_for("session/prompt") == []
+    grok_lab.peer.hold_loads = False
+    grok_lab.peer.release_loads()
+    snapshot, result = await asyncio.wait_for(asyncio.gather(reading, submitting), RPC_TIMEOUT)
+    assert snapshot.items == []
+    assert isinstance(result, Accepted)
+    await grok_lab.peer.wait_idle()
+    events = await _drain(grok_lab, grok_lab.handle_a)
+    assert [event.payload_type for event in events] == ["text_delta", "turn_completed", "usage"]
+
+
+async def test_history_and_status_reads_leave_an_unloaded_session_unloaded(grok_lab: GrokLab) -> None:
+    session_a = grok_lab.handle_a.native_session_id
+    assert isinstance(await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a), Accepted)
+    assert await grok_lab.adapter.unload(grok_lab.handle_a) == "unloaded"
+    assert await grok_lab.history_text(grok_lab.handle_a) == [CANARY_A, f"reply to {CANARY_A}"]
+    assert grok_lab.peer.sessions[session_a].loaded is False
+    request_id = grok_lab.message_a.client_request_id
+    status = await asyncio.wait_for(grok_lab.adapter.inspect(grok_lab.handle_a, request_id), RPC_TIMEOUT)
+    assert (status.status, status.saved_input_available) == ("unknown", True)
+    assert grok_lab.peer.sessions[session_a].loaded is False
+    methods = _session_methods(grok_lab, session_a)
+    after_unload = methods[methods.index("session/close") + 1 :]
+    assert after_unload == ["session/load", "session/close", "session/load", "session/close"]
+    assert session_a not in grok_lab.adapter.tracked_sessions()
+    grok_lab.peer.emit_model_request(session_a, "auxiliary")
+    assert grok_lab.relay_records[-1].forwarded is False
+    assert grok_lab.peer.violations == []
+
+
+async def test_submit_on_a_session_not_loaded_here_sends_nothing(grok_lab: GrokLab) -> None:
+    assert await grok_lab.adapter.unload(grok_lab.handle_a) == "unloaded"
+    sent_before = len(grok_lab.peer.requests)
+    result = await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a)
+    assert result == NotSubmitted(kind="not_submitted", code="session_not_loaded")
+    assert len(grok_lab.peer.requests) == sent_before
+    # A replacement process that never created or resumed the session has not loaded it either.
+    restarted = GrokLab()
+    restarted.peer.sessions = grok_lab.peer.sessions
+    replaced = await asyncio.wait_for(
+        restarted.adapter.submit(grok_lab.handle_b, grok_lab.message_b, grok_lab.authority_b), RPC_TIMEOUT
+    )
+    assert replaced == NotSubmitted(kind="not_submitted", code="session_not_loaded")
+    assert restarted.peer.requests == []
+    assert grok_lab.peer.violations == []
+
+
+async def test_compaction_of_a_session_not_loaded_here_sends_nothing(grok_lab: GrokLab) -> None:
+    assert await grok_lab.adapter.unload(grok_lab.handle_a) == "unloaded"
+    sent_before = len(grok_lab.peer.requests)
+    with pytest.raises(GrokSessionNotLoaded):
+        await asyncio.wait_for(grok_lab.adapter.compact(grok_lab.handle_a, grok_lab.authority_a), RPC_TIMEOUT)
+    assert len(grok_lab.peer.requests) == sent_before
+    assert grok_lab.adapter.transport.current(grok_lab.handle_a.native_session_id) is None
+
+
+async def test_resume_waits_for_a_history_read_that_reopens_an_unloaded_session(grok_lab: GrokLab) -> None:
+    session_a = grok_lab.handle_a.native_session_id
+    assert isinstance(await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a), Accepted)
+    assert await grok_lab.adapter.unload(grok_lab.handle_a) == "unloaded"
+    loads_before = len(grok_lab.peer.requests_for("session/load"))
+    grok_lab.peer.hold_loads = True
+    reading = asyncio.create_task(grok_lab.adapter.read_history(grok_lab.handle_a))
+    await grok_lab.peer.wait_for_requests("session/load", loads_before + 1)
+    resuming = asyncio.create_task(grok_lab.adapter.resume_session(grok_lab.handle_a))
+    await asyncio.sleep(0.05)
+    assert grok_lab.peer.requests_for("session/resume") == []
+    grok_lab.peer.hold_loads = False
+    grok_lab.peer.release_loads()
+    await asyncio.wait_for(asyncio.gather(reading, resuming), RPC_TIMEOUT)
+    assert _session_methods(grok_lab, session_a)[-3:] == ["session/load", "session/close", "session/resume"]
+    assert grok_lab.peer.sessions[session_a].loaded is True
+    assert session_a in grok_lab.adapter.tracked_sessions()
+
+
+async def test_unload_drops_events_nobody_reads(grok_lab: GrokLab) -> None:
+    session_a = grok_lab.handle_a.native_session_id
+    assert isinstance(await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a), Accepted)
+    assert await grok_lab.adapter.unload(grok_lab.handle_a) == "unloaded"
+    assert session_a not in grok_lab.adapter.tracked_sessions()
+    await grok_lab.adapter.resume_session(grok_lab.handle_a)
+    assert await _drain(grok_lab, grok_lab.handle_a) == []
+
+
+async def test_an_open_event_stream_is_tracked_state_until_it_closes(grok_lab: GrokLab) -> None:
+    session_a = grok_lab.handle_a.native_session_id
+    received: list[NativeEvent] = []
+
+    async def consume() -> None:
+        async for event in grok_lab.adapter.events(grok_lab.handle_a):
+            received.append(event)
+
+    consumer = asyncio.create_task(consume())
+    assert isinstance(await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a), Accepted)
+    assert await grok_lab.adapter.unload(grok_lab.handle_a) == "unloaded"
+    # The open stream keeps its queue, and that queue is state this adapter reports.
+    assert session_a in grok_lab.adapter.tracked_sessions()
+    consumer.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await consumer
+    assert session_a not in grok_lab.adapter.tracked_sessions()
+    assert [event.payload_type for event in received] == ["text_delta", "turn_completed", "usage"]
+
+
+async def test_compaction_output_is_not_public_and_the_command_is_not_history(grok_lab: GrokLab) -> None:
+    assert isinstance(await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a), Accepted)
+    await _drain(grok_lab, grok_lab.handle_a)
+    grok_lab.peer.compaction_output = "COMPACTION-SUMMARY"
+    grok_lab.peer.persist_compaction_command = True
+    assert await asyncio.wait_for(grok_lab.adapter.compact(grok_lab.handle_a, grok_lab.authority_a), RPC_TIMEOUT) == (
+        "completed"
+    )
+    await grok_lab.peer.wait_idle()
+    events = await _drain(grok_lab, grok_lab.handle_a)
+    assert [event.payload_type for event in events] == ["compaction", "usage"]
+    assert await grok_lab.history_text(grok_lab.handle_a) == [CANARY_A, f"reply to {CANARY_A}"]
 
 
 async def test_export_and_delete_are_unsupported_without_guessing_a_method(grok_lab: GrokLab) -> None:
@@ -579,7 +826,7 @@ async def test_late_events_keep_the_epoch_of_the_operation_that_produced_them(gr
     session_a = grok_lab.handle_a.native_session_id
     grok_lab.peer.keep_running.add(session_a)
     first = await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a)
-    assert isinstance(first, Accepted)
+    assert isinstance(first, Unconfirmed) and first.native_work_ref is not None
     grok_lab.peer.update(session_a, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "x"}})
     grok_lab.peer.release(session_a)
     await grok_lab.peer.wait_idle()
@@ -590,7 +837,7 @@ async def test_late_events_keep_the_epoch_of_the_operation_that_produced_them(gr
     assert isinstance(second, Accepted)
     events = await _drain(grok_lab, grok_lab.handle_a)
     epochs = {event.native_work_ref: event.ownership_epoch for event in events}
-    assert epochs[first.work.native_work_ref] == EPOCH
+    assert epochs[first.native_work_ref] == EPOCH
     assert epochs[second.work.native_work_ref] == EPOCH + 1
 
 
@@ -646,7 +893,14 @@ def test_normalize_maps_updates_and_hides_reasoning() -> None:
     with pytest.raises(GrokEventRejected, match="missing_work_ref"):
         normalize_grok_update(_update({"sessionUpdate": "agent_message_chunk"}), _context(work_ref=None), tools)
     started = normalize_grok_update(
-        _update({"sessionUpdate": "tool_call", "toolCallId": "c1", "title": "esp_knowledge__esp.search"}),
+        _update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "c1",
+                "title": "Search",
+                "toolName": "esp_knowledge__esp.search",
+            }
+        ),
         context,
         tools,
     )
@@ -665,6 +919,31 @@ def test_normalize_maps_updates_and_hides_reasoning() -> None:
     assert refusal[1].payload == {"input_tokens": None, "output_tokens": None, "cached_input_tokens": None}
 
 
+def test_tool_identity_is_the_structured_name_never_the_display_title() -> None:
+    context = _context()
+    tools: dict[str, str] = {}
+    titled = normalize_grok_update(
+        _update(
+            {"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "esp_knowledge__esp.search", "kind": "read"}
+        ),
+        context,
+        tools,
+    )
+    assert titled is not None and titled.payload_type == "disallowed_item"
+    named = normalize_grok_update(_update(_esp_tool_call("t2")), context, tools)
+    assert named is not None and named.payload == {"tool": "esp.search", "item_id": "t2"}
+    meta_named = {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "t3",
+        "title": "Claim",
+        "kind": "read",
+        "_meta": {"x.ai/tool": {"name": "esp_knowledge__esp.get_claim"}},
+    }
+    meta = normalize_grok_update(_update(meta_named), context, tools)
+    assert meta is not None and meta.payload == {"tool": "esp.get_claim", "item_id": "t3"}
+    assert tools == {"t2": "esp.search", "t3": "esp.get_claim"}
+
+
 def test_esp_tool_names_mirror_the_knowledge_service() -> None:
     assert tuple(ESP_KNOWLEDGE_TOOLS) == get_args(EspToolName)
     assert ESP_KNOWLEDGE_SERVER == "esp_knowledge"
@@ -673,16 +952,34 @@ def test_esp_tool_names_mirror_the_knowledge_service() -> None:
 async def test_disallowed_tool_calls_and_model_drift_are_surfaced_and_counted(grok_lab: GrokLab) -> None:
     grok_lab.peer.keep_running.add(grok_lab.handle_a.native_session_id)
     grok_lab.peer.updates_during_next_prompt = [
-        {"sessionUpdate": "tool_call", "toolCallId": "s1", "title": "run_terminal_command", "kind": "execute"},
-        {"sessionUpdate": "tool_call", "toolCallId": "u1", "title": "use_tool", "kind": "other"},
-        {"sessionUpdate": "tool_call", "toolCallId": "e1", "title": "esp_knowledge__esp.get_claim", "kind": "read"},
-        {"sessionUpdate": "tool_call", "toolCallId": "x1", "title": "esp_knowledge__write_anything", "kind": "edit"},
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "s1",
+            "title": "Run",
+            "kind": "execute",
+            "toolName": "run_terminal_command",
+        },
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "u1",
+            "title": "Use tool",
+            "kind": "other",
+            "toolName": "use_tool",
+        },
+        _esp_tool_call("e1", "esp_knowledge__esp.get_claim"),
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "x1",
+            "title": "Write",
+            "kind": "edit",
+            "toolName": "esp_knowledge__write",
+        },
         {
             "sessionUpdate": "config_option_update",
             "configOptions": [{"id": "model", "currentValue": "grok-4.6", "options": []}],
         },
     ]
-    assert isinstance(await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a), Accepted)
+    assert isinstance(await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a), Unconfirmed)
     events = await _drain(grok_lab, grok_lab.handle_a)
     kinds = [(event.payload_type, event.payload.get("item_id")) for event in events]
     assert ("disallowed_item", "s1") in kinds
@@ -874,6 +1171,13 @@ def test_candidate_manifest_records_digests_and_stays_pending() -> None:
     assert candidate["evidence_bundle_ref"] is None
     assert "not a validated Grok Build record" in candidate["notes"]
     assert "headless" in candidate["notes"]
+    # Provenance precision: the digest names a file no agent start has loaded, and the handshake is transcribed.
+    assert "a file the build has not loaded" in candidate["notes"]
+    assert "manual transcription" in candidate["notes"]
+    assert "inspect --provider xai --acp-handshake --write-protocol-capture" in candidate["notes"]
+    readme = (ROOT / "providers" / "xai" / "integration" / "README.md").read_text(encoding="utf-8")
+    assert "a file the build has not loaded" in readme
+    assert "manual transcription" in readme
 
 
 def _observation(static: dict[str, Any] | None = None, **overrides: object) -> GrokObservation:
@@ -910,6 +1214,7 @@ def test_declarations_never_prove_a_primitive() -> None:
     assert "matches the frozen capture" in notes
     assert GROK_SESSION_HEADER in notes
     assert "No inference was performed" in notes
+    assert "no recorded agent start has loaded this exact file" in notes
 
 
 def test_static_drift_is_pending_until_recaptured() -> None:
@@ -1011,6 +1316,72 @@ def test_discovery_runs_only_version_and_help_inside_the_isolation(tmp_path: Pat
     assert observation.static_capture["markers"]["x-grok-session-id"] is True
     assert observation.static_capture["markers"]["session/load"] is False
     assert observation.acp_initialize is None
+
+
+_STUB_AGENT = """
+import json, os, sys
+record_path = {record!r}
+result = json.loads({result!r})
+first = json.loads(sys.stdin.readline())
+note = {{"jsonrpc": "2.0", "method": "_x.ai/mcp/servers_updated", "params": {{"mcpServers": []}}}}
+sys.stdout.write(json.dumps(note) + "\\n")
+sys.stdout.write(json.dumps({{"jsonrpc": "2.0", "id": first["id"], "result": result}}) + "\\n")
+sys.stdout.flush()
+rest = [json.loads(line) for line in sys.stdin.read().splitlines() if line.strip()]
+with open(record_path, "w", encoding="utf-8") as handle:
+    json.dump(
+        {{
+            "argv": sys.argv[1:],
+            # The interpreter itself adds LC_CTYPE under a C locale (PEP 538); everything else was passed in.
+            "env": sorted(set(os.environ) - {{"LC_CTYPE"}}),
+            "methods": [message.get("method") for message in [first, *rest]],
+            "params": first.get("params"),
+            "stdin_closed": True,
+        }},
+        handle,
+    )
+"""
+
+
+def test_acp_handshake_sends_only_initialize_and_stops_the_agent(tmp_path: Path) -> None:
+    """`--acp-handshake` without the installed build: an injected prefix runs a stub agent that answers one line."""
+    record = tmp_path / "stub-record.json"
+    result = _initialize_without("list")
+    stub = tmp_path / "grok-1.0.46-linux-x86_64"
+    stub.write_text(_STUB_AGENT.format(record=str(record), result=json.dumps(result)), encoding="utf-8")
+
+    def runner(argv: list[str], env: dict[str, str], cwd: Path) -> str:
+        if argv[-1] == "--version":
+            return f"{GROK_VERSION}\n"
+        return "Commands:\n  stdio  Run the agent over stdio\n\nOptions:\n"
+
+    observation = observe_grok(
+        which=lambda _name: str(stub), isolation=lambda: [sys.executable], runner=runner, acp_handshake=True
+    )
+    assert observation.errors == []
+    initialize = observation.acp_initialize
+    assert initialize is not None
+    assert initialize == sanitize_grok_initialize(result, ["_x.ai/mcp/servers_updated"])
+    assert set(initialize["withheld_meta_keys"]) == set(LAB_HOST_META)
+    text = json.dumps(initialize)
+    for value in LAB_HOST_META.values():
+        assert str(value) not in text
+    # The stub saw exactly one initialize request, then end of input: the client shut the agent down.
+    seen = json.loads(record.read_text(encoding="utf-8"))
+    assert seen["argv"] == ["agent", "--no-leader", "stdio"]
+    assert seen["methods"] == ["initialize"]
+    assert seen["params"]["clientCapabilities"] == {
+        "fs": {"readTextFile": False, "writeTextFile": False},
+        "terminal": False,
+    }
+    assert seen["stdin_closed"] is True
+    assert set(seen["env"]) <= {"PATH", "HOME", "GROK_HOME", "GROK_DISABLE_AUTOUPDATER"}
+    report = grok_capability_report(observation)
+    assert any("re-observed by this run" in note for note in report.notes)
+    assert any("loaded by this run's agent start" in note for note in report.notes)
+    capture = grok_protocol_capture(observation)
+    assert capture is not None
+    assert str(observation.config_digest) in capture["acp_initialize"]["provenance"]
 
 
 def _hermetic_env(tmp_path: Path) -> dict[str, str]:
