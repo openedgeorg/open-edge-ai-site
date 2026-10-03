@@ -1476,6 +1476,7 @@ REQUIRED_NETWORK_SCENARIOS: tuple[str, ...] = (
     "egress_alternate_model_endpoints_denied",
     "egress_gateway_not_a_forward_proxy",
     "egress_internal_dns_resolved",
+    "egress_runtime_dns_internal_only",
     "egress_gateway_path_observed",
     "egress_knowledge_path_observed",
     "tools_offered_only_approved",
@@ -1505,6 +1506,28 @@ _CLUSTER_SCOPED_KINDS = frozenset(
 _PUBLIC_KINDS = frozenset({"Ingress", "IngressClass", "Gateway", "HTTPRoute", "GRPCRoute", "TLSRoute", "TCPRoute"})
 _WORKLOAD_KINDS = frozenset({"Pod", "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob"})
 _PUBLIC_FLAG = re.compile(r"PUBLIC.*(?:ELIGIB|BYPASS)|BYPASS", re.IGNORECASE)
+# Address ranges the gateway's public egress must never reach: this-network, private, shared,
+# loopback, link-local, multicast and reserved IPv4; IPv4-mapped, NAT64-translated, unique-local,
+# link-local and multicast IPv6 (a translated or mapped address can reach a private IPv4 host).
+_GATEWAY_EGRESS_RESERVED: tuple[str, ...] = (
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "224.0.0.0/4",
+    "240.0.0.0/4",
+    "::/128",
+    "::1/128",
+    "::ffff:0:0/96",
+    "64:ff9b::/96",
+    "64:ff9b:1::/48",
+    "fc00::/7",
+    "fe80::/10",
+    "ff00::/8",
+)
 
 
 class CandidatePolicyInvalid(ValueError):
@@ -1590,7 +1613,11 @@ class ObservedContext:
 
 
 class EgressAttempt(BaseModel):
-    """One connection attempt from inside the runtime pod's network namespace."""
+    """One connection attempt from inside the runtime pod's network namespace.
+
+    `client_certificate` is true only when the probe presented the runtime's own mounted mTLS
+    identity; `request_form` names the proxy request shape (`connect` or `absolute`).
+    """
 
     model_config = STRICT
     scenario: str
@@ -1600,6 +1627,12 @@ class EgressAttempt(BaseModel):
     tls_established: bool | None
     http_status: int | None
     error: str | None
+    client_certificate: bool = False
+    server_verified: bool | None = None
+    request_form: Literal["connect", "absolute"] | None = None
+
+
+LiveOutcome = Literal["satisfied", "violated", "inconclusive"]
 
 
 class LiveObservation(BaseModel):
@@ -1608,7 +1641,7 @@ class LiveObservation(BaseModel):
     provider: Provider
     environment_id: str
     scenario: str
-    outcome: Literal["satisfied", "violated", "inconclusive"]
+    outcome: LiveOutcome
     evidence_ref: str = Field(min_length=1)
     detail: str = ""
 
@@ -1932,6 +1965,7 @@ def isolation_findings(documents: Sequence[Mapping[str, Any]]) -> list[str]:
             gateway_only = selector.get("matchLabels") == {_ROLE_LABEL: "inference-gateway"}
             if any("ipBlock" in peer for peer in egress_peers) and not gateway_only:
                 findings.append(f"external_egress:{name}")
+            findings.extend(_ip_block_findings(name, egress_peers))
         for workload, spec, labels in _pod_specs(document):
             findings.extend(_workload_findings(workload, spec, labels))
             if _is_runtime(labels):
@@ -1940,6 +1974,40 @@ def isolation_findings(documents: Sequence[Mapping[str, Any]]) -> list[str]:
                     if _selects(policy, labels):
                         findings.extend(_runtime_network_findings(policy))
     return sorted(set(findings))
+
+
+def _ip_block_findings(name: str, peers: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Every reserved range inside an allowed ipBlock must be carved out by one of its exceptions."""
+    findings: list[str] = []
+    for peer in peers:
+        block = cast(dict[str, Any], peer.get("ipBlock") or {})
+        if not block:
+            continue
+        try:
+            allowed = ipaddress.ip_network(str(block.get("cidr", "")), strict=False)
+            exceptions = cast(list[object], block.get("except") or [])
+            excepted = [ipaddress.ip_network(str(item), strict=False) for item in exceptions]
+        except ValueError:
+            findings.append(f"egress_ip_block_invalid:{name}")
+            continue
+        for reserved_text in _GATEWAY_EGRESS_RESERVED:
+            reserved = ipaddress.ip_network(reserved_text)
+            if reserved.version != allowed.version or not _subnet_of(reserved, allowed):
+                continue
+            if not any(item.version == reserved.version and _subnet_of(reserved, item) for item in excepted):
+                findings.append(f"egress_reserved_range_open:{name}:{reserved_text}")
+    return findings
+
+
+IpNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def _subnet_of(inner: IpNetwork, outer: IpNetwork) -> bool:
+    return (
+        inner.version == outer.version
+        and int(outer.network_address) <= int(inner.network_address)
+        and int(inner.broadcast_address) <= int(outer.broadcast_address)
+    )
 
 
 def _workload_findings(name: str, spec: Mapping[str, Any], labels: Mapping[str, str]) -> list[str]:
@@ -2142,25 +2210,81 @@ def runtime_image_findings(dockerfile: str, *, harness: Literal["codex", "grok-b
     return sorted(set(findings))
 
 
+# Connect-level failures that mean no TCP session left the pod: a dropped SYN (timeout), a local
+# unreachable or permission refusal, or no route/stack for the address family at all. A reset or a
+# refusal is not on this list: it can come from the remote host, which means packets left the cluster.
 _DENIAL_ERRORS = frozenset(
     {
         "timeout",
-        "connection_refused",
-        "connection_reset",
         "host_unreachable",
         "network_unreachable",
         "permission_denied",
-        "name_unresolved",
+        "address_family_unsupported",
+        "address_unavailable",
     }
 )
+_NAME_UNRESOLVED = "name_unresolved"
+_PROXY_REQUEST_FORMS = frozenset({"connect", "absolute"})
 
 
-def classify_egress_attempt(attempt: EgressAttempt) -> Literal["denied", "reached", "inconclusive"]:
-    """Any completed connection or HTTP status is `reached`, a provider 401 included."""
+def classify_egress_attempt(attempt: EgressAttempt) -> Literal["denied", "reached", "dns_only", "inconclusive"]:
+    """Any completed connection or HTTP status is `reached`, a provider 401 included.
+
+    A name that did not resolve is `dns_only`: nothing was attempted at the IP level, so split DNS
+    alone would look like a denial. It never counts as enforced egress denial.
+    """
     if attempt.tcp_connected or attempt.tls_established or attempt.http_status is not None:
         return "reached"
+    if attempt.error == _NAME_UNRESOLVED:
+        return "dns_only"
     if attempt.error in _DENIAL_ERRORS:
         return "denied"
+    return "inconclusive"
+
+
+def direct_egress_outcome(attempts: Sequence[EgressAttempt]) -> LiveOutcome:
+    """A direct-model scenario: any reach violates; otherwise every IP-level attempt must be denied."""
+    classes = [classify_egress_attempt(attempt) for attempt in attempts]
+    if "reached" in classes:
+        return "violated"
+    ip_level = [item for item in classes if item != "dns_only"]
+    if ip_level and all(item == "denied" for item in ip_level):
+        return "satisfied"
+    return "inconclusive"
+
+
+def forward_proxy_outcome(attempts: Sequence[EgressAttempt]) -> LiveOutcome:
+    """The gateway must refuse CONNECT and absolute-form proxying from an authenticated runtime.
+
+    Only an HTTP-level 4xx returned over a TLS session in which the probe presented the runtime's own
+    mTLS identity is a refusal. A failed handshake, a post-connect timeout, an anonymous caller or a
+    `407` (a proxy asking for credentials) proves nothing either way. A 1xx/2xx answer is proxying.
+    """
+    if any(attempt.http_status is not None and attempt.http_status < 300 for attempt in attempts):
+        return "violated"
+    refused = [
+        attempt
+        for attempt in attempts
+        if attempt.client_certificate
+        and attempt.tls_established
+        and attempt.http_status is not None
+        and 400 <= attempt.http_status < 500
+        and attempt.http_status != 407
+    ]
+    forms = {attempt.request_form for attempt in refused}
+    if attempts and len(refused) == len(attempts) and _PROXY_REQUEST_FORMS <= forms:
+        return "satisfied"
+    return "inconclusive"
+
+
+def dns_internal_only_outcome(attempts: Sequence[EgressAttempt]) -> LiveOutcome:
+    """Runtime DNS serves cluster names only: every external name must fail to resolve in the pod.
+
+    External resolution through the cluster resolver is a DNS exfiltration channel. It is recorded as
+    inconclusive (the restriction is not demonstrated) rather than as a model-egress bypass.
+    """
+    if attempts and all(not attempt.resolved and attempt.error == _NAME_UNRESOLVED for attempt in attempts):
+        return "satisfied"
     return "inconclusive"
 
 

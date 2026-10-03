@@ -2,9 +2,19 @@
 #
 # Runtime pods may reach only the ESP Inference Gateway, the ESP Knowledge Service (MCP), internal DNS
 # and the telemetry collector, and accept only the backend's authenticated control connections. Only
-# the gateway has egress outside the cluster, limited to HTTPS on public addresses; its exact upstream
-# hosts are the gateway's approved routes. Hostname-level egress filtering would need a CNI-specific
-# policy and is recorded with the CNI identity when used.
+# the gateway has egress outside the cluster, limited to HTTPS on public addresses (every private,
+# loopback, link-local, multicast, reserved, IPv4-mapped and NAT64 range is excepted); its exact
+# upstream hosts are the gateway's approved routes (ApprovedRoute). Network-level egress for the
+# gateway is therefore any public address on TCP 443; hostname-level filtering would need a
+# CNI-specific policy and is recorded with the CNI identity when used.
+#
+# Internal DNS: runtime pods may query the cluster resolver (kube-dns) only. A default resolver
+# forwards external names upstream, which gives a runtime a DNS exfiltration channel. The isolated
+# deployment therefore needs a resolver restriction that answers only cluster names for runtime pods
+# (for example a CoreDNS `acl`/`view` rule for the runtime pod addresses, or a CNI DNS policy limited
+# to `*.cluster.local`). That restriction is CNI/DNS specific, is recorded with the infrastructure
+# identity, and is demonstrated by the required live scenario `egress_runtime_dns_internal_only`;
+# until it is, the network prerequisite stays pending.
 #
 # These objects are configuration. The CNI must enforce them, which only the live probes in
 # tests/qualification/test_egress.py demonstrate (a denied connection, never a provider 401).
@@ -122,16 +132,26 @@ spec:
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
+              - 0.0.0.0/8
               - 10.0.0.0/8
               - 100.64.0.0/10
+              - 127.0.0.0/8
               - 169.254.0.0/16
               - 172.16.0.0/12
               - 192.168.0.0/16
+              - 224.0.0.0/4
+              - 240.0.0.0/4
         - ipBlock:
             cidr: ::/0
             except:
+              - ::/128
+              - ::1/128
+              - ::ffff:0:0/96
+              - 64:ff9b::/96
+              - 64:ff9b:1::/48
               - fc00::/7
               - fe80::/10
+              - ff00::/8
       ports:
         - protocol: TCP
           port: 443

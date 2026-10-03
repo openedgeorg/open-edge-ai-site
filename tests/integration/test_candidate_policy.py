@@ -260,6 +260,24 @@ def test_isolation_findings_detect_public_exposure_and_runtime_escapes() -> None
     assert any("runtime_writable_mount" in finding for finding in mutated(scratch_volume))
 
 
+def test_gateway_egress_excludes_every_reserved_and_translated_range() -> None:
+    documents = render_qualification_manifests()
+    assert not [finding for finding in isolation_findings(documents) if "reserved_range_open" in finding]
+
+    def reopen(cidr: str) -> list[str]:
+        changed = copy.deepcopy(documents)
+        policy = next(d for d in changed if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "gateway-egress")
+        for rule in policy["spec"]["egress"]:
+            for peer in rule.get("to", []):
+                block = peer.get("ipBlock")
+                if block is not None:
+                    block["except"] = [item for item in block.get("except", []) if item != cidr]
+        return [finding for finding in isolation_findings(changed) if "reserved_range_open" in finding]
+
+    for cidr in ("0.0.0.0/8", "127.0.0.0/8", "10.0.0.0/8", "64:ff9b::/96", "::ffff:0:0/96", "fc00::/7"):
+        assert any(cidr in finding for finding in reopen(cidr)), cidr
+
+
 def test_committed_manifests_need_the_recorded_environment_before_deployment() -> None:
     documents = render_qualification_manifests()
     profile = synthetic_profile(image_digest=SYNTHETIC_DIGEST)

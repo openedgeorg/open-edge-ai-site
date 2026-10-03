@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -33,12 +34,16 @@ from scripts.qualify import (
     QualificationEnvironment,
     classify_egress_attempt,
     classify_qualification,
+    direct_egress_outcome,
+    dns_internal_only_outcome,
     evaluate_live_evidence,
+    forward_proxy_outcome,
     load_candidate_policy,
     load_tool_policy,
     offered_tools,
     tool_policy_violations,
 )
+from tests.qualification.test_egress import PROBE as EGRESS_PROBE
 from tests.support.policy_lab import CLUSTER_UID, policy_document, synthetic_profile, synthetic_release
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -64,11 +69,147 @@ def test_a_provider_401_is_a_reached_connection_not_a_denial() -> None:
     assert classify_egress_attempt(_attempt(tcp_connected=True, tls_established=True, http_status=401)) == "reached"
     assert classify_egress_attempt(_attempt(tcp_connected=True)) == "reached"
     assert classify_egress_attempt(_attempt(http_status=403)) == "reached"
-    for error in ("timeout", "connection_refused", "connection_reset", "host_unreachable", "network_unreachable"):
+    for error in (
+        "timeout",
+        "host_unreachable",
+        "network_unreachable",
+        "permission_denied",
+        "address_family_unsupported",
+        "address_unavailable",
+    ):
         assert classify_egress_attempt(_attempt(error=error)) == "denied", error
-    assert classify_egress_attempt(_attempt(resolved=False, error="name_unresolved")) == "denied"
     assert classify_egress_attempt(_attempt(error="probe_crashed")) == "inconclusive"
     assert classify_egress_attempt(_attempt()) == "inconclusive"
+
+
+def test_dns_failures_and_resets_are_not_enforced_denials() -> None:
+    # A name that does not resolve was never attempted at the IP level (split DNS would pass it).
+    assert classify_egress_attempt(_attempt(resolved=False, error="name_unresolved")) == "dns_only"
+    # A reset may come from the remote host, which means packets left the cluster.
+    for error in ("connection_refused", "connection_reset"):
+        assert classify_egress_attempt(_attempt(error=error)) == "inconclusive", error
+
+
+def test_direct_egress_needs_ip_level_denial_evidence() -> None:
+    dns_only = _attempt(resolved=False, error="name_unresolved")
+    ip_denied = _attempt(target="192.0.2.10:443", error="timeout")
+    assert direct_egress_outcome([dns_only]) == "inconclusive"
+    assert direct_egress_outcome([dns_only, ip_denied]) == "satisfied"
+    assert direct_egress_outcome([ip_denied, _attempt(tcp_connected=True)]) == "violated"
+    assert direct_egress_outcome([ip_denied, _attempt(error="connection_refused")]) == "inconclusive"
+    assert direct_egress_outcome([]) == "inconclusive"
+
+
+def _proxy(**fields: object) -> EgressAttempt:
+    base: dict[str, object] = {
+        "scenario": "egress_gateway_not_a_forward_proxy",
+        "target": "esp-inference-gateway.esp-qualification.svc.cluster.local:8443",
+        "tcp_connected": True,
+        "request_form": "connect",
+    }
+    base.update(fields)
+    return _attempt(**base)
+
+
+def test_forward_proxy_refusal_needs_the_runtime_identity_and_an_http_4xx() -> None:
+    authenticated = {"tls_established": True, "client_certificate": True}
+    connect_403 = _proxy(http_status=403, **authenticated)
+    absolute_405 = _proxy(http_status=405, request_form="absolute", **authenticated)
+    assert forward_proxy_outcome([connect_403, absolute_405]) == "satisfied"
+    # A gateway that requires mTLS refuses the handshake of a caller without an identity; that says
+    # nothing about whether it proxies for an authenticated runtime.
+    refused_handshake = [_proxy(error="tls_refused"), _proxy(error="tls_refused", request_form="absolute")]
+    assert forward_proxy_outcome(refused_handshake) == "inconclusive"
+    stalled = [
+        _proxy(error="timeout", **authenticated),
+        _proxy(error="timeout", request_form="absolute", **authenticated),
+    ]
+    assert forward_proxy_outcome(stalled) == "inconclusive"
+    anonymous = [_proxy(http_status=403, tls_established=True), _proxy(http_status=403, request_form="absolute")]
+    assert forward_proxy_outcome(anonymous) == "inconclusive"
+    proxy_auth = [_proxy(http_status=407, **authenticated), absolute_405]
+    assert forward_proxy_outcome(proxy_auth) == "inconclusive"
+    assert forward_proxy_outcome([connect_403]) == "inconclusive"  # both request forms are required
+    tunnel = _proxy(http_status=200, **authenticated)
+    assert forward_proxy_outcome([tunnel, absolute_405]) == "violated"
+
+
+def test_internal_only_dns_needs_every_external_name_unresolved() -> None:
+    unresolved = _attempt(scenario="egress_runtime_dns_internal_only", resolved=False, error="name_unresolved")
+    resolved = _attempt(scenario="egress_runtime_dns_internal_only", resolved=True)
+    assert dns_internal_only_outcome([unresolved, unresolved]) == "satisfied"
+    assert dns_internal_only_outcome([unresolved, resolved]) == "inconclusive"
+    assert dns_internal_only_outcome([]) == "inconclusive"
+
+
+_NO_IPV6_DRIVER = r"""
+import errno, os, socket
+_real = socket.socket
+class _NoIPv6(_real):
+    def __init__(self, family=-1, *args, **kwargs):
+        if family == socket.AF_INET6:
+            raise OSError(errno.EAFNOSUPPORT, "Address family not supported by protocol")
+        super().__init__(family, *args, **kwargs)
+socket.socket = _NoIPv6
+exec(compile(os.environ["ESP_TEST_PROBE"], "<egress-probe>", "exec"), {"__name__": "__main__"})
+"""
+
+
+def _run_egress_probe(targets: list[dict[str, object]], tmp_path: Path) -> list[dict[str, Any]]:
+    completed = subprocess.run(
+        [sys.executable, "-c", _NO_IPV6_DRIVER, json.dumps(targets)],
+        env={**os.environ, "ESP_TEST_PROBE": EGRESS_PROBE, "ESP_CONTROL_TLS_DIR": str(tmp_path / "no-identity")},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return [json.loads(line) for line in completed.stdout.splitlines() if line.startswith("{")]
+
+
+def _closed_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def test_egress_probe_maps_socket_failures_and_keeps_probing(tmp_path: Path) -> None:
+    port = _closed_port()
+    targets: list[dict[str, object]] = [
+        {"scenario": "egress_provider_ipv6_denied", "host": "2001:db8::10", "port": 443, "family": "ipv6"},
+        {
+            "scenario": "egress_alternate_model_endpoints_denied",
+            "host": "esp-probe-unresolvable.invalid",
+            "port": port,
+            "fallback_addresses": ["127.0.0.1"],
+        },
+        {
+            "scenario": "egress_gateway_not_a_forward_proxy",
+            "host": "127.0.0.1",
+            "port": port,
+            "tls": True,
+            "client_identity": True,
+            "request_form": "connect",
+            "request": "CONNECT api.openai.com:443 HTTP/1.1\r\n\r\n",
+        },
+        {"scenario": "egress_internal_dns_resolved", "host": "localhost", "port": port, "resolve_only": True},
+    ]
+    observed = [EgressAttempt.model_validate(item) for item in _run_egress_probe(targets, tmp_path)]
+    assert [item.scenario for item in observed] == [
+        "egress_provider_ipv6_denied",
+        "egress_alternate_model_endpoints_denied",
+        "egress_alternate_model_endpoints_denied",
+        "egress_gateway_not_a_forward_proxy",
+        "egress_internal_dns_resolved",
+    ]
+    # An IPv6-less pod is a named outcome, not a crash that drops every later target.
+    assert observed[0].error == "address_family_unsupported"
+    # An unresolved name is followed by an IP-level attempt on the externally observed address.
+    assert observed[1].error == "name_unresolved" and not observed[1].resolved
+    assert observed[2].target == f"127.0.0.1:{port}" and observed[2].error == "connection_refused"
+    # Without the runtime's mTLS identity the proxy probe does not even try.
+    assert observed[3].error == "client_identity_unavailable" and not observed[3].tcp_connected
+    assert observed[4].resolved
 
 
 def _environment(**overrides: object) -> QualificationEnvironment:
