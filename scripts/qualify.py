@@ -3254,6 +3254,14 @@ def main(argv: list[str] | None = None) -> int:
         from scripts.gate_coverage import run_gate2
 
         report = run_gate2(provider, None)
+    elif args.command == "capacity":
+        from scripts.da01 import run_capacity
+
+        report = run_capacity(provider)
+    elif args.command == "da01":
+        from scripts.da01 import run_da01
+
+        report = run_da01(provider)
     else:
         report = _report_for(
             args.command,

@@ -135,3 +135,71 @@ class QualificationResult(BaseModel):
     essential_absence: bool = False
     skipped: bool = False
     empty_evidence: bool = False
+
+
+class Reviewer(BaseModel):
+    """Authenticated qualification reviewer. A missing review cannot validate a deployment."""
+
+    model_config = STRICT
+    identity: str = Field(min_length=1)
+    role: Literal["qualification_admin"]
+    reviewed_at: datetime
+
+
+class AcceptanceBudgets(BaseModel):
+    """Owner-approved measurement inputs. No field defaults to an approved value."""
+
+    model_config = STRICT
+    owner: str = Field(min_length=1)
+    reviewed_at: datetime
+    workload: str = Field(min_length=1)
+    saved_session_target: int = Field(ge=1)
+    resident_session_target: int = Field(ge=1)
+    active_turn_target: int = Field(ge=1)
+    provider_rpm: int = Field(ge=1)
+    provider_tpm: int = Field(ge=1)
+    memory_baseline_bytes: int = Field(ge=0)
+    memory_increment_bytes: int = Field(ge=0)
+    memory_peak_bytes: int = Field(ge=0)
+    memory_reclamation_bytes: int = Field(ge=0)
+    p95_admission_ms: int = Field(ge=0)
+    p95_warm_ms: int = Field(ge=0)
+    p95_restore_ms: int = Field(ge=0)
+    p95_ttft_ms: int = Field(ge=0)
+    rejection_objective: str = Field(min_length=1)
+    recovery_objective: str = Field(min_length=1)
+    run_spend_ceiling: str = Field(min_length=1)
+    test_spend_ceiling: str = Field(min_length=1)
+    cost_per_completed_answer: str = Field(min_length=1)
+    prices_as_of: datetime
+    recovery_headroom: int = Field(ge=0)
+    transport_digest: str = Field(min_length=1)
+    provider: Provider
+    approved: bool
+
+
+class CapacityReport(BaseModel):
+    """A measurement against one provider. published is always false in this process."""
+
+    model_config = STRICT
+    provider: Provider
+    measured: bool
+    within_budget: bool | None
+    preapproved: bool
+    transport_digest: str | None
+    budgets_transport_digest: str | None
+    criteria: list[str]
+    evidence_ref: str | None = None
+    published: Literal[False] = False
+
+
+class QualificationDecision(BaseModel):
+    """One provider's DA-01 decision. It does not qualify the other provider and it does not publish."""
+
+    model_config = STRICT
+    provider: Provider
+    status: Literal["pending", "validated", "invalidated"]
+    qualifies_openai: bool
+    qualifies_xai: bool
+    failed_criteria: list[str]
+    published: Literal[False] = False
