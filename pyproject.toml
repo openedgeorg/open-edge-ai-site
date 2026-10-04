@@ -64,6 +64,7 @@ members = [
     "packages/object_store",
     "packages/observability",
     "packages/provider_router",
+    "packages/recovery",
     "packages/request_admission",
     "packages/runtime_harconses",
     "packages/runtime_placement",

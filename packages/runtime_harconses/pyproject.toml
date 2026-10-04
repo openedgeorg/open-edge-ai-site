@@ -12,6 +12,7 @@ dependencies = [
     "esp-observability",
     "esp-provider-router",
     "esp-provider-shared",
+    "esp-recovery",
     "esp-request-admission",
     "esp-runtime-placement",
     "psycopg[binary,pool]>=3.2",
@@ -26,6 +27,7 @@ esp-execution-bindings = { workspace = true }
 esp-observability = { workspace = true }
 esp-provider-router = { workspace = true }
 esp-provider-shared = { workspace = true }
+esp-recovery = { workspace = true }
 esp-request-admission = { workspace = true }
 esp-runtime-placement = { workspace = true }
 

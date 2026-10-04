@@ -23,6 +23,7 @@ members = [
     "esp-provider-router",
     "esp-provider-shared",
     "esp-provider-xai",
+    "esp-recovery",
     "esp-request-admission",
     "esp-runtime-harconses",
     "esp-runtime-placement",
@@ -510,6 +511,25 @@ requires-dist = [
 ]
 
 [[package]]
+name = "esp-recovery"
+version = "0.1.0"
+source = { editable = "packages/recovery" }
+dependencies = [
+    { name = "esp-contracts" },
+    { name = "esp-db" },
+    { name = "esp-provider-shared" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "esp-contracts", editable = "packages/contracts" },
+    { name = "esp-db", editable = "packages/db" },
+    { name = "esp-provider-shared", editable = "providers/shared" },
+    { name = "pydantic", specifier = ">=2.10" },
+]
+
+[[package]]
 name = "esp-request-admission"
 version = "0.1.0"
 source = { editable = "packages/request_admission" }
@@ -547,6 +567,7 @@ dependencies = [
     { name = "esp-observability" },
     { name = "esp-provider-router" },
     { name = "esp-provider-shared" },
+    { name = "esp-recovery" },
     { name = "esp-request-admission" },
     { name = "esp-runtime-placement" },
     { name = "psycopg", extra = ["binary", "pool"] },
@@ -562,6 +583,7 @@ requires-dist = [
     { name = "esp-observability", editable = "packages/observability" },
     { name = "esp-provider-router", editable = "packages/provider_router" },
     { name = "esp-provider-shared", editable = "providers/shared" },
+    { name = "esp-recovery", editable = "packages/recovery" },
     { name = "esp-request-admission", editable = "packages/request_admission" },
     { name = "esp-runtime-placement", editable = "packages/runtime_placement" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },

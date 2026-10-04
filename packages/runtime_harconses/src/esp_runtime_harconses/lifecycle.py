@@ -37,7 +37,9 @@ from esp_execution_bindings.authorize import read_authority
 from esp_execution_bindings.binding import AuthorizationError, TokenSigner, mint_operation_authority
 from esp_observability.traces import RecoveryTrace
 from esp_provider_router.router import NativeRuntimeAdapter, ProviderRouter
+from esp_provider_shared.storage_fence import FenceEvidenceMissing, FenceReceipt, StorageFence
 from esp_provider_shared.supervisor import publish_recovery
+from esp_recovery.group_recovery import GroupRecovery, RecoveryGroupResult
 from esp_request_admission.admit import LEASE_SECONDS
 from esp_runtime_placement.capacity import release_run_slots
 
@@ -90,6 +92,14 @@ _MAPPING = """
 """
 
 
+class _BlockedFence:
+    """No configured fence. Replacement stays blocked instead of inventing a receipt."""
+
+    async def fence_previous_writer(self, unit_id: str, incarnation_id: str) -> FenceReceipt:
+        del unit_id, incarnation_id
+        raise FenceEvidenceMissing("no fence configured")
+
+
 class SessionLifecycle:
     """Conditional runtime transitions for one backend. Holds no visitor input."""
 
@@ -99,12 +109,18 @@ class SessionLifecycle:
         adapters: Mapping[Provider, NativeRuntimeAdapter],
         signer: TokenSigner,
         resident_reads: set[str],
+        fence: StorageFence | None = None,
     ) -> None:
         self._db = db
         self._router = ProviderRouter.for_providers(adapters)
         self._pools = list(adapters.values())
         self._signer = signer
         self._resident_reads = resident_reads
+        self._recovery = GroupRecovery(db, fence if fence is not None else _BlockedFence())
+
+    async def recover_instance(self, instance_id: str, failed_incarnation_id: str) -> RecoveryGroupResult:
+        """Replace a writer only after a positive fence. No fence configured means blocked."""
+        return await self._recovery.recover_instance(instance_id, failed_incarnation_id)
 
     async def finish_run(self, binding: RunBinding, work: WorkRef) -> bool:
         """Clear one terminal run. False when the epoch, run or work no longer matches, or the row is locked."""
