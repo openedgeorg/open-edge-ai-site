@@ -5,6 +5,7 @@ description = "ESP Application Backend HTTP boundary: browser identity, ownershi
 requires-python = ">=3.12"
 dependencies = [
     "esp-contracts",
+    "esp-knowledge-client",
     "esp-db",
     "esp-espcon",
     "esp-event-protocol",
@@ -20,6 +21,7 @@ dependencies = [
 
 [tool.uv.sources]
 esp-contracts = { workspace = true }
+esp-knowledge-client = { workspace = true }
 esp-db = { workspace = true }
 esp-espcon = { workspace = true }
 esp-event-protocol = { workspace = true }

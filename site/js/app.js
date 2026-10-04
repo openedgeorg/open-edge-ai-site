@@ -1,6 +1,9 @@
 import { createClient } from "./api.js";
+import { renderHistoryItem } from "./render.js";
 import { parseSse } from "./sse.js";
 import { persistSession, reduceClientState, restoreSession } from "./state.js";
+
+export { renderHistoryItem };
 
 /**
  * Development conversation controller. It does not claim Gate 1.

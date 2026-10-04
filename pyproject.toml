@@ -57,6 +57,7 @@ esp-runtime-placement = { workspace = true }
 members = [
     "apps/api",
     "packages/contracts",
+    "packages/esp_knowledge_client",
     "packages/db",
     "packages/espcon",
     "packages/event_protocol",

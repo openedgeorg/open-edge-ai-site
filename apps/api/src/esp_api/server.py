@@ -41,6 +41,7 @@ from esp_api.routes.events import router as events_router
 from esp_api.routes.history import router as history_router
 from esp_api.routes.messages import drain_submissions
 from esp_api.routes.messages import router as messages_router
+from esp_api.routes.sources import router as sources_router
 from esp_api.routes.status import router as status_router
 from esp_contracts.eligibility import CandidateAdmissionPolicy
 from esp_contracts.ids import Provider
@@ -187,6 +188,7 @@ def build_api(deps: ApiDependencies) -> FastAPI:
     app.include_router(history_router)
     app.include_router(cancel_router)
     app.include_router(events_router)
+    app.include_router(sources_router)
 
     @app.get("/livez")
     async def livez() -> JSONResponse:

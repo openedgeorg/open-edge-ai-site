@@ -16,6 +16,7 @@ members = [
     "esp-event-protocol",
     "esp-execution-bindings",
     "esp-inference-gateway",
+    "esp-knowledge-client",
     "esp-mcp",
     "esp-object-store",
     "esp-observability",
@@ -255,6 +256,7 @@ dependencies = [
     { name = "esp-espcon" },
     { name = "esp-event-protocol" },
     { name = "esp-execution-bindings" },
+    { name = "esp-knowledge-client" },
     { name = "esp-observability" },
     { name = "esp-provider-router" },
     { name = "esp-request-admission" },
@@ -271,6 +273,7 @@ requires-dist = [
     { name = "esp-espcon", editable = "packages/espcon" },
     { name = "esp-event-protocol", editable = "packages/event_protocol" },
     { name = "esp-execution-bindings", editable = "packages/execution_bindings" },
+    { name = "esp-knowledge-client", editable = "packages/esp_knowledge_client" },
     { name = "esp-observability", editable = "packages/observability" },
     { name = "esp-provider-router", editable = "packages/provider_router" },
     { name = "esp-request-admission", editable = "packages/request_admission" },
@@ -394,6 +397,21 @@ requires-dist = [
 ]
 
 [[package]]
+name = "esp-knowledge-client"
+version = "0.1.0"
+source = { editable = "packages/esp_knowledge_client" }
+dependencies = [
+    { name = "esp-contracts" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "esp-contracts", editable = "packages/contracts" },
+    { name = "pydantic", specifier = ">=2.10" },
+]
+
+[[package]]
 name = "esp-mcp"
 version = "0.1.0"
 source = { editable = "services/esp_mcp" }
@@ -402,6 +420,7 @@ dependencies = [
     { name = "esp-db" },
     { name = "esp-embeddings" },
     { name = "esp-execution-bindings" },
+    { name = "esp-knowledge-client" },
     { name = "esp-object-store" },
     { name = "esp-observability" },
     { name = "fastapi" },
@@ -415,6 +434,7 @@ requires-dist = [
     { name = "esp-db", editable = "packages/db" },
     { name = "esp-embeddings", editable = "services/esp_embeddings" },
     { name = "esp-execution-bindings", editable = "packages/execution_bindings" },
+    { name = "esp-knowledge-client", editable = "packages/esp_knowledge_client" },
     { name = "esp-object-store", editable = "packages/object_store" },
     { name = "esp-observability", editable = "packages/observability" },
     { name = "fastapi", specifier = ">=0.115" },
