@@ -10,7 +10,9 @@ import httpcore
 import httpx
 import pytest
 
+from esp_db.client import transaction
 from esp_execution_bindings.binding import AuthorizationError
+from esp_execution_bindings.provider_release import provider_completion_failed
 from esp_inference_gateway.server import build_gateway
 from tests.support.wire_server import WireLab, build_wire_lab
 
@@ -73,6 +75,85 @@ async def test_two_origins_do_not_mix(tmp_path: Path) -> None:
     assert b"canary-origin-a" not in right.provider_body
     assert left.provider_body == left.decrypted_evidence_body
     assert right.provider_body == right.decrypted_evidence_body
+
+
+@pytest.mark.parametrize("status", [302, 400, 401, 403, 429, 500, 502])
+def test_non_success_provider_statuses_fail(status: int) -> None:
+    assert provider_completion_failed(status) is True
+
+
+@pytest.mark.parametrize("status", [200, 201, 204])
+def test_success_provider_statuses_do_not_fail(status: int) -> None:
+    assert provider_completion_failed(status) is False
+
+
+async def test_a_forbidden_provider_completion_releases_the_run(wire_lab: WireLab) -> None:
+    """HTTP 403 from the provider clears the run the same way a finished reply does."""
+    async with transaction(wire_lab.db) as tx:
+        await tx.execute(
+            """
+            UPDATE provider_session
+            SET current_request_id = 'req-403', current_native_work_ref = 'work-before-token'
+            WHERE id = %s
+            """,
+            (wire_lab.session_id,),
+        )
+    app = build_gateway(wire_lab.deps)
+    transport = httpx.ASGITransport(app=app)
+    forbidden = b'{"error":{"code":"unauthenticated:bad-credentials","message":"Forbidden"}}'
+    async with httpx.AsyncClient(transport=transport, base_url="http://esp") as client:
+        refused = await client.post(
+            "/openai/v1/responses",
+            content=wire_lab.raw,
+            headers={"esp-inference-token": wire_lab.knowledge_token},
+        )
+        assert refused.status_code == 403
+        assert (await _session_row(wire_lab))["runtime_state"] == "running"
+        ok = await client.post(
+            "/openai/v1/responses",
+            content=wire_lab.raw,
+            headers={"esp-inference-token": wire_lab.token},
+        )
+        assert ok.status_code == 200
+        still = await _session_row(wire_lab)
+        assert still["runtime_state"] == "running"
+        assert still["current_request_id"] == "req-403"
+        wire_lab.server.status = 403
+        wire_lab.server.response_body = forbidden
+        failed = await client.post(
+            "/openai/v1/responses",
+            content=wire_lab.raw,
+            headers={"esp-inference-token": wire_lab.token},
+        )
+    assert failed.status_code == 403
+    assert failed.content == forbidden
+    released = await _session_row(wire_lab)
+    assert released["runtime_state"] == "warm_idle"
+    assert released["runtime_state"] != "running"
+    assert released["current_request_id"] is None
+    assert released["active_agent_run_id"] is None
+    assert released["current_native_work_ref"] is None
+    assert released["guard"] is None
+
+
+async def _session_row(wire_lab: WireLab) -> dict[str, object]:
+    async with transaction(wire_lab.db) as tx:
+        row = await tx.execute_one(
+            """
+            SELECT ps.runtime_state,
+                   ps.current_request_id,
+                   ps.current_native_work_ref,
+                   ps.active_agent_run_id::text AS active_agent_run_id,
+                   c.active_provider_session_id::text AS guard
+            FROM provider_session AS ps
+            JOIN conversation AS c ON c.id = ps.conversation_id
+            WHERE ps.id = %s
+            """,
+            (wire_lab.session_id,),
+        )
+    if row is None:
+        raise AssertionError("provider session missing")
+    return row
 
 
 async def test_app_strips_caller_credentials(wire_lab: WireLab) -> None:

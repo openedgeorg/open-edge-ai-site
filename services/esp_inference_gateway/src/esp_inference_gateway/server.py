@@ -15,6 +15,7 @@ from esp_espcon.brain_registry import ResolvedRelease
 from esp_execution_bindings.authorize import authorize_binding
 from esp_execution_bindings.binding import AuthorizationError, TokenVerifier, verify_binding
 from esp_execution_bindings.dispatch_fence import with_dispatch_authority
+from esp_execution_bindings.provider_release import clear_finished_run, provider_completion_failed
 from esp_inference_gateway.adapters.openai_responses import OpenAIResponsesAdapter
 from esp_inference_gateway.adapters.xai_responses import XAIResponsesAdapter
 from esp_inference_gateway.brain_verifier import VerificationError, verify_and_serialize
@@ -135,6 +136,20 @@ async def _proxy(deps: GatewayDependencies, request: Request, provider: str) -> 
     except Exception as exc:
         await record_outcome(deps.outcome, ticket.inference_id, "uncertain")
         raise HTTPException(status_code=502, detail="provider_uncertain") from exc
+    if provider_completion_failed(upstream.status):
+        # A 403, and any other non-success completion, never finishes the reply. Release this run
+        # before the error is relayed, or the conversation stays running and the next message is busy.
+        try:
+            binding = verify_binding(token, "inference", verifier=deps.verifier)
+        except AuthorizationError:
+            binding = None
+        if binding is not None and binding.provider == provider:
+            await clear_finished_run(
+                deps.db,
+                binding,
+                native_work_ref=binding.native_work_ref,
+                provider_failure=True,
+            )
     await record_outcome(deps.outcome, ticket.inference_id, "headers")
     return relay_response(upstream)
 

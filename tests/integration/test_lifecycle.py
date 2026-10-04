@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from esp_execution_bindings.binding import AuthorizationError, verify_binding
+from esp_execution_bindings.provider_release import clear_finished_run
 from esp_request_admission.admit import RUN_DEADLINE_SECONDS, Admitted
 from esp_runtime_harconses.lifecycle import SessionLifecycle
 from esp_runtime_harconses.supervision import RunSupervision
@@ -269,6 +270,39 @@ async def test_finish_run_clears_only_its_own_epoch_and_keeps_residency(lifecycl
     assert still["runtime_state"] == "running"
     assert "active" in await lifecycle_lab.run_slots(str(still["id"]))
     assert isinstance(lifecycle_lab.lifecycle(), SessionLifecycle)
+
+
+async def test_a_provider_failure_releases_the_running_request(lifecycle_lab: SubmissionLab) -> None:
+    """A non-success provider completion never finishes the reply, and must still free the run."""
+    conv = await lifecycle_lab.conversation()
+    accepted = await lifecycle_lab._accepted(conv, "life-provider-403")
+    binding = await lifecycle_lab.run_binding(conv)
+    assert binding.native_work_ref == accepted.work.native_work_ref
+    wrong = binding.model_copy(update={"native_work_ref": "other-work"})
+    assert (
+        await clear_finished_run(
+            lifecycle_lab.admission.admin, wrong, native_work_ref=wrong.native_work_ref, provider_failure=True
+        )
+        is False
+    )
+    held = await lifecycle_lab.coordination(conv)
+    assert held["runtime_state"] == "running"
+    assert held["current_request_id"] == "life-provider-403"
+    # The inference token is minted before the native work reference is stored.
+    minted = binding.model_copy(update={"native_work_ref": None})
+    assert (
+        await clear_finished_run(lifecycle_lab.admission.admin, minted, native_work_ref=None, provider_failure=True)
+        is True
+    )
+    row = await lifecycle_lab.coordination(conv)
+    assert row["runtime_state"] == "warm_idle"
+    assert row["runtime_state"] != "running"
+    assert row["current_request_id"] is None
+    assert row["active_agent_run_id"] is None
+    assert row["current_native_work_ref"] is None
+    assert row["guard"] is None
+    result = await lifecycle_lab.admission.admit(conv, "life-provider-403-next")
+    assert isinstance(result, Admitted)
 
 
 async def test_a_finished_reply_releases_the_running_request(lifecycle_lab: SubmissionLab) -> None:

@@ -35,13 +35,13 @@ from esp_db.client import Db, Transaction, transaction
 from esp_espcon.conversation import ConversationNotFound
 from esp_execution_bindings.authorize import read_authority
 from esp_execution_bindings.binding import AuthorizationError, TokenSigner, mint_operation_authority
+from esp_execution_bindings.provider_release import clear_finished_run
 from esp_observability.traces import RecoveryTrace
 from esp_provider_router.router import NativeRuntimeAdapter, ProviderRouter
 from esp_provider_shared.storage_fence import FenceEvidenceMissing, FenceReceipt, StorageFence
 from esp_provider_shared.supervisor import publish_recovery
 from esp_recovery.group_recovery import GroupRecovery, RecoveryGroupResult
 from esp_request_admission.admit import LEASE_SECONDS
-from esp_runtime_placement.capacity import release_run_slots
 
 _Outcome = Literal[
     "accepted",
@@ -126,60 +126,12 @@ class SessionLifecycle:
         """Clear one terminal run. False when the epoch, run or work no longer matches, or the row is locked."""
         if binding.native_session_id != work.native_session_id:
             return False
-        try:
-            async with transaction(self._db) as tx:
-                locked = await tx.execute_one(
-                    "SELECT esp_try_fence(%s, %s, true) AS locked",
-                    (binding.runtime_incarnation_id, binding.provider_session_id),
-                )
-                if locked is None or locked["locked"] is not True:
-                    return False
-                held = await tx.execute_one(
-                    "SELECT id FROM provider_session WHERE id = %s::uuid FOR UPDATE NOWAIT",
-                    (binding.provider_session_id,),
-                )
-                if held is None:
-                    return False
-                cleared = await tx.execute_one(
-                    """
-                    UPDATE provider_session SET
-                        active_agent_run_id = NULL,
-                        current_request_id = NULL,
-                        current_native_work_ref = NULL,
-                        owner_lease_expires_at = NULL,
-                        active_agent_run_expires_at = NULL,
-                        cancel_requested_at = NULL,
-                        runtime_state = 'warm_idle',
-                        last_used_at = transaction_timestamp()
-                    WHERE id = %s::uuid
-                      AND is_current
-                      AND ownership_epoch = %s
-                      AND active_agent_run_id = %s::uuid
-                      AND native_session_id = %s
-                      AND current_native_work_ref = %s
-                    RETURNING conversation_id::text AS conversation_id
-                    """,
-                    (
-                        binding.provider_session_id,
-                        binding.ownership_epoch,
-                        binding.active_agent_run_id,
-                        binding.native_session_id,
-                        work.native_work_ref,
-                    ),
-                )
-                if cleared is None:
-                    return False
-                await release_run_slots(tx, binding.provider_session_id, binding.ownership_epoch)
-                await tx.execute(
-                    """
-                    UPDATE conversation SET active_provider_session_id = NULL
-                    WHERE id = %s::uuid AND active_provider_session_id = %s::uuid
-                    """,
-                    (cleared["conversation_id"], binding.provider_session_id),
-                )
-                return True
-        except _LOCK_ERRORS:
-            return False
+        return await clear_finished_run(
+            self._db,
+            binding,
+            native_work_ref=work.native_work_ref,
+            provider_failure=False,
+        )
 
     async def renew_ownership(self, binding: RunBinding) -> OperationAuthority:
         """Extend the 30s lease only. The original run deadline, epoch and last use stay put.
