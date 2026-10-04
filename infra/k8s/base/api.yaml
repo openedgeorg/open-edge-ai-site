@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: esp-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: esp-api
+  template:
+    metadata:
+      labels:
+        app: esp-api
+    spec:
+      serviceAccountName: esp-api
+      containers:
+        - name: api
+          image: esp-api:unqualified
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: esp-api
+spec:
+  selector:
+    app: esp-api
+  ports:
+    - port: 8080
+      targetPort: 8080

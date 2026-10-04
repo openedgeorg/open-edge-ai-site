@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: esp-runtime
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: esp-runtime
+  template:
+    metadata:
+      labels:
+        app: esp-runtime
+    spec:
+      serviceAccountName: esp-runtime
+      containers:
+        - name: runtime
+          image: esp-runtime:unqualified
+          volumeMounts:
+            - name: native-sessions
+              mountPath: /var/lib/esp/native
+      volumes:
+        - name: native-sessions
+          persistentVolumeClaim:
+            claimName: esp-native-sessions
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: esp-runtime
+spec:
+  selector:
+    app: esp-runtime
+  ports:
+    - port: 8080
+      targetPort: 8080

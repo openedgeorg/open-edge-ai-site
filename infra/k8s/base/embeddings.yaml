@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: esp-embeddings
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: esp-embeddings
+  template:
+    metadata:
+      labels:
+        app: esp-embeddings
+    spec:
+      serviceAccountName: esp-embeddings
+      containers:
+        - name: embeddings
+          image: esp-embeddings:unqualified
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: esp-embeddings
+spec:
+  selector:
+    app: esp-embeddings
+  ports:
+    - port: 8080
+      targetPort: 8080

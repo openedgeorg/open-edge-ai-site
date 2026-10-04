@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openedge.example/qualification/retention-policy.schema.json",
+  "title": "Production retention policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "region",
+    "encryption_owner",
+    "key_owner",
+    "native_retention",
+    "evidence_retention",
+    "metadata_retention",
+    "telemetry_retention",
+    "backup_retention",
+    "cookie_lifetime",
+    "deletion_required",
+    "deletion_supported"
+  ],
+  "properties": {
+    "region": {"type": "string", "minLength": 1},
+    "encryption_owner": {"type": "string", "minLength": 1},
+    "key_owner": {"type": "string", "minLength": 1},
+    "native_retention": {"type": "string", "minLength": 1},
+    "evidence_retention": {"type": "string", "minLength": 1},
+    "metadata_retention": {"type": "string", "minLength": 1},
+    "telemetry_retention": {"type": "string", "minLength": 1},
+    "backup_retention": {"type": "string", "minLength": 1},
+    "cookie_lifetime": {"type": "string", "minLength": 1},
+    "deletion_required": {"type": "boolean"},
+    "deletion_supported": {"type": "boolean"}
+  }
+}

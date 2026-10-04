@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: esp-knowledge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: esp-knowledge
+  template:
+    metadata:
+      labels:
+        app: esp-knowledge
+    spec:
+      serviceAccountName: esp-knowledge
+      containers:
+        - name: knowledge
+          image: esp-knowledge:unqualified
+          ports:
+            - containerPort: 8080
+          volumeMounts: []
+      volumes: []
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: esp-knowledge
+spec:
+  selector:
+    app: esp-knowledge
+  ports:
+    - port: 8080
+      targetPort: 8080
