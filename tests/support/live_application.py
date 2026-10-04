@@ -1,4 +1,7 @@
-"""Real-application gate fixture. Without a recorded evidence bundle every gate stays pending."""
+"""Real-application gate fixture.
+
+Compose G1 stays pending until brain, isolation and the scenario inventory are observed.
+"""
 
 from __future__ import annotations
 

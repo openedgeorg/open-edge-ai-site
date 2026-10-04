@@ -16,16 +16,19 @@ import mmap
 import os
 import re
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
 import tomllib
+import urllib.parse
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import yaml
 from jsonschema import Draft202012Validator
@@ -1679,7 +1682,11 @@ class WriterIsolation(BaseModel):
 
 
 class QualificationEnvironment(BaseModel):
-    """The explicitly configured disposable qualification environment. Nothing else is deployable."""
+    """Cluster gates (network, storage, G2). G1 does not use this record.
+
+    Those gates still require the disposable kube context, the kube-system cluster uid, namespace
+    `esp-qualification`, provider node addresses and the CSI fence. None of that is G1 evidence.
+    """
 
     model_config = STRICT
     environment_id: str = Field(pattern=r"^qual-[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -1694,6 +1701,36 @@ class QualificationEnvironment(BaseModel):
     evidence_export_dir: str | None = None
     evidence_output_dir: str | None = None
     writer_isolation: WriterIsolation | None = None
+
+
+class ComposeQualificationEnvironment(BaseModel):
+    """G1 evidence: one laptop's Compose stack and the local ESP gateway. No cluster fields."""
+
+    model_config = STRICT
+    runtime: Literal["compose"]
+    environment_id: str = Field(pattern=r"^qual-[a-z0-9]+(?:-[a-z0-9]+)*$")
+    disposable: Literal[True]
+    compose_file: str = Field(min_length=1)
+    gateway_openai_base_url: str
+    gateway_xai_base_url: str
+    evidence_output_dir: str | None = None
+
+    @field_validator("gateway_openai_base_url", "gateway_xai_base_url")
+    @classmethod
+    def _loopback_gateway(cls, value: str) -> str:
+        parsed = urllib.parse.urlparse(value)
+        host = parsed.hostname
+        if parsed.scheme not in {"http", "https"} or parsed.port is None:
+            raise ValueError("gateway base URL must be http(s) with an explicit port")
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError("gateway base URL must be loopback")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("gateway base URL must not carry credentials or a query")
+        return value
+
+
+if TYPE_CHECKING:
+    from scripts.gate_coverage import Gate1Observation
 
 
 @dataclass(frozen=True)
@@ -1851,9 +1888,47 @@ def load_qualification_environment(environ: Mapping[str, str]) -> QualificationE
         raise QualificationEnvironmentInvalid(type(exc).__name__) from exc
 
 
-def environment_digest(environment: QualificationEnvironment) -> str:
+def environment_digest(environment: QualificationEnvironment | ComposeQualificationEnvironment) -> str:
     canonical = json.dumps(environment.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def default_compose_qualification_environment() -> ComposeQualificationEnvironment:
+    """The repo's Compose file and the loopback gateway URLs staged in the runtime profiles."""
+    codex = tomllib.loads(CODEX_CONFIG_PATH.read_text(encoding="utf-8"))
+    grok = tomllib.loads(GROK_CONFIG_PATH.read_text(encoding="utf-8"))
+    openai_url = str(codex["model_providers"]["esp_gateway"]["base_url"])
+    xai_url = str(grok["model"]["esp-grok"]["base_url"])
+    return ComposeQualificationEnvironment.model_validate(
+        {
+            "runtime": "compose",
+            "environment_id": "qual-local-compose",
+            "disposable": True,
+            "compose_file": str((ROOT / "infra" / "local" / "compose.yaml").resolve()),
+            "gateway_openai_base_url": openai_url,
+            "gateway_xai_base_url": xai_url,
+        }
+    )
+
+
+def resolve_g1_environment(environ: Mapping[str, str]) -> tuple[ComposeQualificationEnvironment, list[str]]:
+    """G1's environment. A cluster record is ignored; it is not required and it is not evidence."""
+    location = environ.get(QUALIFICATION_ENV_VAR)
+    if not location:
+        return default_compose_qualification_environment(), []
+    try:
+        document = _strict_json(Path(location).read_bytes())
+    except (OSError, ValueError) as exc:
+        raise QualificationEnvironmentInvalid(type(exc).__name__) from exc
+    if not isinstance(document, dict):
+        raise QualificationEnvironmentInvalid("not_an_object")
+    body = cast(dict[str, Any], document)
+    if body.get("runtime") == "compose" or "compose_file" in body:
+        try:
+            return ComposeQualificationEnvironment.model_validate(body), []
+        except ValidationError as exc:
+            raise QualificationEnvironmentInvalid(f"compose:{exc.error_count()}") from exc
+    return default_compose_qualification_environment(), ["g1_attempt_cluster_record_ignored"]
 
 
 def tool_policy_digest(path: Path = TOOL_POLICY_PATH) -> str:
@@ -3188,6 +3263,563 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_COMPOSE_TIMEOUT_SECONDS = 180.0
+_GATEWAY_TIMEOUT_SECONDS = 20.0
+_SESSION_TIMEOUT_SECONDS = 70.0
+_RPC_TIMEOUT_SECONDS = 15.0
+_SECRET_TEXT = re.compile(
+    r"(?i)(api[_-]?key|authorization|bearer|token|password|secret|sk-[A-Za-z0-9_-]{8,}|xai-[A-Za-z0-9_-]{8,})"
+)
+
+
+class CommandRunner(Protocol):
+    def __call__(
+        self, argv: list[str], env: Mapping[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]: ...
+
+
+def _note_list() -> list[str]:
+    return []
+
+
+@dataclass
+class LiveSessionEvidence:
+    """What a real Codex and Grok launch observed. Empty fields are not a pass."""
+
+    notes: list[str] = field(default_factory=_note_list)
+    conversation_isolation_failures: int = 0
+    bypass_count: int = 0
+
+
+class SessionLauncher(Protocol):
+    def __call__(self, environment: ComposeQualificationEnvironment, work_root: Path) -> LiveSessionEvidence: ...
+
+
+def _default_command_runner(
+    argv: list[str], env: Mapping[str, str], timeout: float
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+        env=dict(env),
+        cwd=str(ROOT),
+    )
+
+
+def _safe_tail(text: str) -> str:
+    cleaned = _SECRET_TEXT.sub("redacted", text).replace(str(Path.home()), "~")
+    return " ".join(cleaned.split())[:240]
+
+
+def _public_error(exc: BaseException) -> str:
+    return _safe_tail(f"{type(exc).__name__}: {exc}")
+
+
+def _command_note(
+    prefix: str, argv: list[str], completed: subprocess.CompletedProcess[str] | None, error: str
+) -> list[str]:
+    notes = [f"{prefix}_command:{' '.join(argv)}"]
+    if completed is None:
+        notes.append(f"{prefix}_error:{error}")
+        return notes
+    notes.append(f"{prefix}_exit:{completed.returncode}")
+    tail = _safe_tail(completed.stderr or completed.stdout)
+    if tail:
+        notes.append(f"{prefix}_tail:{tail}")
+    return notes
+
+
+def _run_recorded(
+    prefix: str,
+    argv: list[str],
+    env: Mapping[str, str],
+    timeout: float,
+    runner: CommandRunner,
+) -> tuple[subprocess.CompletedProcess[str] | None, list[str]]:
+    try:
+        completed = runner(argv, env, timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, _command_note(prefix, argv, None, _public_error(exc))
+    return completed, _command_note(prefix, argv, completed, "")
+
+
+def parse_proc_net_address(raw: str) -> tuple[str, int]:
+    """Decode one `/proc/net/tcp` or `tcp6` endpoint. Little-endian words, as the kernel prints them."""
+    ip_hex, _, port_hex = raw.partition(":")
+    port = int(port_hex, 16)
+    if len(ip_hex) == 8:
+        ip = ".".join(str(byte) for byte in bytes.fromhex(ip_hex)[::-1])
+        return ip, port
+    words = [bytes.fromhex(ip_hex[index : index + 8])[::-1] for index in range(0, 32, 8)]
+    ip = ipaddress.IPv6Address(b"".join(words)).compressed
+    return ip, port
+
+
+def _socket_inodes(pid: int) -> set[str]:
+    inodes: set[str] = set()
+    try:
+        entries = list(Path(f"/proc/{pid}/fd").iterdir())
+    except OSError:
+        return inodes
+    for entry in entries:
+        try:
+            target = os.readlink(entry)
+        except OSError:
+            continue
+        if target.startswith("socket:[") and target.endswith("]"):
+            inodes.add(target[len("socket:[") : -1])
+    return inodes
+
+
+def _process_tree(root: int) -> set[int]:
+    children: dict[int, list[int]] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        ppid = next((int(line.split()[1]) for line in status.splitlines() if line.startswith("PPid:")), None)
+        if ppid is not None:
+            children.setdefault(ppid, []).append(pid)
+    seen = {root}
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        for child in children.get(current, []):
+            if child not in seen:
+                seen.add(child)
+                stack.append(child)
+    return seen
+
+
+def _non_loopback_https_peers(root_pid: int) -> set[tuple[str, int]]:
+    """ESTABLISHED or SYN_SENT TCP/443 peers outside loopback, for this process and its children."""
+    inodes: set[str] = set()
+    for pid in _process_tree(root_pid):
+        inodes.update(_socket_inodes(pid))
+    if not inodes:
+        return set()
+    found: set[tuple[str, int]] = set()
+    for name in ("tcp", "tcp6"):
+        try:
+            lines = Path(f"/proc/net/{name}").read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines[1:]:
+            fields = line.split()
+            if len(fields) < 10 or fields[9] not in inodes:
+                continue
+            if fields[3] not in {"01", "02"}:
+                continue
+            ip, port = parse_proc_net_address(fields[2])
+            if port != 443 or ipaddress.ip_address(ip).is_loopback:
+                continue
+            found.add((ip, port))
+    return found
+
+
+def _collect_base_urls(node: object, found: list[str]) -> None:
+    if isinstance(node, dict):
+        for key, value in cast(dict[str, Any], node).items():
+            if key == "base_url" and isinstance(value, str):
+                found.append(value)
+            else:
+                _collect_base_urls(value, found)
+    elif isinstance(node, list):
+        for item in cast(list[object], node):
+            _collect_base_urls(item, found)
+
+
+def _stage_gateway_config(template: Path, dest: Path, base_url: str) -> None:
+    """Copy the runtime profile and force every model base_url onto the local gateway."""
+    original = template.read_text(encoding="utf-8")
+    replaced, count = re.subn(r'(?m)^base_url\s*=\s*"[^"]*"', f'base_url = "{base_url}"', original)
+    if count < 1:
+        raise ValueError("runtime profile has no base_url")
+    found: list[str] = []
+    _collect_base_urls(tomllib.loads(replaced), found)
+    if not found or any(item != base_url for item in found):
+        raise ValueError("staged base_url is not the local gateway")
+    dest.write_text(replaced, encoding="utf-8")
+
+
+# Not a provider credential. grok 1.0.46 will not create a session until some auth method is
+# selected. The logged-in `grok.com` method stays unselected from auth.json here, and ACP
+# `authenticate` opens public HTTPS. This value only selects `xai.api_key` on the loopback model.
+_GROK_LOOPBACK_API_KEY = "esp-local-gateway"
+
+
+def _pin_grok_gateway_auth(config_path: Path, base_url: str) -> None:
+    """Select the build's `xai.api_key` method without a provider secret or a public host."""
+    parsed = urllib.parse.urlparse(base_url)
+    host = parsed.hostname or ""
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    if parsed.scheme != "http" or parsed.port is None or not loopback:
+        raise ValueError("grok gateway auth pin requires an explicit loopback base_url")
+    if parsed.username or parsed.password or parsed.query:
+        raise ValueError("grok gateway base_url must not carry credentials")
+    text = config_path.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("api_key") or stripped.startswith("env_key"):
+            raise ValueError("staged grok profile already names a credential")
+    needle = f'base_url = "{base_url}"\n'
+    if text.count(needle) != 1:
+        raise ValueError("staged grok profile does not name exactly one gateway base_url")
+    pinned = text.replace(needle, f'{needle}api_key = "{_GROK_LOOPBACK_API_KEY}"\n', 1)
+    found: list[str] = []
+    _collect_base_urls(tomllib.loads(pinned), found)
+    if found != [base_url]:
+        raise ValueError("staged base_url is not the local gateway")
+    config_path.write_text(pinned, encoding="utf-8")
+
+
+def _link_auth(source_home: Path, dest_home: Path) -> None:
+    """Use the logged-in CLI without copying credential bytes into the repo or the notes."""
+    auth = source_home / "auth.json"
+    if auth.is_file():
+        (dest_home / "auth.json").symlink_to(auth)
+
+
+def _gateway_port_open(base_url: str) -> bool:
+    parsed = urllib.parse.urlparse(base_url)
+    host = parsed.hostname or "127.0.0.1"
+    if parsed.port is None:
+        return False
+    try:
+        with socket.create_connection((host, parsed.port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+async def _finish_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            try:
+                process.kill()
+            except (OSError, ProcessLookupError):
+                pass
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5)
+    except TimeoutError:
+        try:
+            process.kill()
+        except (OSError, ProcessLookupError):
+            pass
+        await process.wait()
+
+
+async def _watch_bypass(pid: int, found: set[tuple[str, int]]) -> None:
+    while True:
+        try:
+            found.update(_non_loopback_https_peers(pid))
+        except OSError:
+            return
+        await asyncio.sleep(0.5)
+
+
+async def _rpc(rpc: NativeRpcClient, method: str, params: object) -> dict[str, Any]:
+    result = await asyncio.wait_for(rpc.request(method, params), timeout=_RPC_TIMEOUT_SECONDS)
+    if not isinstance(result, dict):
+        raise ValueError(f"{method} returned a non-object")
+    return cast(dict[str, Any], result)
+
+
+def _thread_id(result: Mapping[str, Any]) -> str:
+    thread = result.get("thread")
+    if not isinstance(thread, dict):
+        raise ValueError("missing thread")
+    thread_id = cast(dict[str, Any], thread).get("id")
+    if not isinstance(thread_id, str) or not thread_id:
+        raise ValueError("missing thread id")
+    return thread_id
+
+
+def _session_id(result: Mapping[str, Any]) -> str:
+    session_id = result.get("sessionId")
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("missing sessionId")
+    return session_id
+
+
+async def _codex_session(
+    binary: str, home: Path, work: Path, model: str, stderr_path: Path
+) -> tuple[list[str], int, str]:
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home), "CODEX_HOME": str(home)}
+    ids: list[str] = []
+    peers: set[tuple[str, int]] = set()
+    with stderr_path.open("wb") as stderr:
+        process = await asyncio.create_subprocess_exec(
+            binary,
+            "app-server",
+            "--strict-config",
+            "--listen",
+            "stdio://",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=stderr,
+            env=env,
+            cwd=str(work),
+            start_new_session=True,
+            limit=STDIO_READER_LIMIT,
+        )
+        watcher = asyncio.create_task(_watch_bypass(process.pid, peers))
+        try:
+            if process.stdin is None or process.stdout is None:
+                raise OSError("app-server pipes were not created")
+            rpc = NativeRpcClient(JsonlFrameTransport(process.stdout, process.stdin))
+            await _rpc(
+                rpc,
+                CODEX_METHODS["handshake"],
+                {
+                    "clientInfo": {"name": "esp-qualify-g1", "version": "1"},
+                    "capabilities": {"optOutNotificationMethods": list(CODEX_OPT_OUT_NOTIFICATIONS)},
+                },
+            )
+            await rpc.notify(CODEX_CLIENT_NOTIFICATIONS[0])
+            for _ in range(2):
+                created = await _rpc(
+                    rpc,
+                    CODEX_METHODS["create"],
+                    {
+                        "model": model,
+                        "modelProvider": CODEX_MODEL_PROVIDER,
+                        "approvalPolicy": "never",
+                        "sandbox": "read-only",
+                        "ephemeral": False,
+                    },
+                )
+                ids.append(_thread_id(created))
+            prompt = "not_sent"
+            if ids:
+                try:
+                    await _rpc(
+                        rpc,
+                        CODEX_METHODS["submit"],
+                        {
+                            "threadId": ids[0],
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "Reply with the single word pong.",
+                                    "text_elements": cast(list[object], []),
+                                }
+                            ],
+                        },
+                    )
+                    prompt = "sent"
+                except Exception as exc:
+                    prompt = _public_error(exc)
+            return ids, len(peers), prompt
+        finally:
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
+            if process.stdin is not None:
+                process.stdin.close()
+            await _finish_process(process)
+
+
+async def _grok_session(binary: str, home: Path, work: Path, stderr_path: Path) -> tuple[list[str], int, str]:
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(home),
+        "GROK_HOME": str(home),
+        "GROK_DISABLE_AUTOUPDATER": "1",
+    }
+    ids: list[str] = []
+    peers: set[tuple[str, int]] = set()
+    with stderr_path.open("wb") as stderr:
+        process = await asyncio.create_subprocess_exec(
+            binary,
+            "agent",
+            "--no-leader",
+            "stdio",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=stderr,
+            env=env,
+            cwd=str(work),
+            start_new_session=True,
+            limit=GROK_STDIO_READER_LIMIT,
+        )
+        watcher = asyncio.create_task(_watch_bypass(process.pid, peers))
+        try:
+            if process.stdin is None or process.stdout is None:
+                raise OSError("agent pipes were not created")
+            rpc = NativeRpcClient(AcpClientGuard(GrokStdioTransport(process.stdout, process.stdin)))
+            await _rpc(rpc, GROK_METHODS["handshake"], acp_initialize_params("esp-qualify-g1", "1"))
+            for _ in range(2):
+                created = await _rpc(rpc, GROK_METHODS["create"], {"cwd": str(work), "mcpServers": []})
+                ids.append(_session_id(created))
+            prompt = "not_sent"
+            if ids:
+                try:
+                    await _rpc(
+                        rpc,
+                        GROK_METHODS["submit"],
+                        {
+                            "sessionId": ids[0],
+                            "prompt": [{"type": "text", "text": "Reply with the single word pong."}],
+                        },
+                    )
+                    prompt = "sent"
+                except Exception as exc:
+                    prompt = _public_error(exc)
+            return ids, len(peers), prompt
+        finally:
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
+            if process.stdin is not None:
+                process.stdin.close()
+            await _finish_process(process)
+
+
+def launch_gateway_sessions(environment: ComposeQualificationEnvironment, work_root: Path) -> LiveSessionEvidence:
+    """Start Codex and Grok Build with model base_url forced to the local ESP gateway.
+
+    Login state is the operator's `~/.codex` and `~/.grok` auth file via a symlink. The staged
+    profile is the repo runtime profile. Grok also gets a loopback-only api_key so `session/new`
+    has an auth method id; that value is not the provider credential. Credential bytes are never
+    read, printed or written back. ACP `authenticate` is not called: that request opens public HTTPS.
+    """
+    evidence = LiveSessionEvidence()
+    openai_open = _gateway_port_open(environment.gateway_openai_base_url)
+    xai_open = _gateway_port_open(environment.gateway_xai_base_url)
+    codex_port = "yes" if openai_open else "no"
+    grok_port = "yes" if xai_open else "no"
+    evidence.notes.append(f"g1_attempt_gateway_port_open:codex={codex_port},grok={grok_port}")
+    codex_bin = shutil.which("codex")
+    grok_bin = shutil.which("grok")
+    launches: tuple[tuple[str, str | None, Path, str], ...] = (
+        ("codex", codex_bin, CODEX_CONFIG_PATH, environment.gateway_openai_base_url),
+        ("grok", grok_bin, GROK_CONFIG_PATH, environment.gateway_xai_base_url),
+    )
+    for name, binary, template, base_url in launches:
+        if binary is None:
+            evidence.notes.append(f"g1_attempt_{name}:binary_missing")
+            evidence.notes.append(f"g1_attempt_{name}_conversation_isolation:unobserved")
+            continue
+        executable: str = binary
+        home = work_root / name
+        work = home / "work"
+        home.mkdir(parents=True)
+        work.mkdir()
+        stderr_path = home / "stderr.log"
+        try:
+            _stage_gateway_config(template, home / "config.toml", base_url)
+            if name == "grok":
+                _pin_grok_gateway_auth(home / "config.toml", base_url)
+                evidence.notes.append("g1_attempt_grok_auth_method:xai.api_key")
+            auth_root = Path.home() / (".codex" if name == "codex" else ".grok")
+            _link_auth(auth_root, home)
+            model = ""
+            if name == "codex":
+                model = str(tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))["model"])
+
+            async def run_one(
+                tool: str = name,
+                program: str = executable,
+                pinned_model: str = model,
+                tool_home: Path = home,
+                tool_work: Path = work,
+                tool_stderr: Path = stderr_path,
+            ) -> tuple[list[str], int, str]:
+                if tool == "codex":
+                    return await _codex_session(program, tool_home, tool_work, pinned_model, tool_stderr)
+                return await _grok_session(program, tool_home, tool_work, tool_stderr)
+
+            ids, bypass, prompt = asyncio.run(asyncio.wait_for(run_one(), timeout=_SESSION_TIMEOUT_SECONDS))
+        except Exception as exc:
+            evidence.notes.append(f"g1_attempt_{name}:{_public_error(exc)}")
+            tail = ""
+            if stderr_path.exists():
+                tail = _safe_tail(stderr_path.read_text(encoding="utf-8", errors="replace"))
+            if tail:
+                evidence.notes.append(f"g1_attempt_{name}_tail:{tail}")
+            evidence.notes.append(f"g1_attempt_{name}_conversation_isolation:unobserved")
+            continue
+        evidence.bypass_count += bypass
+        evidence.notes.append(f"g1_attempt_{name}:started")
+        evidence.notes.append(f"g1_attempt_{name}_prompt:{prompt}")
+        evidence.notes.append(f"g1_attempt_{name}_sessions:{len(ids)}")
+        if len(ids) >= 2 and len(set(ids)) < 2:
+            evidence.conversation_isolation_failures += 1
+            evidence.notes.append(f"g1_attempt_{name}_conversation_isolation:same_id")
+        elif len(ids) >= 2:
+            evidence.notes.append(f"g1_attempt_{name}_conversation_isolation:distinct")
+        else:
+            evidence.notes.append(f"g1_attempt_{name}_conversation_isolation:unobserved")
+        if bypass:
+            evidence.notes.append(f"g1_attempt_{name}_bypass_peers:{bypass}")
+    evidence.notes.append("g1_attempt_brain:unobserved")
+    return evidence
+
+
+def attempt_compose_gate1(
+    provider: Provider,
+    environ: Mapping[str, str],
+    *,
+    command_runner: CommandRunner | None = None,
+    session_launcher: SessionLauncher | None = None,
+) -> tuple[Gate1Observation, list[str], str | None]:
+    """Bring up Compose, invoke the real gateway entry, then start both harnesses through it.
+
+    Missing brain, isolation or scenario evidence stays on the observation as absent. This does not
+    invent a pass. `provider` selects the qualification row; both CLIs are still started.
+    """
+    del provider
+    from scripts.gate_coverage import Gate1Observation
+
+    runner = command_runner or _default_command_runner
+    launcher = session_launcher or launch_gateway_sessions
+    try:
+        environment, notes = resolve_g1_environment(environ)
+    except QualificationEnvironmentInvalid as exc:
+        return Gate1Observation(stub=False), [f"g1_attempt_environment_invalid:{exc}"], None
+    digest = environment_digest(environment)
+    notes.append(f"g1_attempt_environment:{environment.environment_id}")
+    compose_argv = ["docker", "compose", "-f", environment.compose_file, "up", "-d", "--wait"]
+    compose_env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+    _, compose_notes = _run_recorded("g1_attempt_compose", compose_argv, compose_env, _COMPOSE_TIMEOUT_SECONDS, runner)
+    notes.extend(compose_notes)
+    gateway_argv = [sys.executable, "-m", "esp_inference_gateway.main"]
+    _, gateway_notes = _run_recorded(
+        "g1_attempt_gateway", gateway_argv, os.environ, _GATEWAY_TIMEOUT_SECONDS, runner
+    )
+    notes.extend(gateway_notes)
+    try:
+        with tempfile.TemporaryDirectory(prefix="esp-g1-compose-") as raw:
+            evidence = launcher(environment, Path(raw))
+    except Exception as exc:
+        notes.append(f"g1_attempt_sessions:{_public_error(exc)}")
+        evidence = LiveSessionEvidence()
+    notes.extend(evidence.notes)
+    observation = Gate1Observation(
+        stub=False,
+        conversation_isolation_failures=evidence.conversation_isolation_failures,
+        bypass_count=evidence.bypass_count,
+    )
+    return observation, notes[:80], digest
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -3255,7 +3887,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "g1":
         from scripts.gate_coverage import run_gate1
 
-        report = run_gate1(provider, None)
+        # Compose on this machine. Cluster context, uid, namespace, node addresses and fencing are not read.
+        report = run_gate1(provider, None, environ=os.environ)
     elif args.command == "g2":
         from scripts.gate_coverage import run_gate2
 
@@ -3291,6 +3924,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(classification)
         print(f"provider={provider} gate={args.command} observations={report.positive_observation_count}")
+        if args.command == "g1":
+            for criterion in report.failed_criteria:
+                if criterion.startswith("g1_attempt_") or criterion in {
+                    "safety_failure",
+                    "brain_absent",
+                    "conversation_isolation_failure",
+                }:
+                    print(f"failed: {criterion}")
         if capabilities is not None:
             states = " ".join(f"{item.name}={item.state}" for item in capabilities.primitives)
             print(f"primitives: {states}")

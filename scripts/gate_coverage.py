@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from esp_contracts.ids import Provider
 from esp_contracts.qualification import QualificationResult, RuntimeProfile
@@ -81,13 +84,25 @@ class Gate1Observation:
     scenario_ids: list[str] = field(default_factory=_str_list)
     stub: bool = False
     same_brain_pair: bool = False
+    conversation_isolation_failures: int = 0
 
 
 def evaluate_gate1(provider: Provider, observation: Gate1Observation) -> QualificationResult:
-    """Pending unless every G1a and G1b scenario was observed on one real shared process."""
+    """Pending unless every G1a and G1b scenario was observed on one real shared process.
+
+    Brain must be present on captured inference, and two conversations must not collapse to one id.
+    Those failures invalidate. Missing live evidence stays pending.
+    """
     missing = [item for item in G1_SCENARIOS if item not in set(observation.scenario_ids)]
     distinct_brains = len(set(observation.brain_hashes))
-    safety_failure = observation.wrong_attributions > 0 or observation.bypass_count > 0
+    safety_reasons: list[str] = []
+    if observation.wrong_attributions > 0 or observation.bypass_count > 0:
+        safety_reasons.append("safety_failure")
+    if observation.conversation_isolation_failures > 0:
+        safety_reasons.append("conversation_isolation_failure")
+    if observation.captured_inference_count > 0 and distinct_brains < 1:
+        safety_reasons.append("brain_absent")
+    safety_failure = bool(safety_reasons)
     complete = (
         not observation.stub
         and not observation.same_brain_pair
@@ -125,15 +140,38 @@ def evaluate_gate1(provider: Provider, observation: Gate1Observation) -> Qualifi
         scenario_ids=list(observation.scenario_ids),
         positive_observation_count=observation.captured_inference_count,
         empty_evidence=not complete and not safety_failure,
-        failed_criteria=(["safety_failure"] if safety_failure else missing),
+        failed_criteria=(safety_reasons if safety_failure else missing),
         essential_absence=safety_failure,
     )
 
 
-def run_gate1(provider: Provider, profile: RuntimeProfile | None = None) -> QualificationResult:
-    """No recorded live bundle is loaded from disk. The candidate stays pending."""
+class Gate1Attempt(Protocol):
+    def __call__(
+        self, provider: Provider, environ: Mapping[str, str]
+    ) -> tuple[Gate1Observation, list[str], str | None]: ...
+
+
+def run_gate1(
+    provider: Provider,
+    profile: RuntimeProfile | None = None,
+    environ: Mapping[str, str] | None = None,
+    attempt: Gate1Attempt | None = None,
+) -> QualificationResult:
+    """Start the Compose-backed Codex and Grok sessions. No empty observation is returned instead."""
     del profile
-    return evaluate_gate1(provider, Gate1Observation())
+    from scripts.qualify import attempt_compose_gate1
+
+    runner = attempt or attempt_compose_gate1
+    observation, notes, digest = runner(provider, os.environ if environ is None else environ)
+    result = evaluate_gate1(provider, observation)
+    update: dict[str, object] = {}
+    if digest is not None:
+        update["environment_digest"] = digest
+    if notes and result.status != "validated":
+        update["failed_criteria"] = [*result.failed_criteria, *notes]
+    if not update:
+        return result
+    return result.model_copy(update=update)
 
 
 @dataclass

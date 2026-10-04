@@ -1,4 +1,7 @@
-"""Live G1a/G1b. This file is not part of the ordinary suite. No bundle is recorded in this tree."""
+"""Live G1a/G1b on the Compose stack.
+
+Full overlap, Brain and isolation are still required. No bundle is recorded in this tree.
+"""
 
 from __future__ import annotations
 
