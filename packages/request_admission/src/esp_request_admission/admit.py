@@ -39,9 +39,9 @@ held and leaves it to the metadata-only reconciler (Task 17), which settles it b
 and never replays input. It releases active and provider capacity; resident capacity stays with the
 mapping (native state may be loaded) until the supervisor confirms an unload.
 
-A matching `current_request_id` is a duplicate whether or not the run is still active, so a retry of a
-finished request cannot submit again. `release_unsubmitted` clears it, because the input provably
-never reached the harness and the visitor may resubmit it manually.
+A matching `current_request_id` is a duplicate while the mapping still records it. `finish_run` clears it
+when the reply is finished, so the conversation can accept another message. `release_unsubmitted` still
+clears it when the input never reached the harness and the visitor may resubmit it manually.
 
 The mapping keeps the request ID while unresolved; a lost commit acknowledgement is resolved by the
 re-read (a committed reservation answers as a duplicate). If even the re-read fails, the answer is

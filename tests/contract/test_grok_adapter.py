@@ -399,6 +399,18 @@ async def test_inspect_reports_running_terminal_and_request_correlation(grok_lab
     assert after_restart.saved_input_available is True
 
 
+async def test_a_finished_reply_without_a_persisted_message_id_is_completed(grok_lab: GrokLab) -> None:
+    grok_lab.peer.omit_persisted_message_id = True
+    await grok_lab.submit(grok_lab.handle_a, grok_lab.message_a, grok_lab.authority_a)
+    await grok_lab.peer.wait_idle()
+    session = grok_lab.handle_a.native_session_id
+    request_id = grok_lab.message_a.client_request_id
+    status = await asyncio.wait_for(grok_lab.adapter.inspect(grok_lab.handle_a, request_id), RPC_TIMEOUT)
+    assert status.status == "completed"
+    assert status.native_work_ref == grok_message_id(session, request_id)
+    assert status.saved_input_available is False
+
+
 async def test_cancel_is_scoped_to_the_named_work_and_leaves_the_peer_running(grok_lab: GrokLab) -> None:
     grok_lab.peer.keep_running.add(grok_lab.handle_a.native_session_id)
     await grok_lab.submit_a()

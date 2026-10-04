@@ -162,6 +162,7 @@ class CapturedGrokPeer:
         self.model_option_override: str | None = None
         self.omit_model_option = False
         self.persist_user_messages = True
+        self.omit_persisted_message_id = False
         self.keep_running: set[str] = set()
         self.reject_next_prompt = False
         self.reject_code = _INVALID_PARAMS
@@ -440,7 +441,7 @@ class CapturedGrokPeer:
             "sessionUpdate": "user_message_chunk",
             "content": {"type": "text", "text": text},
         }
-        if isinstance(message_id, str):
+        if isinstance(message_id, str) and not self.omit_persisted_message_id:
             user_update["messageId"] = message_id
         if self.reject_next_prompt:
             self.reject_next_prompt = False

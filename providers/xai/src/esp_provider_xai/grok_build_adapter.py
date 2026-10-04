@@ -534,11 +534,12 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
         terminal = terminals.get(message_id)
         if running is not None and running.message_id == message_id:
             status: NativeWorkStatus = "running"
+        elif terminal is not None and terminal.status is not None:
+            # This build persists the user chunk and omits messageId. The prompt answer is still terminal.
+            status = terminal.status
         elif message_id not in saved:
             idle: NativeWorkStatus = "running" if running is not None else "idle"
             return NativeStatus(status=idle, request_id=request_id, saved_input_available=False)
-        elif terminal is not None and terminal.status is not None:
-            status = terminal.status
         else:
             status = "unknown"
         return NativeStatus(

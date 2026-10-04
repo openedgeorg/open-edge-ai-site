@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from esp_execution_bindings.binding import AuthorizationError, verify_binding
-from esp_request_admission.admit import RUN_DEADLINE_SECONDS, DuplicateActive
+from esp_request_admission.admit import RUN_DEADLINE_SECONDS, Admitted
 from esp_runtime_harconses.lifecycle import SessionLifecycle
 from esp_runtime_harconses.supervision import RunSupervision
 from scripts.migrate import migrate
@@ -142,7 +142,7 @@ async def test_a_restarted_consumer_reconciles_terminal_native_status(lifecycle_
     assert row["guard"] is None
     assert row["active_agent_run_id"] is None
     assert row["runtime_state"] == "warm_idle"
-    assert row["current_request_id"] == "life-restart"
+    assert row["current_request_id"] is None
     assert "resident" in slots
     assert "active" not in slots
     assert "provider" not in slots
@@ -171,7 +171,7 @@ async def test_a_failed_terminal_write_is_retried_after_the_database_recovers(li
     assert released["guard"] is None
     assert released["active_agent_run_id"] is None
     assert released["runtime_state"] == "warm_idle"
-    assert released["current_request_id"] == "life-lock"
+    assert released["current_request_id"] is None
     assert PRIVATE not in await lifecycle_lab.metadata_blob()
 
 
@@ -247,7 +247,7 @@ async def test_finish_run_clears_only_its_own_epoch_and_keeps_residency(lifecycl
     assert row["guard"] is None
     assert row["active_agent_run_id"] is None
     assert row["current_native_work_ref"] is None
-    assert row["current_request_id"] == "life-finish"
+    assert row["current_request_id"] is None
     assert row["owner_lease_expires_at"] is None
     assert row["active_agent_run_expires_at"] is None
     assert row["cancel_requested_at"] is None
@@ -256,8 +256,6 @@ async def test_finish_run_clears_only_its_own_epoch_and_keeps_residency(lifecycl
     assert "active" not in slots
     assert "provider" not in slots
     assert await lifecycle_lab.lifecycle().finish_run(binding, accepted.work) is False
-    duplicate = await lifecycle_lab.admission.admit(conv, "life-finish")
-    assert isinstance(duplicate, DuplicateActive)
     second = await lifecycle_lab._accepted(conv, "life-finish-next")
     current = await lifecycle_lab.run_binding(conv)
     stale = current.model_copy(
@@ -271,6 +269,21 @@ async def test_finish_run_clears_only_its_own_epoch_and_keeps_residency(lifecycl
     assert still["runtime_state"] == "running"
     assert "active" in await lifecycle_lab.run_slots(str(still["id"]))
     assert isinstance(lifecycle_lab.lifecycle(), SessionLifecycle)
+
+
+async def test_a_finished_reply_releases_the_running_request(lifecycle_lab: SubmissionLab) -> None:
+    conv = await lifecycle_lab.conversation()
+    accepted = await lifecycle_lab._accepted(conv, "life-release")
+    lifecycle_lab.process.finish(accepted.work.native_session_id, "life-release", announce=False)
+    await lifecycle_lab.consume()
+    row = await lifecycle_lab.coordination(conv)
+    assert row["runtime_state"] == "warm_idle"
+    assert row["runtime_state"] != "running"
+    assert row["current_request_id"] is None
+    assert row["active_agent_run_id"] is None
+    assert row["guard"] is None
+    result = await lifecycle_lab.admission.admit(conv, "life-release-next")
+    assert isinstance(result, Admitted)
 
 
 async def test_busy_sessions_stay_resident_and_a_failed_unload_keeps_the_peer(lifecycle_lab: SubmissionLab) -> None:

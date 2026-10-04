@@ -144,6 +144,7 @@ class SessionLifecycle:
                     """
                     UPDATE provider_session SET
                         active_agent_run_id = NULL,
+                        current_request_id = NULL,
                         current_native_work_ref = NULL,
                         owner_lease_expires_at = NULL,
                         active_agent_run_expires_at = NULL,
