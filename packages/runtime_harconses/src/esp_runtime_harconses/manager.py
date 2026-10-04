@@ -230,6 +230,8 @@ class SessionManager:
         self._releaser = releaser
         self._limits = limits or SessionLimits()
         self._telemetry: OperationalTelemetry = telemetry or _NoTelemetry()
+        # Native ids with an in-place read in flight. Eviction and drain skip them; no row lock is held.
+        self.resident_reads: set[str] = set()
 
     @property
     def limits(self) -> SessionLimits:
@@ -519,9 +521,16 @@ class SessionManager:
                 # Resident on an instance that is not ready: never loaded by a second process meanwhile.
                 raise NativeReadUnavailable("resident_instance_unavailable")
             handle = _handle_from_row(row, row["harness_instance_id"], row["runtime_incarnation_id"])
-            # No lock is held during this read. Task 17's unload and eviction must keep the session from
-            # being placed and resumed elsewhere while it may still run (see the module hand-off).
-            return await self._bounded_read(lambda: op(adapter, handle))
+            # No lock is held during this read. The id stays in `resident_reads` so unload and eviction
+            # leave the session on this process instead of placing it elsewhere while the read runs.
+            native_session_id = meta.native_session_id
+            if native_session_id is not None:
+                self.resident_reads.add(native_session_id)
+            try:
+                return await self._bounded_read(lambda: op(adapter, handle))
+            finally:
+                if native_session_id is not None:
+                    self.resident_reads.discard(native_session_id)
         if row["runtime_state"] != "unloaded":
             raise NativeReadUnavailable("session_not_readable")
         return await self._read_reserved(meta, adapter, op)

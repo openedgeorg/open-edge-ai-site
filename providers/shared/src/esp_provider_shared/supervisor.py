@@ -139,6 +139,10 @@ class Supervisor:
     def attached_incarnation(self, storage_unit_id: str) -> str | None:
         return self._attached.get(storage_unit_id)
 
+    async def consume_independent(self) -> None:
+        """Control reconciliation is not an HTTP request and does not admit a caller. `call` does not use this."""
+        return None
+
     def _admit(self, caller: ControlCaller, method: str) -> None:
         if not caller.mtls_authenticated or caller.role == "anonymous":
             raise UnauthorizedControl("unauthorized")

@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse, Response
 from esp_api.auth import SubjectIdentity, identity_router
 from esp_api.boundary import NO_STORE, ApiError, error_response
 from esp_api.config import ApiSettings, ConfigurationError, bind_candidate_policy
+from esp_api.routes.cancel import router as cancel_router
 from esp_api.routes.conversations import router as conversations_router
 from esp_api.routes.history import router as history_router
 from esp_api.routes.messages import drain_submissions
@@ -49,7 +50,9 @@ from esp_execution_bindings.binding import TokenSigner
 from esp_provider_router.router import NativeRuntimeAdapter, ProviderRouter
 from esp_request_admission.admit import AdmissionController
 from esp_request_admission.rate_limits import CounterStoreUnavailable, RateDecision, RatePolicy
+from esp_runtime_harconses.lifecycle import SessionLifecycle
 from esp_runtime_harconses.manager import SessionLimits, SessionManager
+from esp_runtime_harconses.supervision import RunSupervision
 
 __all__ = [
     "ApiDependencies",
@@ -149,7 +152,7 @@ def build_api(deps: ApiDependencies) -> FastAPI:
         rate_policy=deps.rate_policy if deps.rate_policy is not None else _UNCONFIGURED_RATE_POLICY,
     )
     app.state.admission = admission
-    app.state.sessions = SessionManager(
+    sessions = SessionManager(
         deps.db,
         ProviderRouter.for_providers(deps.adapters),
         deps.signer,
@@ -157,6 +160,10 @@ def build_api(deps: ApiDependencies) -> FastAPI:
         limits=deps.session_limits,
         telemetry=deps.telemetry,
     )
+    app.state.sessions = sessions
+    lifecycle = SessionLifecycle(deps.db, deps.adapters, deps.signer, sessions.resident_reads)
+    app.state.lifecycle = lifecycle
+    app.state.supervision = RunSupervision(lifecycle)
     submissions: set[asyncio.Task[SubmissionResult]] = set()
     app.state.submissions = submissions
 
@@ -175,6 +182,7 @@ def build_api(deps: ApiDependencies) -> FastAPI:
     app.include_router(messages_router)
     app.include_router(status_router)
     app.include_router(history_router)
+    app.include_router(cancel_router)
 
     @app.get("/livez")
     async def livez() -> JSONResponse:
