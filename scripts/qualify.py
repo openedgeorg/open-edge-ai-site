@@ -3229,14 +3229,19 @@ def main(argv: list[str] | None = None) -> int:
             harness_build = grok.harness_build
             if grok.config_digest is not None:
                 configuration_digest = f"sha256:{grok.config_digest}"
-    report = _report_for(
-        args.command,
-        provider,
-        assume_essential_absent=args.assume_essential_absent,
-        capabilities=capabilities,
-        harness_build=harness_build,
-        configuration_digest=configuration_digest,
-    )
+    if args.command == "g1":
+        from scripts.gate_coverage import run_gate1
+
+        report = run_gate1(provider, None)
+    else:
+        report = _report_for(
+            args.command,
+            provider,
+            assume_essential_absent=args.assume_essential_absent,
+            capabilities=capabilities,
+            harness_build=harness_build,
+            configuration_digest=configuration_digest,
+        )
     classification = classify_qualification(report)
     payload = report.model_dump(mode="json")
     payload["classification"] = classification
