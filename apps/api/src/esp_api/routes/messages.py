@@ -50,6 +50,7 @@ from esp_contracts.ids import new_id
 from esp_contracts.runtime import Accepted, NotSubmitted, SubmissionResult
 from esp_espcon.conversation import ConversationNotFound
 from esp_event_protocol.chat_event import EventEnvelope, SessionStatus
+from esp_event_protocol.normalize import encode_sse
 from esp_request_admission.admit import AdmissionController, Admitted, DuplicateActive, Rejected
 from esp_runtime_harconses.manager import NativeReadUnavailable, SessionManager
 
@@ -244,7 +245,7 @@ def _accepted_stream(admitted: Admitted, accepted: Accepted) -> StreamingRespons
             "event": SessionStatus(type="session_status", status="running").model_dump(),
         }
     )
-    frame = f"event: session_status\ndata: {envelope.model_dump_json(by_alias=True)}\n\n".encode()
+    frame = encode_sse(envelope)
 
     async def body() -> AsyncIterator[bytes]:
         yield frame

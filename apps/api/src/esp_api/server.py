@@ -36,6 +36,8 @@ from esp_api.boundary import NO_STORE, ApiError, error_response
 from esp_api.config import ApiSettings, ConfigurationError, bind_candidate_policy
 from esp_api.routes.cancel import router as cancel_router
 from esp_api.routes.conversations import router as conversations_router
+from esp_api.routes.events import EventAttachments
+from esp_api.routes.events import router as events_router
 from esp_api.routes.history import router as history_router
 from esp_api.routes.messages import drain_submissions
 from esp_api.routes.messages import router as messages_router
@@ -164,6 +166,7 @@ def build_api(deps: ApiDependencies) -> FastAPI:
     lifecycle = SessionLifecycle(deps.db, deps.adapters, deps.signer, sessions.resident_reads)
     app.state.lifecycle = lifecycle
     app.state.supervision = RunSupervision(lifecycle)
+    app.state.events = EventAttachments(deps.db, deps.adapters)
     submissions: set[asyncio.Task[SubmissionResult]] = set()
     app.state.submissions = submissions
 
@@ -183,6 +186,7 @@ def build_api(deps: ApiDependencies) -> FastAPI:
     app.include_router(status_router)
     app.include_router(history_router)
     app.include_router(cancel_router)
+    app.include_router(events_router)
 
     @app.get("/livez")
     async def livez() -> JSONResponse:
