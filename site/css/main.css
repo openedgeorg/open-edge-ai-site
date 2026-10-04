@@ -139,8 +139,50 @@ body {
     .hero h1 {
         font-size: 2rem;
     }
-    
+
     .nav-links {
         gap: var(--spacing-unit);
+    }
+}
+
+.composer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-unit);
+    max-width: 40rem;
+}
+
+.composer textarea,
+.composer select,
+.composer button {
+    font: inherit;
+}
+
+.composer button:focus-visible,
+.composer textarea:focus-visible,
+.composer select:focus-visible {
+    outline: 3px solid var(--color-accent);
+    outline-offset: 2px;
+}
+
+.composer-actions {
+    display: flex;
+    gap: var(--spacing-unit);
+}
+
+@media (max-width: 640px) {
+    .composer-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html {
+        scroll-behavior: auto;
+    }
+
+    .nav-links a {
+        transition: none;
     }
 }

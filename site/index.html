@@ -47,6 +47,31 @@
                 <p>Transparent, auditable records for every settlement transaction.</p>
             </div>
         </section>
+
+        <section id="conversation" class="section section-alt">
+            <div class="container">
+                <h2>Conversation</h2>
+                <p>The sections above stay available without JavaScript. This conversation is a development client and is not a Gate 1 claim.</p>
+                <noscript>
+                    <p>Conversation controls need JavaScript. The rest of this page remains available.</p>
+                </noscript>
+                <form id="composer" class="composer">
+                    <label for="provider">Provider for a new conversation</label>
+                    <select id="provider" name="provider">
+                        <option value="openai">OpenAI</option>
+                        <option value="xai">xAI</option>
+                    </select>
+                    <label for="draft">Message</label>
+                    <textarea id="draft" name="draft" rows="4"></textarea>
+                    <div class="composer-actions">
+                        <button type="submit" id="send">Send</button>
+                        <button type="button" id="cancel" disabled>Cancel</button>
+                    </div>
+                    <p id="phase" role="status" aria-live="polite"></p>
+                    <ol id="history" aria-label="History"></ol>
+                </form>
+            </div>
+        </section>
     </main>
 
     <footer class="site-footer">
@@ -54,5 +79,6 @@
             <p>&copy; 2024 Open Edge AI. All rights reserved.</p>
         </div>
     </footer>
+    <script type="module" src="js/app.js"></script>
 </body>
 </html>
