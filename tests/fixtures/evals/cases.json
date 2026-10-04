@@ -1,0 +1,12 @@
+{
+  "notice": "Synthetic skeleton. These cases are not approved domain content and cannot be published.",
+  "cases": [
+    {"case_id": "conceptual-1", "category": "conceptual", "question": "synthetic", "required_concepts": [], "required_sources": [], "retrieval_expected": false, "prohibited_claims": [], "rubric_ref": "unreviewed", "unavailable_value": false, "requires_source": false, "approved_domain_content": false},
+    {"case_id": "counterfactual-1", "category": "counterfactual", "question": "synthetic", "required_concepts": [], "required_sources": [], "retrieval_expected": false, "prohibited_claims": [], "rubric_ref": "unreviewed", "unavailable_value": false, "requires_source": false, "approved_domain_content": false},
+    {"case_id": "misconception-1", "category": "misconception", "question": "synthetic", "required_concepts": [], "required_sources": [], "retrieval_expected": false, "prohibited_claims": [], "rubric_ref": "unreviewed", "unavailable_value": false, "requires_source": false, "approved_domain_content": false},
+    {"case_id": "edge-1", "category": "edge", "question": "synthetic", "required_concepts": [], "required_sources": [], "retrieval_expected": false, "prohibited_claims": [], "rubric_ref": "unreviewed", "unavailable_value": false, "requires_source": false, "approved_domain_content": false},
+    {"case_id": "version-1", "category": "version_specific", "question": "synthetic", "required_concepts": [], "required_sources": [], "retrieval_expected": false, "prohibited_claims": [], "rubric_ref": "unreviewed", "unavailable_value": false, "requires_source": false, "approved_domain_content": false},
+    {"case_id": "factual-1", "category": "exact_factual", "question": "synthetic", "required_concepts": [], "required_sources": [], "retrieval_expected": false, "prohibited_claims": [], "rubric_ref": "unreviewed", "unavailable_value": true, "requires_source": true, "approved_domain_content": false},
+    {"case_id": "retrieval-1", "category": "retrieval", "question": "synthetic", "required_concepts": [], "required_sources": [], "retrieval_expected": true, "prohibited_claims": [], "rubric_ref": "unreviewed", "unavailable_value": false, "requires_source": true, "approved_domain_content": false}
+  ]
+}
