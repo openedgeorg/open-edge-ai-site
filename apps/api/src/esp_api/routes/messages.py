@@ -51,6 +51,7 @@ from esp_contracts.runtime import Accepted, NotSubmitted, SubmissionResult
 from esp_espcon.conversation import ConversationNotFound
 from esp_event_protocol.chat_event import EventEnvelope, SessionStatus
 from esp_event_protocol.normalize import encode_sse
+from esp_observability.traces import ChatTrace, record_chat_trace
 from esp_request_admission.admit import AdmissionController, Admitted, DuplicateActive, Rejected
 from esp_runtime_harconses.manager import NativeReadUnavailable, SessionManager
 
@@ -106,6 +107,28 @@ def _emit(request: Request, name: str, attributes: Mapping[str, str]) -> None:
     request.app.state.telemetry.emit(name, attributes)
 
 
+def _trace_chat(
+    conversation_id: str,
+    request_id: str,
+    outcome: Literal["admitted", "duplicate_active", "rejected"],
+    http_status: int,
+    rejection: str | None,
+) -> None:
+    """Admission correlation only. The visitor message is not a trace field."""
+    try:
+        record_chat_trace(
+            ChatTrace(
+                request_id=request_id,
+                conversation_id=conversation_id,
+                admission_outcome=outcome,
+                rejection_reason=rejection,
+                http_status=http_status,
+            )
+        )
+    except Exception:
+        return
+
+
 @router.post("/conversations/{conversation_id}/messages")
 async def post_message(request: Request, conversation_id: str) -> Response:
     require_same_origin(request)
@@ -121,9 +144,11 @@ async def post_message(request: Request, conversation_id: str) -> Response:
     admitted = await admission_of(request).try_admit(subject.subject_id, path_id, command.client_request_id)
     if isinstance(admitted, Rejected):
         _emit(request, "message.rejected", {"conversation_id": path_id, "code": admitted.code})
+        _trace_chat(path_id, command.client_request_id, "rejected", admitted.http_status, admitted.code)
         return _rejection(admitted)
     if isinstance(admitted, DuplicateActive):
         _emit(request, "message.duplicate", {"conversation_id": path_id})
+        _trace_chat(path_id, command.client_request_id, "duplicate_active", 200, None)
         return await _duplicate(request, subject.subject_id, path_id, command.client_request_id)
 
     try:
@@ -134,6 +159,7 @@ async def post_message(request: Request, conversation_id: str) -> Response:
         return _unconfirmed(path_id, command.client_request_id)
     if isinstance(result, Accepted):
         _emit(request, "message.accepted", {"conversation_id": path_id, "native_work_ref": result.work.native_work_ref})
+        _trace_chat(path_id, command.client_request_id, "admitted", 200, None)
         return _accepted_stream(admitted, result)
     if isinstance(result, NotSubmitted):
         _emit(request, "message.not_submitted", {"conversation_id": path_id, "code": result.code})

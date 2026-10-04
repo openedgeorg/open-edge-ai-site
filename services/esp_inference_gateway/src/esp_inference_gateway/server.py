@@ -28,6 +28,7 @@ from esp_inference_gateway.evidence_recorder import (
 from esp_inference_gateway.request_adapter import RequestAdapter
 from esp_inference_gateway.response_relay import relay_response
 from esp_inference_gateway.transport import ApprovedRoute, FencedTransport, TransportError
+from esp_observability.traces import dispatch_observation, inference_trace_from_binding
 
 __all__ = ["GatewayDependencies", "build_gateway", "dispatch_inference"]
 
@@ -97,7 +98,22 @@ async def dispatch_inference(
         _mark(deps, "dispatch")
         return ticket
 
-    return await with_dispatch_authority(binding, start, db=deps.db)
+    ticket = await with_dispatch_authority(binding, start, db=deps.db)
+    # Evidence is already durable. A telemetry failure must not turn this into a blocked dispatch.
+    try:
+        dispatch_observation(
+            evidence_persisted=True,
+            trace=inference_trace_from_binding(
+                binding,
+                receipt.inference_id,
+                request_body_sha256=receipt.request_sha256,
+                request_body_bytes=len(verified.body),
+                context_evidence_ref=receipt.proof_ref,
+            ),
+        )
+    except Exception:
+        return ticket
+    return ticket
 
 
 async def _proxy(deps: GatewayDependencies, request: Request, provider: str) -> StreamingResponse:

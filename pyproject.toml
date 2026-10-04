@@ -62,6 +62,7 @@ members = [
     "packages/event_protocol",
     "packages/execution_bindings",
     "packages/object_store",
+    "packages/observability",
     "packages/provider_router",
     "packages/request_admission",
     "packages/runtime_harconses",

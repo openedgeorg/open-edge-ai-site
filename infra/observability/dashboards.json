@@ -1,0 +1,15 @@
+{
+  "title": "ESP correctness",
+  "panels": [
+    {"id": "brain_verification_success_rate", "target": 1.0, "labels": ["provider"]},
+    {"id": "unobservable_dispatched_inference_count", "target": 0, "labels": ["provider"]},
+    {"id": "brain_mismatch_total", "labels": ["provider"]},
+    {"id": "provider_latency_ms", "labels": ["provider"]},
+    {"id": "time_to_first_token_ms", "labels": ["provider"]},
+    {"id": "retrieval_calls_total", "labels": ["provider"]},
+    {"id": "tool_errors_total", "labels": ["provider"]},
+    {"id": "admission_rejections_total", "labels": ["provider", "code"]},
+    {"id": "recovery_groups_total", "labels": ["provider", "mode"]}
+  ],
+  "note": "Conversation, run, session and inference ids belong in protected traces, not these labels."
+}

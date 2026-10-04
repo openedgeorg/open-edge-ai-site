@@ -18,6 +18,7 @@ members = [
     "esp-inference-gateway",
     "esp-mcp",
     "esp-object-store",
+    "esp-observability",
     "esp-provider-openai",
     "esp-provider-router",
     "esp-provider-shared",
@@ -253,6 +254,7 @@ dependencies = [
     { name = "esp-espcon" },
     { name = "esp-event-protocol" },
     { name = "esp-execution-bindings" },
+    { name = "esp-observability" },
     { name = "esp-provider-router" },
     { name = "esp-request-admission" },
     { name = "esp-runtime-harconses" },
@@ -268,6 +270,7 @@ requires-dist = [
     { name = "esp-espcon", editable = "packages/espcon" },
     { name = "esp-event-protocol", editable = "packages/event_protocol" },
     { name = "esp-execution-bindings", editable = "packages/execution_bindings" },
+    { name = "esp-observability", editable = "packages/observability" },
     { name = "esp-provider-router", editable = "packages/provider_router" },
     { name = "esp-request-admission", editable = "packages/request_admission" },
     { name = "esp-runtime-harconses", editable = "packages/runtime_harconses" },
@@ -370,6 +373,7 @@ dependencies = [
     { name = "esp-espcon" },
     { name = "esp-execution-bindings" },
     { name = "esp-object-store" },
+    { name = "esp-observability" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -382,6 +386,7 @@ requires-dist = [
     { name = "esp-espcon", editable = "packages/espcon" },
     { name = "esp-execution-bindings", editable = "packages/execution_bindings" },
     { name = "esp-object-store", editable = "packages/object_store" },
+    { name = "esp-observability", editable = "packages/observability" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pydantic", specifier = ">=2.10" },
@@ -397,6 +402,7 @@ dependencies = [
     { name = "esp-embeddings" },
     { name = "esp-execution-bindings" },
     { name = "esp-object-store" },
+    { name = "esp-observability" },
     { name = "fastapi" },
     { name = "mcp" },
     { name = "pydantic" },
@@ -409,6 +415,7 @@ requires-dist = [
     { name = "esp-embeddings", editable = "services/esp_embeddings" },
     { name = "esp-execution-bindings", editable = "packages/execution_bindings" },
     { name = "esp-object-store", editable = "packages/object_store" },
+    { name = "esp-observability", editable = "packages/observability" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "mcp", specifier = ">=1.30" },
     { name = "pydantic", specifier = ">=2.10" },
@@ -424,6 +431,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "esp-contracts", editable = "packages/contracts" }]
+
+[[package]]
+name = "esp-observability"
+version = "0.1.0"
+source = { editable = "packages/observability" }
+dependencies = [
+    { name = "esp-contracts" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "esp-contracts", editable = "packages/contracts" },
+    { name = "pydantic", specifier = ">=2.10" },
+]
 
 [[package]]
 name = "esp-provider-openai"
@@ -459,12 +481,14 @@ version = "0.1.0"
 source = { editable = "providers/shared" }
 dependencies = [
     { name = "esp-contracts" },
+    { name = "esp-observability" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "esp-contracts", editable = "packages/contracts" },
+    { name = "esp-observability", editable = "packages/observability" },
     { name = "pydantic", specifier = ">=2.10" },
 ]
 
@@ -520,6 +544,7 @@ dependencies = [
     { name = "esp-espcon" },
     { name = "esp-event-protocol" },
     { name = "esp-execution-bindings" },
+    { name = "esp-observability" },
     { name = "esp-provider-router" },
     { name = "esp-provider-shared" },
     { name = "esp-request-admission" },
@@ -534,6 +559,7 @@ requires-dist = [
     { name = "esp-espcon", editable = "packages/espcon" },
     { name = "esp-event-protocol", editable = "packages/event_protocol" },
     { name = "esp-execution-bindings", editable = "packages/execution_bindings" },
+    { name = "esp-observability", editable = "packages/observability" },
     { name = "esp-provider-router", editable = "packages/provider_router" },
     { name = "esp-provider-shared", editable = "providers/shared" },
     { name = "esp-request-admission", editable = "packages/request_admission" },

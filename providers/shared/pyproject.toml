@@ -3,10 +3,11 @@ name = "esp-provider-shared"
 version = "0.1.0"
 description = "Shared native harness RPC client and operation transport context."
 requires-python = ">=3.12"
-dependencies = ["esp-contracts", "pydantic>=2.10"]
+dependencies = ["esp-contracts", "esp-observability", "pydantic>=2.10"]
 
 [tool.uv.sources]
 esp-contracts = { workspace = true }
+esp-observability = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

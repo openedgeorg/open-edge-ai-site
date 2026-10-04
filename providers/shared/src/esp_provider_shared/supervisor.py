@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from esp_contracts.api import SubmitMessage
 from esp_contracts.ids import Sha256
 from esp_contracts.runtime import OperationAuthority, SessionHandle, SessionReservation, WorkRef
+from esp_observability.traces import RecoveryTrace, record_recovery_trace
 from esp_provider_shared.adapter import HarnessAdapter
 from esp_provider_shared.storage_fence import FenceReceipt, StorageFence
 
@@ -57,6 +58,14 @@ class TrustAnchor(BaseModel):
     cert_fingerprint: Sha256
 
 
+def publish_recovery(trace: RecoveryTrace) -> None:
+    """Record a recovery observation. A telemetry outage does not change the runtime transition."""
+    try:
+        record_recovery_trace(trace)
+    except Exception:
+        return
+
+
 def authenticate_caller(presented_fingerprint: str | None, anchors: Sequence[TrustAnchor]) -> ControlCaller:
     """Missing, non-hex, or unknown fingerprints are anonymous and unauthenticated."""
     anonymous = ControlCaller(peer_id="", role="anonymous", mtls_authenticated=False)
@@ -85,6 +94,7 @@ class Supervisor:
         self._fence = fence
         self._instance_id = instance_id
         self._attached: dict[str, str] = {}
+        self._recovery_notes: list[RecoveryTrace] = []
 
     def workload_material(self) -> dict[str, str]:
         return {"instance_id": self._instance_id}
@@ -141,7 +151,13 @@ class Supervisor:
 
     async def consume_independent(self) -> None:
         """Control reconciliation is not an HTTP request and does not admit a caller. `call` does not use this."""
-        return None
+        pending = self._recovery_notes
+        self._recovery_notes = []
+        for trace in pending:
+            publish_recovery(trace)
+
+    def queue_recovery(self, trace: RecoveryTrace) -> None:
+        self._recovery_notes.append(trace)
 
     def _admit(self, caller: ControlCaller, method: str) -> None:
         if not caller.mtls_authenticated or caller.role == "anonymous":

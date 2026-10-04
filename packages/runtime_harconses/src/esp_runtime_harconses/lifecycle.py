@@ -35,7 +35,9 @@ from esp_db.client import Db, Transaction, transaction
 from esp_espcon.conversation import ConversationNotFound
 from esp_execution_bindings.authorize import read_authority
 from esp_execution_bindings.binding import AuthorizationError, TokenSigner, mint_operation_authority
+from esp_observability.traces import RecoveryTrace
 from esp_provider_router.router import NativeRuntimeAdapter, ProviderRouter
+from esp_provider_shared.supervisor import publish_recovery
 from esp_request_admission.admit import LEASE_SECONDS
 from esp_runtime_placement.capacity import release_run_slots
 
@@ -502,6 +504,15 @@ class SessionLifecycle:
                 """,
                 (RECOVERY_DEADLINE_SECONDS, code, mapping_id, epoch, run_id),
             )
+        publish_recovery(
+            RecoveryTrace(
+                active_agent_run_id=run_id,
+                ownership_epoch=epoch,
+                recovery_mode="cancel_unconfirmed",
+                recovery_reason=code,
+                session_state="cancelling",
+            )
+        )
 
     async def _unload_resident(self, row: Mapping[str, object]) -> bool:
         outcome = await self._native_unload(row)
@@ -553,6 +564,16 @@ class SessionLifecycle:
                 """,
                 (RECOVERY_DEADLINE_SECONDS, code, row["id"], row["ownership_epoch"]),
             )
+        native_id = row.get("native_session_id")
+        publish_recovery(
+            RecoveryTrace(
+                native_session_id=native_id if isinstance(native_id, str) else None,
+                ownership_epoch=_as_int(row.get("ownership_epoch")),
+                recovery_mode="unload_unconfirmed",
+                recovery_reason=code,
+                session_state="recovering",
+            )
+        )
 
     async def _native_cancel(self, row: Mapping[str, object]) -> Literal["requested", "stopped", "unknown"]:
         handle = _as_handle(row)

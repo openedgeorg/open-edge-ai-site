@@ -1,0 +1,21 @@
+groups:
+  - name: esp-correctness
+    rules:
+      - alert: BrainVerificationBelowTarget
+        expr: brain_verification_success_rate < 1
+        labels:
+          severity: page
+        annotations:
+          summary: A dispatched inference was not brain-verified.
+      - alert: UnobservableDispatch
+        expr: unobservable_dispatched_inference_count > 0
+        labels:
+          severity: page
+        annotations:
+          summary: Egress was observed without matching evidence.
+      - alert: EvidenceAuditPending
+        expr: evidence_audit_coverage_pending == 1
+        labels:
+          severity: ticket
+        annotations:
+          summary: Provider usage reconciliation is missing, so coverage is pending.

@@ -42,6 +42,8 @@ from esp_mcp.resolve import (
     required_str,
 )
 from esp_object_store.store import ObjectStore
+from esp_observability.redaction import redact_log
+from esp_observability.traces import note_retrieval
 
 RRF_K = 60
 CANDIDATE_LIMIT = 20
@@ -366,6 +368,7 @@ class KnowledgeCorpus:
         scope: KnowledgeScope,
         filters: SearchFilters | None = None,
     ) -> KnowledgeResult[SearchResults]:
+        note_retrieval(redact_log({"query": query}))
         try:
             return await self._search(query, scope, filters)
         except (psycopg.OperationalError, ReleaseError):

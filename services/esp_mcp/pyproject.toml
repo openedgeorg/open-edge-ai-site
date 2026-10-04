@@ -9,6 +9,7 @@ dependencies = [
     "esp-embeddings",
     "esp-execution-bindings",
     "esp-object-store",
+    "esp-observability",
     "fastapi>=0.115",
     "mcp>=1.30",
     "pydantic>=2.10",
@@ -20,6 +21,7 @@ esp-db = { workspace = true }
 esp-embeddings = { workspace = true }
 esp-execution-bindings = { workspace = true }
 esp-object-store = { workspace = true }
+esp-observability = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

@@ -9,6 +9,7 @@ dependencies = [
     "esp-espcon",
     "esp-event-protocol",
     "esp-execution-bindings",
+    "esp-observability",
     "esp-provider-router",
     "esp-provider-shared",
     "esp-request-admission",
@@ -22,6 +23,7 @@ esp-db = { workspace = true }
 esp-espcon = { workspace = true }
 esp-event-protocol = { workspace = true }
 esp-execution-bindings = { workspace = true }
+esp-observability = { workspace = true }
 esp-provider-router = { workspace = true }
 esp-provider-shared = { workspace = true }
 esp-request-admission = { workspace = true }
