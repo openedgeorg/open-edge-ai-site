@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 from esp_contracts.ids import Provider
 from esp_contracts.qualification import QualificationResult, RuntimeProfile
 
+
+def _str_list() -> list[str]:
+    return []
+
 # Kept aligned with scripts.qualify.REQUIRED_G1_SCENARIOS. The unit test fails if they diverge.
 G1_SCENARIOS: tuple[str, ...] = (
     "g1a_shared_main_process",
@@ -67,14 +71,14 @@ class Gate1Observation:
 
     actual_main_process_count: int = 0
     max_overlapping_native_sessions: int = 0
-    brain_versions: list[str] = field(default_factory=list)
-    brain_hashes: list[str] = field(default_factory=list)
-    behavior_versions: list[str] = field(default_factory=list)
+    brain_versions: list[str] = field(default_factory=_str_list)
+    brain_hashes: list[str] = field(default_factory=_str_list)
+    behavior_versions: list[str] = field(default_factory=_str_list)
     captured_inference_count: int = 0
     compaction_inference_count: int = 0
     wrong_attributions: int = 0
     bypass_count: int = 0
-    scenario_ids: list[str] = field(default_factory=list)
+    scenario_ids: list[str] = field(default_factory=_str_list)
     stub: bool = False
     same_brain_pair: bool = False
 
@@ -130,3 +134,85 @@ def run_gate1(provider: Provider, profile: RuntimeProfile | None = None) -> Qual
     """No recorded live bundle is loaded from disk. The candidate stays pending."""
     del profile
     return evaluate_gate1(provider, Gate1Observation())
+
+
+@dataclass
+class Gate2Observation:
+    """In-memory G2 coverage. It is not a host-loss evidence bundle."""
+
+    active_peers_before_fault: int = 0
+    idle_peers_before_fault: int = 0
+    all_affected_mappings_inventoried: bool = False
+    native_ids_unchanged: bool = False
+    positive_fence_receipt: bool = False
+    maximum_volume_writers: int = 0
+    completed_regenerations: int = 0
+    cancelled_restarts: int = 0
+    stale_mutations: int = 0
+    cross_visitor_leaks: int = 0
+    reclaimed_memory_bytes: int | None = None
+    skipped_host_fault: bool = False
+    single_session_resume: bool = False
+    scenario_ids: list[str] = field(default_factory=_str_list)
+    stub: bool = False
+
+
+def evaluate_gate2(provider: Provider, observation: Gate2Observation) -> QualificationResult:
+    """Pending unless every G2 fault was measured on a real shared process with surviving storage."""
+    missing = [item for item in G2_SCENARIOS if item not in set(observation.scenario_ids)]
+    safety_failure = (
+        observation.stale_mutations > 0
+        or observation.cross_visitor_leaks > 0
+        or observation.completed_regenerations > 0
+        or observation.cancelled_restarts > 0
+    )
+    measured_reclaim = observation.reclaimed_memory_bytes is not None and observation.reclaimed_memory_bytes >= 0
+    complete = (
+        not observation.stub
+        and not observation.skipped_host_fault
+        and not observation.single_session_resume
+        and not safety_failure
+        and measured_reclaim
+        and observation.active_peers_before_fault >= 2
+        and observation.idle_peers_before_fault >= 1
+        and observation.all_affected_mappings_inventoried
+        and observation.native_ids_unchanged
+        and observation.positive_fence_receipt
+        and observation.maximum_volume_writers == 1
+        and not missing
+    )
+    if safety_failure:
+        status = "invalidated"
+    elif complete:
+        status = "validated"
+    else:
+        status = "pending"
+    failed = ["safety_failure"] if safety_failure else list(missing)
+    if not safety_failure and not complete:
+        if observation.single_session_resume:
+            failed.append("single_session_resume")
+        if observation.skipped_host_fault:
+            failed.append("skipped_host_fault")
+        if not measured_reclaim:
+            failed.append("missing_reclaimed_memory")
+    return QualificationResult(
+        provider=provider,
+        gate="g2",
+        status=status,
+        g2_complete=complete,
+        functional_subgate_pass=complete,
+        actual_main_process_count=1 if complete else 0,
+        max_overlapping_native_sessions=observation.active_peers_before_fault,
+        positive_observation_count=0,
+        scenario_ids=list(observation.scenario_ids),
+        empty_evidence=not complete and not safety_failure,
+        failed_criteria=failed,
+        essential_absence=safety_failure,
+        skipped=observation.skipped_host_fault,
+    )
+
+
+def run_gate2(provider: Provider, profile: RuntimeProfile | None = None) -> QualificationResult:
+    """No recorded host-loss bundle is loaded from disk. The candidate stays pending."""
+    del profile
+    return evaluate_gate2(provider, Gate2Observation())

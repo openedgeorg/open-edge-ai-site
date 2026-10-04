@@ -108,6 +108,23 @@ REQUIRED_G1_SCENARIOS: tuple[str, ...] = (
     "g1b_peer_safe_unload",
 )
 
+REQUIRED_G2_SCENARIOS: tuple[str, ...] = (
+    "g2_shared_process_kill",
+    "g2_host_loss_storage_survives",
+    "g2_control_partition",
+    "g2_before_submit",
+    "g2_lost_ack",
+    "g2_complete_before_sql_clear",
+    "g2_tools_and_compaction",
+    "g2_browser_reconnect",
+    "g2_authority_outage",
+    "g2_idle_unload_reload",
+    "g2_compatible_drain",
+    "g2_rejected_input_not_later",
+    "g2_reclaimed_memory",
+    "g2_every_mapping_inventoried",
+)
+
 _COMMANDS = ("inspect", "network", "storage", "g1", "g2", "capacity", "da01", "privacy", "release")
 _OPENAI_BINARIES = ("codex",)
 _XAI_BINARIES = ("grok",)
@@ -293,7 +310,7 @@ def codex_capability_report(observation: CodexObservation, profile: RuntimeProfi
                 notes.append(f"{name}: the frozen build does not declare {', '.join(missing)}.")
         primitives.append(PrimitiveEvidence.model_validate({"name": name, "state": state, "evidence_ref": None}))
     notes.append(
-        "model_context_hook: the build declares client_metadata[\"x-codex-turn-metadata\"] with thread_id and "
+        'model_context_hook: the build declares client_metadata["x-codex-turn-metadata"] with thread_id and '
         "turn_id on Responses requests; the relay attribution hook is implemented but no live request capture exists."
     )
     notes.append("mcp_context_hook: the captured schema declares no per-call MCP identity; unproven.")
@@ -3233,6 +3250,10 @@ def main(argv: list[str] | None = None) -> int:
         from scripts.gate_coverage import run_gate1
 
         report = run_gate1(provider, None)
+    elif args.command == "g2":
+        from scripts.gate_coverage import run_gate2
+
+        report = run_gate2(provider, None)
     else:
         report = _report_for(
             args.command,
