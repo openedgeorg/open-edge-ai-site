@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from esp_execution_bindings.binding import AuthorizationError, verify_binding
-from esp_request_admission.admit import RUN_DEADLINE_SECONDS, DuplicateActive, Rejected
+from esp_request_admission.admit import RUN_DEADLINE_SECONDS, DuplicateActive
 from esp_runtime_harconses.lifecycle import SessionLifecycle
 from esp_runtime_harconses.supervision import RunSupervision
 from scripts.migrate import migrate
@@ -69,7 +69,9 @@ async def test_disconnect_and_status_do_not_govern_the_run(lifecycle_lab: Submis
         await proceed.wait()
 
     lifecycle_lab.process.before["session/create"] = hold_create
-    request = asyncio.create_task(post_message(visitor, conversation_id, _body(conversation_id, "life-disconnect", PRIVATE)))
+    request = asyncio.create_task(
+        post_message(visitor, conversation_id, _body(conversation_id, "life-disconnect", PRIVATE))
+    )
     await asyncio.wait_for(entered.wait(), timeout=2)
     request.cancel()
     with pytest.raises(asyncio.CancelledError):

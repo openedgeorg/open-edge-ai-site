@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [dev/v1-ai-site, main]
+
+jobs:
+  ordinary:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: esp
+          POSTGRES_PASSWORD: esp
+          POSTGRES_DB: esp
+        ports:
+          - 54329:5432
+      valkey:
+        image: valkey/valkey:8
+        ports:
+          - 63799:6379
+      localstack:
+        image: localstack/localstack:4
+        env:
+          SERVICES: s3
+        ports:
+          - 59000:4566
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install locked workspace
+        run: uv sync --locked --all-packages --group dev
+      - name: Migrate the disposable database
+        run: uv run --all-packages python scripts/migrate.py
+        env:
+          ESP_DATABASE_URL: postgresql://esp:esp@127.0.0.1:54329/esp
+      - name: Ruff
+        run: uv run ruff check .
+      - name: Pyright
+        run: uv run pyright
+      - name: Ordinary tests
+        run: uv run --all-packages pytest
+        env:
+          ESP_DATABASE_URL: postgresql://esp:esp@127.0.0.1:54329/esp
+          ESP_GATEWAY_DATABASE_URL: postgresql://esp_gateway:esp_gateway@127.0.0.1:54329/esp
+          ESP_VALKEY_URL: redis://127.0.0.1:63799/0
+      - name: Browser and parser tests
+        run: uv run --all-packages pytest tests/e2e
+      - name: Build packages
+        run: uv build --all-packages
+      # Credentialed qualify.py and evaluate.py gates are not in this job.

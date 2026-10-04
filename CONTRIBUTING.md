@@ -30,6 +30,20 @@ cd site
 python3 -m http.server 8080
 ```
 
+## Checks
+
+From the repository root, with the workspace synced:
+
+```bash
+uv sync --locked --all-packages --group dev
+uv run ruff check .
+uv run pyright
+uv run --all-packages pytest
+uv run --all-packages pytest tests/e2e
+```
+
+`tests/qualification` and `scripts/qualify.py` / `scripts/evaluate.py` are credentialed or cluster gates. They are not part of the default suite. A pending or nonzero live gate is not a pass. Do not invent qualification evidence.
+
 ## Guidelines
 
 ### Code Style

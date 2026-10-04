@@ -37,6 +37,12 @@ site/
 - Not a general-purpose chatbot—educational focus
 - Future: offline index for faster responses
 
+## Implemented services
+
+The running tree is a uv workspace. `apps/api` is the browser boundary. `packages/runtime_harconses` supervises native sessions. `packages/recovery` reconciles a failed incarnation only after a positive storage fence. `services/esp_mcp` and `packages/esp_knowledge_client` serve published source versions. `site/js` is the vanilla client. Qualification commands in `scripts/qualify.py` fail closed when evidence is missing.
+
+Native history stays on the runtime volume. The knowledge deployment does not mount it. Deletion is unsupported until a peer-safe mechanism is selected. See `docs/runbooks/operations.md`.
+
 ## Content Strategy
 
 All site content aligns with approved ESP / Clear Ledger messaging:

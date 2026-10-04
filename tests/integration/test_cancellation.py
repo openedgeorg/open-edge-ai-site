@@ -46,7 +46,9 @@ async def test_cancel_route_confirms_before_releasing_the_guard(lifecycle_lab: S
     path = f"/conversations/{conversation_id}/runs/{run_id}/cancel"
     stranger = await lifecycle_lab.visitor()
     denied = await stranger.client.post(path, headers=stranger.write_headers())
-    missing_csrf = await visitor.client.post(path, headers={"origin": visitor.origin, "content-type": "application/json"})
+    missing_csrf = await visitor.client.post(
+        path, headers={"origin": visitor.origin, "content-type": "application/json"}
+    )
     wrong_run = str(uuid.uuid4())
     untouched = await visitor.client.post(
         f"/conversations/{conversation_id}/runs/{wrong_run}/cancel", headers=visitor.write_headers()

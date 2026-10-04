@@ -87,7 +87,7 @@ packages = ["scripts", "knowledge"]
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/contract", "tests/integration"]
 asyncio_mode = "auto"
-addopts = "-q"
+addopts = "-q --import-mode=importlib"
 markers = [
     "qualification: credentialed live gates; run only through scripts/qualify.py",
 ]

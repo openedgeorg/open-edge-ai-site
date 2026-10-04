@@ -3157,9 +3157,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     for name in _COMMANDS:
         command = sub.add_parser(name)
-        command.add_argument("--provider", required=True, choices=["openai", "xai"])
+        command.add_argument("--provider", required=name != "release", choices=["openai", "xai"])
         command.add_argument("--json", action="store_true")
         command.add_argument("--assume-essential-absent", action="store_true")
+        if name == "release":
+            command.add_argument("--milestone", required=True, choices=["section23", "v1"])
         if name in ("network", "storage"):
             command.add_argument(
                 "--deploy",
@@ -3189,6 +3191,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "release":
+        from scripts.release_gate import run_release
+
+        return run_release(args.milestone)
     provider: Provider = args.provider
     write_capture = bool(getattr(args, "write_protocol_capture", False))
     observation_file: Path | None = getattr(args, "observation_file", None)
@@ -3262,6 +3268,10 @@ def main(argv: list[str] | None = None) -> int:
         from scripts.da01 import run_da01
 
         report = run_da01(provider)
+    elif args.command == "privacy":
+        from scripts.history_lifecycle import run_privacy
+
+        report = run_privacy(provider)
     else:
         report = _report_for(
             args.command,
