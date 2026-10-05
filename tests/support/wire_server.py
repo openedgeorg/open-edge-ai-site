@@ -62,6 +62,7 @@ class WireServer:
         self.chunks: list[bytes] | None = None
         self.hold_headers = False
         self.drop_early = False
+        self.close_before_headers = False
         self.release_headers = asyncio.Event()
         self.release_headers.set()
         self.got_body = asyncio.Event()
@@ -97,6 +98,10 @@ class WireServer:
         if self.hold_headers:
             await self.release_headers.wait()
         try:
+            if self.close_before_headers:
+                writer.close()
+                await writer.wait_closed()
+                return
             if self.drop_early:
                 writer.write(
                     b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n"

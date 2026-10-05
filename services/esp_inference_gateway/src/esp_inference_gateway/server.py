@@ -117,12 +117,36 @@ async def dispatch_inference(
     return ticket
 
 
+async def _release_unfinished_run(deps: GatewayDependencies, token: str, provider: str) -> None:
+    """Clear a running run that will not finish this reply.
+
+    A missing or mismatched binding leaves the row unchanged. `clear_finished_run` itself clears
+    only the running run whose epoch and id still match.
+    """
+    try:
+        binding = verify_binding(token, "inference", verifier=deps.verifier)
+    except AuthorizationError:
+        return
+    if binding.provider != provider:
+        return
+    await clear_finished_run(
+        deps.db,
+        binding,
+        native_work_ref=binding.native_work_ref,
+        provider_failure=True,
+    )
+
+
 async def _proxy(deps: GatewayDependencies, request: Request, provider: str) -> StreamingResponse:
     raw = await request.body()
     token = request.headers.get("esp-inference-token", "")
     try:
         ticket = await dispatch_inference(deps, token=token, raw=raw, provider=provider)
     except AuthorizationError as exc:
+        # lease_expired is raised only while this session is still running. The reply will not
+        # finish, so release the run before the 403 or the conversation stays busy.
+        if str(exc) == "lease_expired":
+            await _release_unfinished_run(deps, token, provider)
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except VerificationError as exc:
         status = 413 if str(exc) == "context_overflow" else 422
@@ -135,21 +159,13 @@ async def _proxy(deps: GatewayDependencies, request: Request, provider: str) -> 
         upstream = await ticket.response
     except Exception as exc:
         await record_outcome(deps.outcome, ticket.inference_id, "uncertain")
+        # No upstream completion arrived. Release the run before the 502 or the conversation stays busy.
+        await _release_unfinished_run(deps, token, provider)
         raise HTTPException(status_code=502, detail="provider_uncertain") from exc
     if provider_completion_failed(upstream.status):
         # A 403, and any other non-success completion, never finishes the reply. Release this run
         # before the error is relayed, or the conversation stays running and the next message is busy.
-        try:
-            binding = verify_binding(token, "inference", verifier=deps.verifier)
-        except AuthorizationError:
-            binding = None
-        if binding is not None and binding.provider == provider:
-            await clear_finished_run(
-                deps.db,
-                binding,
-                native_work_ref=binding.native_work_ref,
-                provider_failure=True,
-            )
+        await _release_unfinished_run(deps, token, provider)
     await record_outcome(deps.outcome, ticket.inference_id, "headers")
     return relay_response(upstream)
 

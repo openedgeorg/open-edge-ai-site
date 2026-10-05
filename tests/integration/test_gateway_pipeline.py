@@ -136,6 +136,70 @@ async def test_a_forbidden_provider_completion_releases_the_run(wire_lab: WireLa
     assert released["guard"] is None
 
 
+async def test_an_uncertain_provider_response_releases_the_run(wire_lab: WireLab) -> None:
+    """An exception while awaiting the upstream completion is provider_uncertain and must free the run."""
+    async with transaction(wire_lab.db) as tx:
+        await tx.execute(
+            """
+            UPDATE provider_session
+            SET current_request_id = 'req-uncertain'
+            WHERE id = %s
+            """,
+            (wire_lab.session_id,),
+        )
+    wire_lab.server.close_before_headers = True
+    app = build_gateway(wire_lab.deps)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://esp") as client:
+        failed = await client.post(
+            "/openai/v1/responses",
+            content=wire_lab.raw,
+            headers={"esp-inference-token": wire_lab.token},
+        )
+    assert failed.status_code == 502
+    assert failed.json()["detail"] == "provider_uncertain"
+    assert wire_lab.deps.outcome.records[-1][1] == "uncertain"
+    released = await _session_row(wire_lab)
+    assert released["runtime_state"] == "warm_idle"
+    assert released["runtime_state"] != "running"
+    assert released["current_request_id"] is None
+    assert released["active_agent_run_id"] is None
+    assert released["current_native_work_ref"] is None
+    assert released["guard"] is None
+
+
+async def test_lease_expired_during_inference_releases_the_run(wire_lab: WireLab) -> None:
+    """A lease_expired authorization is an in-flight run that will not finish, so the run is released."""
+    async with transaction(wire_lab.db) as tx:
+        await tx.execute(
+            """
+            UPDATE provider_session
+            SET owner_lease_expires_at = now() - interval '1 minute',
+                active_agent_run_expires_at = now() - interval '1 minute',
+                current_request_id = 'req-lease'
+            WHERE id = %s
+            """,
+            (wire_lab.session_id,),
+        )
+    app = build_gateway(wire_lab.deps)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://esp") as client:
+        failed = await client.post(
+            "/openai/v1/responses",
+            content=wire_lab.raw,
+            headers={"esp-inference-token": wire_lab.token},
+        )
+    assert failed.status_code == 403
+    assert failed.json()["detail"] == "lease_expired"
+    released = await _session_row(wire_lab)
+    assert released["runtime_state"] == "warm_idle"
+    assert released["runtime_state"] != "running"
+    assert released["current_request_id"] is None
+    assert released["active_agent_run_id"] is None
+    assert released["current_native_work_ref"] is None
+    assert released["guard"] is None
+
+
 async def _session_row(wire_lab: WireLab) -> dict[str, object]:
     async with transaction(wire_lab.db) as tx:
         row = await tx.execute_one(
