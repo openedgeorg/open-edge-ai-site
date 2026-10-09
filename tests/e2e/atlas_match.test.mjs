@@ -5,10 +5,13 @@ import { test } from "node:test";
 import { ISLANDS } from "../../site/js/atlas-graph.js";
 import {
   DISTINCT_WORDS,
+  WARM_SAMPLE,
   classifyTerm,
   compileGlossary,
+  glossarySize,
   matchReply,
   normaliseReply,
+  warmGlossary,
 } from "../../site/js/atlas-match.js";
 import { deriveView, initialAtlasState, reduceAtlas } from "../../site/js/atlas-state.js";
 
@@ -487,4 +490,133 @@ test("the matcher touches no browser storage or DOM", () => {
   for (const forbidden of ["localStorage", "sessionStorage", "document", "innerHTML", "eval(", "fetch("]) {
     assert.equal(source.includes(forbidden), false, forbidden);
   }
+});
+
+test("natural phrasings of the post-pilot recovery dragon light it", () => {
+  for (const text of [
+    "Is there a post-pilot equivalent of emergency settlement?",
+    "The design has no equivalent of emergency settlement once the pilot ends.",
+    "Post-pilot recovery is not defined yet.",
+    "a post pilot equivalent",
+    "POST-PILOT RECOVERY",
+  ]) {
+    assert.ok(match(text).includes("post-pilot-emergency"), text);
+  }
+  // The pilot's own emergency settlement island still lights from the same sentence, and a bare "post-pilot" does not.
+  assert.ok(match("Is there a post-pilot equivalent of emergency settlement?").includes("emergency-settlement"));
+  assert.deepEqual(match("the post-pilot period"), []);
+  assert.deepEqual(match("a recovery plan"), []);
+});
+
+test("natural phrasings of optimistic serving light it", () => {
+  for (const text of [
+    "Serving can remain optimistic while the top-up is on its way.",
+    "An app can serve optimistically.",
+    "Apps serve optimistically before the top-up lands.",
+    "The app serves optimistically.",
+    "SERVES OPTIMISTICALLY",
+  ]) {
+    assert.ok(match(text).includes("optimistic-serving"), text);
+  }
+  assert.deepEqual(match("optimistically"), [], "the bare adverb is not a term");
+  assert.deepEqual(match("an optimistic forecast"), []);
+  assert.deepEqual(match("it can serve"), []);
+});
+
+test("regression: every island lights from its own name or from one of its trace anchors", () => {
+  // The name is what a reply most often says; an anchor is the summary's own wording. At least
+  // one of them must light the island, or tapping it asks a question whose answer cannot light it.
+  const unlit = [];
+  const byAnchorOnly = [];
+  for (const island of ISLANDS) {
+    const fromName = match(island.name).includes(island.id);
+    const fromAnchor = island.trace.some((entry) => match(entry.anchor).includes(island.id));
+    if (!fromName && !fromAnchor) unlit.push(`${island.id} (${island.name})`);
+    else if (!fromName) byAnchorOnly.push(island.id);
+  }
+  assert.deepEqual(unlit, [], "islands that neither their name nor any anchor lights: fix their terms");
+  // Only these islands rely on an anchor because their display name is not the wording the design uses.
+  assert.deepEqual(
+    byAnchorOnly.sort(),
+    ["app-set-prices", "freeze-settle", "funding-pressure", "isp-debt", "settlement-finality", "signed-refusal"],
+    "islands whose own name does not light them (they are lit by the summary's wording)",
+  );
+});
+
+test("regression: every term of every island lights that island when it stands alone in a sentence", () => {
+  for (const island of ISLANDS) {
+    for (const term of island.terms) {
+      const kind = classifyTerm(term);
+      assert.notEqual(kind, "rejected", `${island.id}: ${term}`);
+      assert.ok(match(`We discussed ${term} in the answer.`).includes(island.id), `${island.id}: "${term}"`);
+    }
+  }
+});
+
+test("the matcher is built without RegExp lookbehind (Safari before 16.4 throws on it)", () => {
+  const source = readFileSync(new URL("../../site/js/atlas-match.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, ""), /\(\?<[!=]/, "no lookbehind group in the code");
+  for (const entry of glossary.entries) {
+    for (const t of entry.tests) assert.doesNotMatch(t.re.source, /\(\?<[!=]/, `${entry.id}: ${t.term}`);
+  }
+});
+
+test("boundaries without lookbehind: start of text, punctuation and non-ASCII neighbours behave as before", () => {
+  const g = glossaryOf(["the pot", "AtS", "faucet"]);
+  assert.deepEqual(matchReply("the pot", g), ["x"], "start and end of the text");
+  assert.deepEqual(matchReply("(the pot)", g), ["x"], "punctuation neighbours");
+  assert.deepEqual(matchReply("\"AtS\"", g), ["x"]);
+  assert.deepEqual(matchReply("see AtS.", g), ["x"]);
+  assert.deepEqual(matchReply("the faucet", g), ["x"]);
+  assert.deepEqual(matchReply("bathe pot", g), [], "no match inside a longer word on the left");
+  assert.deepEqual(matchReply("the potion", g), [], "no match inside a longer word on the right");
+  assert.deepEqual(matchReply("éthe pot", g), [], "a non-ASCII letter on the left is a letter");
+  assert.deepEqual(matchReply("the potä", g), [], "a non-ASCII letter on the right is a letter");
+  assert.deepEqual(matchReply("9the pot", g), [], "a digit on the left");
+  assert.deepEqual(matchReply("🧠the pot", g), ["x"], "an emoji is a boundary");
+  assert.deepEqual(matchReply("xAtS", g), []);
+  assert.deepEqual(matchReply("AtSx", g), []);
+  assert.deepEqual(matchReply("AtSs", g), ["x"], "a plural s is still allowed");
+  assert.deepEqual(matchReply("faucetfaucet", g), []);
+  assert.deepEqual(matchReply("the pot the pot", g), ["x"]);
+});
+
+test("glossarySize counts the compiled tests and is zero when nothing compiled", () => {
+  assert.ok(glossarySize(glossary) >= 280, `the shipped glossary holds ${glossarySize(glossary)} tests`);
+  assert.equal(glossarySize(glossary), glossary.entries.reduce((total, entry) => total + entry.tests.length, 0));
+  assert.equal(glossarySize({ entries: [] }), 0);
+  assert.equal(glossarySize({ entries: [{ id: "x", tests: [] }] }), 0);
+  assert.equal(glossarySize(null), 0);
+  assert.equal(glossarySize(undefined), 0);
+  assert.equal(glossarySize({}), 0);
+  // An engine that cannot compile the patterns ends up with an empty glossary and a list of rejects.
+  const RealRegExp = globalThis.RegExp;
+  try {
+    globalThis.RegExp = class {
+      constructor() {
+        throw new SyntaxError("Invalid regular expression: unsupported");
+      }
+    };
+    const broken = compileGlossary(ISLANDS);
+    globalThis.RegExp = RealRegExp;
+    assert.equal(glossarySize(broken), 0);
+    assert.ok(broken.rejected.length > 250, "every term is reported");
+    assert.deepEqual(matchReply("the pot and the common fund", broken), []);
+  } finally {
+    globalThis.RegExp = RealRegExp;
+  }
+});
+
+test("warmGlossary runs the matcher twice over a sample and never throws", () => {
+  assert.ok(WARM_SAMPLE.length > 10 && WARM_SAMPLE.length < 200, "a short sample");
+  assert.ok(matchReply(WARM_SAMPLE, glossary).length >= 4, "the sample touches an acronym, phrases and a word");
+  assert.doesNotThrow(() => warmGlossary(glossary));
+  assert.doesNotThrow(() => warmGlossary(null));
+  assert.doesNotThrow(() => warmGlossary({ entries: [{ id: "x", tests: [{ re: { test() { throw new Error("boom"); } } }] }] }));
+  let calls = 0;
+  const counting = { entries: [{ id: "x", tests: [{ re: { test() { calls += 1; return false; } } }] }] };
+  warmGlossary(counting);
+  assert.equal(calls, 2, "two rounds");
+  warmGlossary(counting, 3);
+  assert.equal(calls, 5);
 });

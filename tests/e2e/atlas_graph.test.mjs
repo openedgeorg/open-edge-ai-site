@@ -4,6 +4,7 @@
  * Run with: node --test tests/e2e/atlas_graph.test.mjs
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -370,5 +371,40 @@ describe("first-load facts", () => {
 
   it("captions the edge dragon", () => {
     assert.equal(EDGE_DRAGON_CAPTION, "Unfinished. You will get here.");
+  });
+});
+
+describe("edge grounding fixes and the source revision", () => {
+  const edgeOf = (a, b) => EDGES.find((edge) => edgeKey(edge.a, edge.b) === edgeKey(a, b));
+
+  it("has 96 paths and has dropped the one that could not be grounded", () => {
+    assert.equal(EDGES.length, 96);
+    assert.equal(edgeOf("isp-counterparty", "app-set-prices"), undefined, "isp-counterparty|app-set-prices is gone");
+    assert.ok(index.neighbours.get("isp-counterparty").size >= 1, "isp-counterparty is still connected");
+    assert.ok(index.neighbours.get("app-set-prices").size >= 1, "app-set-prices is still connected");
+    assert.equal(reachableFrom(START_ID).size, ISLANDS.length, "the graph stays connected from the start");
+  });
+
+  it("grounds the ConRec to RtgP path in the section that says it", () => {
+    const edge = edgeOf("conrec", "rtgp");
+    assert.equal(edge.label, "ConRecs are the evidence behind each claim row");
+    assert.equal(edge.trace.section, 7);
+    assert.equal(edge.trace.anchor, "publish the signed ConRecs supporting its rows");
+  });
+
+  it("grounds the timetable to HCD path in the section 8 footprint sentence", () => {
+    const edge = edgeOf("epoch-timetable", "hcd");
+    assert.equal(edge.label, "each ISP posts one HCD per epoch");
+    assert.equal(edge.trace.section, 8);
+    assert.equal(edge.trace.anchor, "each ISP has one HCD");
+  });
+
+  it("records which revision of the summary the anchors were checked against", () => {
+    const source = readFileSync(new URL("../../site/js/atlas-graph.js", import.meta.url), "utf8");
+    const header = source.slice(0, source.indexOf("export const VIEWBOX"));
+    assert.match(header, /knowledge\/brain\/local-draft-v3/);
+    assert.match(header, /37,749 bytes/);
+    assert.match(header, /sha256[\s*]+b2f2982d6df3d9d003fb284c110ef1ebe21e890c5c30de5a00ae967af288b59b/);
+    assert.match(header, /live notes file has[\s*]+moved on/);
   });
 });

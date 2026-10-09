@@ -259,7 +259,7 @@ test("deriveView: a path is lit only when both ends are visited", () => {
   assert.equal(view.edges[edgeKey(START_ID, "isp-counterparty")], "stub");
   assert.equal(view.edges[edgeKey("standing-plan", "app-set-prices")], "stub");
   assert.equal(view.edges[edgeKey("standing-plan", "base-and-topups")], "stub");
-  assert.equal(view.edges[edgeKey("isp-counterparty", "app-set-prices")], "hidden");
+  assert.equal(view.edges[edgeKey("app-set-prices", "funding-pressure")], "hidden");
   assert.equal(view.visitedCount, 2);
   assert.ok(view.frontier.includes("app-set-prices"));
   assert.ok(view.frontier.includes("base-and-topups"));

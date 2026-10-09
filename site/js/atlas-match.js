@@ -9,6 +9,10 @@
  *   DISTINCT_WORDS. Common words (pot, base, debt, fund, plan, bill, freeze, commitment, audit)
  *   never light an island on their own: they only count inside a fixed phrase.
  * Nothing ever matches inside a longer word. Pure functions, no DOM, no storage, no network.
+ *
+ * Word boundaries are written without RegExp lookbehind (Safari before 16.4 throws on it): the
+ * character before a term is consumed by a leading group, `(^|[^\p{L}\p{N}])`, and only the
+ * character after it is looked at with a lookahead.
  */
 
 import { ISLANDS } from "./atlas-graph.js";
@@ -37,7 +41,8 @@ export const DISTINCT_WORDS = new Set([
 
 /** @typedef {"acronym"|"phrase"|"word"|"rejected"} TermKind */
 
-const BEFORE = "(?<![\\p{L}\\p{N}])";
+/** Start of text, or one character that is not a letter or digit. Consumed, so no lookbehind is needed. */
+const BEFORE = "(?:^|[^\\p{L}\\p{N}])";
 const AFTER = "(?![\\p{L}\\p{N}])";
 const SEPARATOR = "[\\s\\-]+";
 
@@ -162,4 +167,33 @@ export function matchReply(text, glossary) {
     if (entry.tests.some((test) => test.re.test(reply))) ids.push(entry.id);
   }
   return ids;
+}
+
+/**
+ * How many compiled term tests the glossary holds. Zero means no reply can ever light an island
+ * (for example an engine that cannot compile Unicode property classes).
+ * @param {Glossary|null|undefined} glossary
+ * @returns {number}
+ */
+export function glossarySize(glossary) {
+  if (!glossary || !Array.isArray(glossary.entries)) return 0;
+  return glossary.entries.reduce((total, entry) => total + (Array.isArray(entry.tests) ? entry.tests.length : 0), 0);
+}
+
+/** A short text that touches an acronym, a phrase, a word and a non-Latin code point. */
+export const WARM_SAMPLE = "AtS the pot common fund 🧠 IsHEC with an overdraft and a financial counterparty";
+
+/**
+ * Run the matcher over a short sample so the engine compiles and tiers up the patterns before the
+ * first real reply (the first runs cost a few hundred milliseconds, later ones a few). Twice,
+ * because V8 optimises on the second execution. The result is thrown away; never throws.
+ * @param {Glossary|null|undefined} glossary
+ * @param {number} [rounds]
+ */
+export function warmGlossary(glossary, rounds = 2) {
+  try {
+    for (let i = 0; i < rounds; i += 1) matchReply(WARM_SAMPLE, glossary);
+  } catch {
+    // Warming is an optimisation only.
+  }
 }

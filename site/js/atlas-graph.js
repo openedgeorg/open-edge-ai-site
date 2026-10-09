@@ -9,6 +9,12 @@
  *
  * Contested items carry `status: "contested"`. The open list of the summary (section 10,
  * and the undefined post-pilot emergency settlement of section 6) carries `status: "open"`.
+ *
+ * Source revision: every anchor is grounded in the summary revision embedded in the local
+ * draft brain, knowledge/brain/local-draft-v3 (37,749 bytes, sha256
+ * b2f2982d6df3d9d003fb284c110ef1ebe21e890c5c30de5a00ae967af288b59b). The live notes file has
+ * moved on since then, so this graph is a snapshot of that revision, not of the current notes.
+ * Re-author it against the next brain version once the notes settle.
  */
 
 export const VIEWBOX = { width: 1240, height: 780 };
@@ -216,7 +222,10 @@ export const ISLANDS = [
     id: "optimistic-serving", name: "Optimistic serving", region: "highlands", x: 560, y: 364,
     teaser: "Can an app serve me before my top-up arrives?",
     trace: [{ section: 4, anchor: "Serving can remain optimistic" }],
-    terms: ["optimistic serving", "optimistic service", "optimistic credit"],
+    terms: [
+      "optimistic serving", "optimistic service", "optimistic credit",
+      "serving can remain optimistic", "serve optimistically", "serves optimistically",
+    ],
   },
   {
     id: "evidence-kept", name: "Evidence kept off-chain", region: "highlands", x: 523, y: 429,
@@ -548,7 +557,10 @@ export const ISLANDS = [
     status: "open", label: "open, not ratified", note: "Undefined after the pilot",
     teaser: "Is there a post-pilot equivalent of emergency settlement?",
     trace: [{ section: 6, anchor: "the equivalent post-pilot recovery mechanism remains undefined" }],
-    terms: ["post-pilot recovery mechanism", "post-pilot emergency settlement", "equivalent post-pilot"],
+    terms: [
+      "post-pilot recovery mechanism", "post-pilot emergency settlement", "equivalent post-pilot",
+      "post-pilot equivalent", "equivalent of emergency settlement", "post-pilot recovery",
+    ],
   },
 ];
 
@@ -558,7 +570,6 @@ export const EDGES = [
   { a: "internet-bill", b: "standing-plan", label: "predictable access, not isolated purchases", trace: { section: 1, anchor: "The household buys predictable access rather than a sequence of isolated" } },
   { a: "internet-bill", b: "retail-contract", label: "the bill stays bounded by the retail contract", trace: { section: 3, anchor: "financial exposure remains bounded by its retail contract" } },
   { a: "internet-bill", b: "funding-pressure", label: "app prices do not raise the bill by themselves", trace: { section: 1, anchor: "do not automatically enlarge the pot, authorize top-ups, or increase" } },
-  { a: "isp-counterparty", b: "app-set-prices", label: "apps earn through the protocol, at accepted prices", trace: { section: 1, anchor: "apps earn through the protocol instead of establishing a separate billing" } },
   { a: "standing-plan", b: "app-set-prices", label: "flat-rate experience, usage-based pay", trace: { section: 1, anchor: "The allowance reconciles flat-rate experience with usage-based provider" } },
   { a: "standing-plan", b: "base-and-topups", label: "the plan funds general spending capacity", trace: { section: 1, anchor: "a fixed monthly plan finances general spending capacity" } },
   { a: "app-set-prices", b: "funding-pressure", label: "higher prices can push payouts past ISP contributions", trace: { section: 1, anchor: "payouts within funded allowances can exceed ISP contributions and create debt" } },
@@ -596,7 +607,7 @@ export const EDGES = [
   { a: "optimistic-serving", b: "household-fraud", label: "serving apps absorb the shortfall", trace: { section: 4, anchor: "the serving apps collectively absorb the shortfall" } },
   { a: "conrec", b: "evidence-kept", label: "ConRecs stay off-chain in ordinary operation", trace: { section: 4, anchor: "Price agreements and fine-grained evidence remain off-chain during" } },
   { a: "conrec", b: "heid", label: "the household signs with its epoch key", trace: { section: 4, anchor: "the household signs with its epoch key" } },
-  { a: "conrec", b: "rtgp", label: "ConRecs are the evidence behind each claim row", trace: { section: 4, anchor: "Every billable act produces a Consumption Record" } },
+  { a: "conrec", b: "rtgp", label: "ConRecs are the evidence behind each claim row", trace: { section: 7, anchor: "publish the signed ConRecs supporting its rows" } },
   { a: "evidence-kept", b: "evidence-round", label: "produced only when an audit or evidence round requires them", trace: { section: 6, anchor: "produce them only when an audit or evidence round requires them" } },
   { a: "evidence-kept", b: "ishec", label: "the diary is checked against the IsHEC", trace: { section: 5, anchor: "against its own diary" } },
 
@@ -625,7 +636,7 @@ export const EDGES = [
   { a: "iptd", b: "freeze-settle", label: "flagged rows are published", trace: { section: 6, anchor: "its flagged rows" } },
   { a: "freeze-settle", b: "evidence-round", label: "an overrun opens an evidence round automatically", trace: { section: 6, anchor: "automatically opens an evidence round before any of those rows are paid" } },
   { a: "freeze-settle", b: "settlement-finality", label: "freezing normally avoids any clawback", trace: { section: 7, anchor: "paid in full without any clawback" } },
-  { a: "epoch-timetable", b: "hcd", label: "each ISP posts one HCD per epoch", trace: { section: 8, anchor: "commitments, debt service, and pots precede serving" } },
+  { a: "epoch-timetable", b: "hcd", label: "each ISP posts one HCD per epoch", trace: { section: 8, anchor: "each ISP has one HCD" } },
   { a: "slashing-collateral", b: "debt-update", label: "unpaid debt service means collateral slashing", trace: { section: 6, anchor: "unpaid required debt service, or unfunded allowance correction" } },
   { a: "slashing-collateral", b: "escalation-audit", label: "collateral backs escalation audits", trace: { section: 8, anchor: "the collateral backs evidence duties, escalation audits, and slashing" } },
   { a: "slashing-collateral", b: "silent-padding", label: "disposable padding identities become uneconomic", trace: { section: 8, anchor: "to make disposable padding identities uneconomic" } },
