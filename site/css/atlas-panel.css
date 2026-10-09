@@ -1,0 +1,633 @@
+/* The Atlas: toolbar, list, inspector, notice, legend and suggestion chips.
+   The map itself and the two-column page layout live in atlas.css. */
+
+.atlas {
+    --ap-bg: #0e1626;
+    --ap-surface: #16233a;
+    --ap-surface-2: #1d2d49;
+    --ap-border: #3a4f72;
+    --ap-text: #eaf0f9;
+    --ap-muted: #b4c2d8;
+    --ap-dim: #93a4bf;
+    --ap-lit: #f5c542;
+    --ap-frontier: #63e6d4;
+    --ap-contested: #c9a8ff;
+    --ap-open: #ff9f80;
+    --ap-focus: #ffffff;
+
+    min-width: 0;
+    background: var(--ap-bg);
+    color: var(--ap-text);
+    border-radius: 12px;
+    padding: calc(var(--spacing-unit) * 1.5);
+}
+
+.atlas-chat {
+    min-width: 0;
+}
+
+.atlas [hidden],
+.atlas-chat [hidden],
+.atlas-suggest[hidden] {
+    display: none !important;
+}
+
+/* Text inside the dark card must not inherit the light-page paragraph colour or width. */
+.atlas p {
+    color: inherit;
+    max-width: none;
+}
+
+.atlas h2 {
+    color: var(--ap-text);
+    margin-bottom: 0.5rem;
+}
+
+.atlas h3,
+.atlas h4 {
+    color: var(--ap-text);
+}
+
+.atlas-intro {
+    font-size: 1.05rem;
+    line-height: 1.5;
+    margin-bottom: 0.75rem;
+}
+
+.atlas .atlas-honesty {
+    color: var(--ap-muted);
+    font-size: 0.9rem;
+    line-height: 1.5;
+    border-left: 3px solid var(--ap-border);
+    padding-left: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.atlas a {
+    color: var(--ap-frontier);
+}
+
+.atlas button:focus-visible,
+.atlas [tabindex]:focus-visible {
+    outline: 3px solid var(--ap-focus);
+    outline-offset: 2px;
+}
+
+/* Toolbar */
+
+.atlas-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 1rem;
+    margin-bottom: 0.75rem;
+}
+
+.atlas .atlas-count {
+    font-weight: 700;
+    color: var(--ap-lit);
+    margin: 0;
+}
+
+.atlas-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.atlas-tabs button {
+    font: inherit;
+    min-height: 44px;
+    min-width: 44px;
+    padding: 0.4rem 1rem;
+    color: var(--ap-text);
+    background: var(--ap-surface);
+    border: 2px solid var(--ap-border);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.atlas-tabs button:hover {
+    background: var(--ap-surface-2);
+}
+
+.atlas-tabs button[aria-pressed="true"] {
+    font-weight: 700;
+    background: var(--ap-surface-2);
+    border-color: var(--ap-lit);
+    box-shadow: inset 0 -4px 0 var(--ap-lit);
+}
+
+.atlas-tabs #atlas-reset {
+    background: transparent;
+    border-style: dashed;
+}
+
+/* List view */
+
+.atlas-list-wrap {
+    margin-bottom: 1rem;
+}
+
+.atlas-list-region {
+    margin-top: 1.25rem;
+}
+
+.atlas-list-region:first-of-type {
+    margin-top: 0.5rem;
+}
+
+.atlas .atlas-list-heading {
+    font-size: 0.95rem;
+    letter-spacing: 0.02em;
+    color: var(--ap-muted);
+    border-bottom: 1px solid var(--ap-border);
+    padding-bottom: 0.3rem;
+    margin-bottom: 0.6rem;
+}
+
+.atlas-list-items {
+    list-style: none;
+    display: grid;
+    gap: 0.5rem;
+}
+
+.atlas-list-item {
+    background: var(--ap-surface);
+    border: 1px solid var(--ap-border);
+    border-left-width: 6px;
+    border-radius: 6px;
+    padding: 0.6rem 0.8rem;
+    color: var(--ap-dim);
+}
+
+.atlas-list-item.is-visited {
+    color: var(--ap-text);
+    border-left-color: var(--ap-lit);
+    border-left-style: solid;
+}
+
+.atlas-list-item.is-frontier {
+    color: var(--ap-text);
+    border-left-color: var(--ap-frontier);
+    border-left-style: double;
+    border-left-width: 8px;
+}
+
+.atlas-list-item.is-fogged {
+    border-left-style: dotted;
+    border-left-color: var(--ap-border);
+}
+
+.atlas-list-item.is-contested {
+    border-style: dashed;
+    border-color: var(--ap-contested);
+    border-left-width: 6px;
+}
+
+.atlas-list-item.is-open {
+    border-style: dashed;
+    border-color: var(--ap-open);
+    border-left-width: 6px;
+}
+
+.atlas .atlas-list-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.25rem 1rem;
+    margin: 0;
+}
+
+.atlas-list-name {
+    font-weight: 700;
+}
+
+.atlas-list-item.is-fogged .atlas-list-name {
+    font-weight: 400;
+}
+
+.atlas-list-status {
+    font-size: 0.85rem;
+}
+
+.atlas-list-item.is-visited .atlas-list-status {
+    color: var(--ap-lit);
+    font-weight: 700;
+}
+
+.atlas-list-item.is-frontier .atlas-list-status {
+    color: var(--ap-frontier);
+    font-weight: 700;
+}
+
+.atlas .atlas-list-meta {
+    font-size: 0.85rem;
+    margin: 0.2rem 0 0;
+}
+
+.atlas-list-item.is-contested .atlas-list-meta {
+    color: var(--ap-contested);
+}
+
+.atlas-list-item.is-open .atlas-list-meta {
+    color: var(--ap-open);
+}
+
+.atlas-list-ask {
+    display: block;
+    width: 100%;
+    margin-top: 0.5rem;
+    min-height: 44px;
+    padding: 0.5rem 0.75rem;
+    font: inherit;
+    text-align: left;
+    color: var(--ap-text);
+    background: transparent;
+    border: 2px solid var(--ap-frontier);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.atlas-list-ask::before {
+    content: "Ask: ";
+    font-weight: 700;
+    color: var(--ap-frontier);
+}
+
+.atlas-list-ask:hover:not(:disabled) {
+    background: var(--ap-surface-2);
+}
+
+.atlas-list-ask:disabled {
+    border-style: dashed;
+    border-color: var(--ap-dim);
+    color: var(--ap-dim);
+    cursor: not-allowed;
+}
+
+.atlas-list-ask:disabled::before {
+    color: var(--ap-dim);
+}
+
+.atlas-list-paths {
+    list-style: none;
+    margin: 0.4rem 0 0;
+    font-size: 0.9rem;
+    color: var(--ap-muted);
+}
+
+.atlas-list-path + .atlas-list-path {
+    margin-top: 0.2rem;
+}
+
+.atlas .atlas-list-paused {
+    margin-bottom: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px dashed var(--ap-lit);
+    border-radius: 6px;
+    font-size: 0.9rem;
+}
+
+/* Inspector */
+
+.atlas-inspector {
+    min-height: 9rem;
+    margin: 1rem 0;
+    padding: 0.9rem 1rem;
+    background: var(--ap-surface);
+    border: 1px solid var(--ap-border);
+    border-radius: 8px;
+}
+
+.atlas-inspector:empty {
+    display: none;
+}
+
+.atlas-inspector-card > * + * {
+    margin-top: 0.4rem;
+}
+
+.atlas .atlas-inspector-name {
+    font-size: 1.15rem;
+    line-height: 1.3;
+    margin: 0;
+}
+
+.atlas .atlas-inspector-where,
+.atlas .atlas-inspector-sections,
+.atlas .atlas-inspector-from {
+    color: var(--ap-muted);
+    font-size: 0.9rem;
+}
+
+.atlas .atlas-inspector-status {
+    font-weight: 700;
+}
+
+.atlas .atlas-inspector-status.is-visited {
+    color: var(--ap-lit);
+}
+
+.atlas .atlas-inspector-status.is-frontier {
+    color: var(--ap-frontier);
+}
+
+.atlas .atlas-inspector-label {
+    display: inline-block;
+    padding: 0.1rem 0.6rem;
+    border: 2px dashed var(--ap-contested);
+    border-radius: 6px;
+    color: var(--ap-contested);
+    font-weight: 700;
+}
+
+.atlas .atlas-inspector-label.is-open {
+    border-color: var(--ap-open);
+    color: var(--ap-open);
+}
+
+.atlas .atlas-inspector-open {
+    font-size: 0.9rem;
+    color: var(--ap-muted);
+}
+
+.atlas .atlas-inspector-note {
+    font-style: italic;
+}
+
+.atlas .atlas-inspector-teaser {
+    padding-left: 0.75rem;
+    border-left: 3px solid var(--ap-frontier);
+}
+
+.atlas .atlas-inspector-paths-title {
+    font-size: 0.85rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ap-muted);
+    margin-top: 0.8rem;
+}
+
+.atlas-inspector-paths {
+    list-style: none;
+    font-size: 0.92rem;
+}
+
+.atlas-inspector-path + .atlas-inspector-path {
+    margin-top: 0.25rem;
+}
+
+.atlas .atlas-inspector-hint {
+    color: var(--ap-muted);
+    font-style: italic;
+}
+
+.atlas .atlas-inspector-label-path {
+    font-size: 1.05rem;
+}
+
+/* Notice */
+
+.atlas .atlas-notice {
+    margin: 0 0 1rem;
+    padding: 0.6rem 0.9rem;
+    color: var(--ap-text);
+    background: var(--ap-surface);
+    border: 2px dashed var(--ap-lit);
+    border-radius: 8px;
+}
+
+.atlas .atlas-notice:empty {
+    display: none;
+}
+
+/* Legend */
+
+/* Four entries, always balanced: two by two (never three and one), one column on a phone. */
+.atlas-legend {
+    list-style: none;
+    display: grid;
+    gap: 0.5rem 1.5rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 0 0 0.5rem;
+    font-size: 0.9rem;
+    color: var(--ap-muted);
+}
+
+@media (max-width: 560px) {
+    .atlas-legend {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.atlas-legend li {
+    position: relative;
+    padding-left: 1.7rem;
+}
+
+.atlas-legend strong {
+    color: var(--ap-text);
+}
+
+.atlas-swatch {
+    position: absolute;
+    left: 0.15rem;
+    top: 0.3rem;
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border-radius: 50%;
+    box-sizing: border-box;
+}
+
+.atlas-swatch-visited {
+    background: var(--ap-lit);
+    box-shadow: 0 0 8px 2px var(--ap-lit);
+}
+
+.atlas-swatch-frontier {
+    border: 3px solid var(--ap-frontier);
+}
+
+.atlas-swatch-contested {
+    border: 2px dashed var(--ap-contested);
+}
+
+.atlas-swatch-open {
+    border: 2px dashed var(--ap-open);
+    border-radius: 2px;
+    transform: rotate(45deg) scale(0.85);
+}
+
+.atlas noscript h3 {
+    font-size: 0.95rem;
+    color: var(--ap-muted);
+    border-bottom: 1px solid var(--ap-border);
+    margin: 1.25rem 0 0.5rem;
+    padding-bottom: 0.3rem;
+}
+
+.atlas noscript ol {
+    margin-left: 1.5rem;
+}
+
+.atlas noscript li {
+    margin-bottom: 0.3rem;
+}
+
+/* Suggestion chips (in the light conversation column) */
+
+.atlas-suggest {
+    margin: 0.75rem 0;
+}
+
+.atlas-suggest .atlas-suggest-label {
+    color: var(--color-primary);
+    font-weight: 700;
+    font-size: 0.9375rem;
+    line-height: 1.4;
+    margin-bottom: 0.3rem;
+}
+
+.atlas-suggest-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
+}
+
+/* Compact chips: the whole question stays, only the type and the padding are smaller. */
+.atlas-chip {
+    font: inherit;
+    font-size: 0.875rem;
+    line-height: 1.3;
+    text-align: left;
+    min-height: 44px;
+    padding: 0.35rem 0.85rem;
+    color: var(--color-primary);
+    background: var(--color-bg);
+    border: 2px solid var(--color-secondary);
+    border-radius: 1.1rem;
+    cursor: pointer;
+}
+
+/* Two-column page: the chat card has to fit chips, answer and message box in one window. */
+@media (min-width: 1180px) {
+    .atlas-suggest {
+        margin: 0.5rem 0 0.6rem;
+    }
+
+    .atlas-suggest .atlas-suggest-label {
+        font-size: 0.8125rem;
+        margin-bottom: 0.2rem;
+    }
+
+    .atlas-suggest-list {
+        gap: 0.3rem;
+    }
+
+    .atlas-chip {
+        min-height: 36px;
+        padding: 0.2rem 0.7rem;
+        font-size: 0.8125rem;
+        border-width: 1.5px;
+        border-radius: 0.9rem;
+    }
+}
+
+.atlas-chip:hover:not(:disabled) {
+    background: #ebf4ff;
+}
+
+.atlas-chip:focus-visible {
+    outline: 3px solid var(--color-accent);
+    outline-offset: 2px;
+}
+
+.atlas-chip:disabled {
+    color: #4a5568;
+    border-style: dashed;
+    border-color: #718096;
+    cursor: not-allowed;
+}
+
+.atlas-suggest .atlas-suggest-paused {
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
+    color: var(--color-text);
+}
+
+@media (max-width: 640px) {
+    .atlas {
+        padding: var(--spacing-unit);
+    }
+
+    .atlas-tabs {
+        width: 100%;
+    }
+
+    .atlas-tabs button {
+        flex: 1 1 auto;
+    }
+
+    .atlas-chip {
+        width: 100%;
+        border-radius: 12px;
+    }
+
+    .atlas-suggest-list,
+    .atlas-suggest-item {
+        width: 100%;
+    }
+}
+
+@media (forced-colors: active) {
+    .atlas-tabs button,
+    .atlas-list-ask,
+    .atlas-chip {
+        border: 2px solid ButtonText;
+    }
+
+    .atlas-tabs button[aria-pressed="true"] {
+        background: Highlight;
+        color: HighlightText;
+    }
+
+    .atlas-list-ask:disabled,
+    .atlas-chip:disabled {
+        border-style: dashed;
+        border-color: GrayText;
+        color: GrayText;
+    }
+
+    .atlas-swatch {
+        border: 2px solid CanvasText;
+        background: Canvas;
+        box-shadow: none;
+    }
+
+    .atlas-swatch-visited {
+        background: Highlight;
+    }
+
+    .atlas-swatch-frontier {
+        border-width: 4px;
+    }
+
+    .atlas-swatch-contested,
+    .atlas-swatch-open {
+        border-style: dashed;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .atlas *,
+    .atlas-chat * {
+        animation: none !important;
+        transition: none !important;
+    }
+}
