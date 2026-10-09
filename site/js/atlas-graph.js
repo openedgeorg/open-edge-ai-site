@@ -32,13 +32,13 @@ export const REGIONS = [
 export const ISLANDS = [
   // ---- L0 The Coast: the promise (section 1) ----
   {
-    id: "isp-counterparty", name: "ISP as your counterparty", region: "coast", x: 110, y: 126,
+    id: "isp-counterparty", name: "ISP as your counterparty", region: "coast", x: 118, y: 118,
     teaser: "Why do I pay my ISP instead of billing each app separately?",
     trace: [{ section: 1, anchor: "financial counterparty for participating Internet services" }],
     terms: ["financial counterparty", "counterparty", "separate billing relationship"],
   },
   {
-    id: "app-set-prices", name: "Apps set their own prices", region: "coast", x: 95, y: 238,
+    id: "app-set-prices", name: "Apps set their own prices", region: "coast", x: 70, y: 239,
     teaser: "Do apps share a fixed subscription pool, like on Spotify?",
     trace: [
       { section: 1, anchor: "ESP explicitly chooses app-set prices over Spotify-style fixed-pot" },
@@ -47,7 +47,7 @@ export const ISLANDS = [
     terms: ["app-set prices", "app-set", "Spotify", "fixed-pot sharing", "fixed subscription pool", "sets its tariff", "usage-based provider economics"],
   },
   {
-    id: "internet-bill", name: "Your internet bill", region: "coast", x: 112, y: 382, start: true,
+    id: "internet-bill", name: "Your internet bill", region: "coast", x: 119, y: 371, start: true,
     teaser: "Does ESP change what I pay my ISP each month?",
     trace: [
       { section: 1, anchor: "the household pays its ISP under one standing plan" },
@@ -56,13 +56,13 @@ export const ISLANDS = [
     terms: ["internet bill", "your bill", "ISP bill", "monthly bill", "agreed plan price"],
   },
   {
-    id: "standing-plan", name: "One standing plan", region: "coast", x: 90, y: 487,
+    id: "standing-plan", name: "One standing plan", region: "coast", x: 95, y: 476,
     teaser: "Why a fixed monthly plan instead of paying per app?",
     trace: [{ section: 1, anchor: "The household buys predictable access rather than a sequence of isolated" }],
     terms: ["standing plan", "fixed monthly plan", "predictable access", "flat-rate", "flat rate"],
   },
   {
-    id: "monthly-epochs", name: "Monthly epochs", region: "coast", x: 93, y: 677,
+    id: "monthly-epochs", name: "Monthly epochs", region: "coast", x: 95, y: 672,
     teaser: "What happens during one ESP month?",
     trace: [{ section: 1, anchor: "The architecture runs in monthly epochs" }],
     terms: ["monthly epoch", "monthly epochs", "ESP epoch"],
@@ -70,7 +70,7 @@ export const ISLANDS = [
 
   // ---- L1 The Lowlands: living with an allowance (sections 1, 3) ----
   {
-    id: "funding-pressure", name: "Prices push on the ISP", region: "lowlands", x: 228, y: 131,
+    id: "funding-pressure", name: "Prices push on the ISP", region: "lowlands", x: 226, y: 139,
     teaser: "Can app price rises end up in my plan price?",
     trace: [
       { section: 1, anchor: "App prices transmit rising service costs into ISP funding pressure" },
@@ -79,7 +79,7 @@ export const ISLANDS = [
     terms: ["funding pressure", "price pressure", "rising service costs", "future household plan prices"],
   },
   {
-    id: "price-feedback", name: "Price feedback by experience", region: "lowlands", x: 229, y: 242,
+    id: "price-feedback", name: "Price feedback by experience", region: "lowlands", x: 241, y: 250,
     teaser: "How would I notice that an app has become expensive?",
     trace: [
       { section: 1, anchor: "ESP chooses user experience as the household" },
@@ -88,13 +88,13 @@ export const ISLANDS = [
     terms: ["price feedback", "economic feedback", "immediate economic feedback", "household user experience"],
   },
   {
-    id: "household-analytics", name: "Household analytics", region: "lowlands", x: 247, y: 332,
+    id: "household-analytics", name: "Household analytics", region: "lowlands", x: 229, y: 331,
     teaser: "Can I see which app is using up my allowance?",
     trace: [{ section: 3, anchor: "Household analytics make the cost of app choices visible" }],
     terms: ["household analytics", "analytics shows", "consumption by app", "tariff increases from increased usage"],
   },
   {
-    id: "fup-faucet", name: "The FUP faucet", region: "lowlands", x: 234, y: 410,
+    id: "fup-faucet", name: "The FUP faucet", region: "lowlands", x: 240, y: 415,
     teaser: "How does my ISP decide how much extra to give me?",
     trace: [
       { section: 3, anchor: "Fair-use policy is implemented as an allowance faucet" },
@@ -103,7 +103,7 @@ export const ISLANDS = [
     terms: ["FUP faucet", "allowance faucet", "fair-use policy", "fair use policy", "faucet", "tail reserve", "rate cap", "rate caps", "top-up buffer"],
   },
   {
-    id: "base-and-topups", name: "Base allowance and top-ups", region: "lowlands", x: 272, y: 503,
+    id: "base-and-topups", name: "Base allowance and top-ups", region: "lowlands", x: 279, y: 502,
     teaser: "If I run out, can I ask for more?",
     trace: [
       { section: 3, anchor: "Every household has one fungible monthly allowance" },
@@ -112,7 +112,7 @@ export const ISLANDS = [
     terms: ["base allowance", "guaranteed base", "fungible", "one allowance", "top-up entitlements", "top-ups are conditional", "conditional top-ups"],
   },
   {
-    id: "retail-contract", name: "The retail contract", region: "lowlands", x: 225, y: 588,
+    id: "retail-contract", name: "The retail contract", region: "lowlands", x: 225, y: 589,
     teaser: "Who decides how big my allowance is?",
     trace: [
       { section: 3, anchor: "subscriber contract defines the retail promise" },
@@ -121,7 +121,7 @@ export const ISLANDS = [
     terms: ["subscriber contract", "retail contract", "retail promise", "retail terms", "retail product design", "contractual maximum"],
   },
   {
-    id: "signed-refusal", name: "A refusal you can prove", region: "lowlands", x: 276, y: 658,
+    id: "signed-refusal", name: "A refusal you can prove", region: "lowlands", x: 272, y: 658,
     teaser: "What if my ISP refuses a top-up I was promised?",
     trace: [
       { section: 3, anchor: "the signed refusal gives the household evidence" },
@@ -132,19 +132,19 @@ export const ISLANDS = [
 
   // ---- L2 The Interior: money plumbing (section 2) ----
   {
-    id: "common-fund", name: "The common fund", region: "interior", x: 380, y: 100,
+    id: "common-fund", name: "The common fund", region: "interior", x: 367, y: 101,
     teaser: "Where does the money for the apps actually sit?",
     trace: [{ section: 2, anchor: "ESP operates one common protocol-level fund" }],
     terms: ["common fund", "common-fund", "protocol-level fund"],
   },
   {
-    id: "isp-commitment", name: "ISP monthly commitment", region: "interior", x: 378, y: 261,
+    id: "isp-commitment", name: "ISP monthly commitment", region: "interior", x: 355, y: 281,
     teaser: "What does my ISP prepay each month, and for whom?",
     trace: [{ section: 2, anchor: "Each ISP prepays a monthly commitment for every participating household" }],
     terms: ["monthly commitment", "monthly commitments", "ISP commitment", "ISP commitments", "prepays"],
   },
   {
-    id: "the-pot", name: "The pot", region: "interior", x: 405, y: 337,
+    id: "the-pot", name: "The pot", region: "interior", x: 437, y: 329,
     teaser: "What is the pot an ISP gets each month?",
     trace: [
       { section: 2, anchor: "The protocol assigns each ISP a monthly pot" },
@@ -154,7 +154,7 @@ export const ISLANDS = [
     terms: ["the pot", "monthly pot", "spending envelope", "spending authority", "hard ceiling", "solvency boundary"],
   },
   {
-    id: "overdraft", name: "Overdraft", region: "interior", x: 424, y: 408,
+    id: "overdraft", name: "Overdraft", region: "interior", x: 411, y: 397,
     teaser: "Can the pot be bigger than what the ISP committed?",
     trace: [
       { section: 2, anchor: "the difference is an overdraft limit backed by the common fund" },
@@ -164,7 +164,7 @@ export const ISLANDS = [
     terms: ["overdraft", "overdraft limit", "unsecured overdraft"],
   },
   {
-    id: "isp-debt", name: "Debt from executed use", region: "interior", x: 415, y: 512,
+    id: "isp-debt", name: "Debt from executed use", region: "interior", x: 423, y: 499,
     teaser: "When does an ISP actually owe the fund money?",
     trace: [
       { section: 2, anchor: "Debt arises only from executed consumption" },
@@ -174,7 +174,7 @@ export const ISLANDS = [
     terms: ["executed consumption", "ISP debt", "ISP liability", "liability to the common fund", "ISP default", "debt arises"],
   },
   {
-    id: "debt-update", name: "The monthly debt update", region: "interior", x: 420, y: 630,
+    id: "debt-update", name: "The monthly debt update", region: "interior", x: 426, y: 629,
     teaser: "How is an ISP's debt recalculated after each month?",
     trace: [
       { section: 2, anchor: "debt is updated mechanically" },
@@ -185,7 +185,7 @@ export const ISLANDS = [
     terms: ["debt update", "debt service", "debt-service", "capital account", "capital-account", "communal surplus", "correction funding", "opening debt", "closing debt"],
   },
   {
-    id: "commitment-floor", name: "The commitment floor", region: "interior", x: 350, y: 699,
+    id: "commitment-floor", name: "The commitment floor", region: "interior", x: 350, y: 702,
     teaser: "What happens to an ISP that keeps underfunding?",
     trace: [
       { section: 2, anchor: "Persistent underfunding eventually creates a binding commitment floor" },
@@ -196,7 +196,7 @@ export const ISLANDS = [
 
   // ---- L3 The Highlands: signed facts (sections 3, 4) ----
   {
-    id: "price-catalogue", name: "Epoch price catalogue", region: "highlands", x: 536, y: 117,
+    id: "price-catalogue", name: "Epoch price catalogue", region: "highlands", x: 537, y: 116,
     status: "contested", label: "awaits incorporation",
     teaser: "How is an app's price meant to become binding for the month?",
     trace: [
@@ -207,19 +207,19 @@ export const ISLANDS = [
     terms: ["price catalogue", "price-catalogue", "signed price catalogue", "accepted catalogue", "tariff agreement"],
   },
   {
-    id: "conrec", name: "Consumption Record (ConRec)", region: "highlands", x: 538, y: 246,
+    id: "conrec", name: "Consumption Record (ConRec)", region: "highlands", x: 537, y: 267,
     teaser: "What proves that I really used an app?",
     trace: [{ section: 4, anchor: "Every billable act produces a Consumption Record (ConRec) signed by both" }],
     terms: ["ConRec", "ConRecs", "Consumption Record", "Consumption Records"],
   },
   {
-    id: "optimistic-serving", name: "Optimistic serving", region: "highlands", x: 550, y: 369,
+    id: "optimistic-serving", name: "Optimistic serving", region: "highlands", x: 560, y: 364,
     teaser: "Can an app serve me before my top-up arrives?",
     trace: [{ section: 4, anchor: "Serving can remain optimistic" }],
     terms: ["optimistic serving", "optimistic service", "optimistic credit"],
   },
   {
-    id: "evidence-kept", name: "Evidence kept off-chain", region: "highlands", x: 515, y: 432,
+    id: "evidence-kept", name: "Evidence kept off-chain", region: "highlands", x: 523, y: 429,
     teaser: "Where do the signed records live, and for how long?",
     trace: [
       { section: 4, anchor: "Price agreements and fine-grained evidence remain off-chain during" },
@@ -229,7 +229,7 @@ export const ISLANDS = [
     terms: ["off-chain", "evidence retention", "evidence custodians", "local diary", "retention period"],
   },
   {
-    id: "hsatm", name: "Signed allowance message (HSATM)", region: "highlands", x: 554, y: 553,
+    id: "hsatm", name: "Signed allowance message (HSATM)", region: "highlands", x: 559, y: 548,
     teaser: "Who signs my allowance, and what exactly do they sign?",
     trace: [
       { section: 3, anchor: "Every allowance decision becomes a jointly signed historical fact" },
@@ -238,7 +238,7 @@ export const ISLANDS = [
     terms: ["HSATM", "HSATMs", "HSAT", "Household Signed Allowance Message", "Household Signed Allowance Total", "highest-sequence", "signed allowance message"],
   },
   {
-    id: "box-hlaa", name: "The box declines to sign", region: "highlands", x: 527, y: 672,
+    id: "box-hlaa", name: "The box declines to sign", region: "highlands", x: 528, y: 673,
     teaser: "What does my box do when my allowance runs out?",
     trace: [
       { section: 3, anchor: "The normal box enforces the allowance locally" },
@@ -250,7 +250,7 @@ export const ISLANDS = [
 
   // ---- L4 The Mountains: masks (section 5) ----
   {
-    id: "heid", name: "Fresh key, fresh HEID", region: "mountains", x: 668, y: 129,
+    id: "heid", name: "Fresh key, fresh HEID", region: "mountains", x: 666, y: 135,
     teaser: "Can apps follow me from one month to the next?",
     trace: [
       { section: 5, anchor: "A household receives a fresh cryptographic identity for every epoch" },
@@ -259,7 +259,7 @@ export const ISLANDS = [
     terms: ["HEID", "HEIDs", "household epoch ID", "epoch ID", "epoch keypair", "epoch key", "fresh keypair", "fresh cryptographic identity"],
   },
   {
-    id: "identity-layers", name: "Three layers of identity", region: "mountains", x: 687, y: 230,
+    id: "identity-layers", name: "Three layers of identity", region: "mountains", x: 699, y: 225,
     teaser: "Who can see who I am, and who can't?",
     trace: [
       { section: 5, anchor: "The identity model has three deliberate layers" },
@@ -269,7 +269,7 @@ export const ISLANDS = [
     terms: ["three layers", "identity layers", "three identity layers", "identity model", "parent ISP", "request-level Consumption Records"],
   },
   {
-    id: "encrypted-heids", name: "Encrypted HEIDs", region: "mountains", x: 662, y: 319,
+    id: "encrypted-heids", name: "Encrypted HEIDs", region: "mountains", x: 669, y: 313,
     teaser: "Why can't two apps tell, from public claims, that they share a customer?",
     trace: [
       { section: 5, anchor: "Fresh encryption randomness prevents public basket reconstruction" },
@@ -278,7 +278,7 @@ export const ISLANDS = [
     terms: ["encrypted HEID", "encrypted HEIDs", "encrypted epoch ID", "fresh randomness", "encryption randomness", "unlinkable ciphertexts"],
   },
   {
-    id: "verification-tag", name: "The verification tag", region: "mountains", x: 678, y: 428,
+    id: "verification-tag", name: "The verification tag", region: "mountains", x: 681, y: 411,
     teaser: "How can I find my own entry in a public list?",
     trace: [
       { section: 5, anchor: "The ISP and box also share one private verification secret" },
@@ -288,7 +288,7 @@ export const ISLANDS = [
     terms: ["verification tag", "verification tags", "verification secret", "rotating tag", "one-way tag", "allowance lookup"],
   },
   {
-    id: "ats", name: "Allowance to Spend (AtS)", region: "mountains", x: 678, y: 548,
+    id: "ats", name: "Allowance to Spend (AtS)", region: "mountains", x: 685, y: 534,
     teaser: "What is the public list of closing allowances?",
     trace: [
       { section: 5, anchor: "The public Allowance to Spend (AtS) is anonymous but self-verifiable" },
@@ -298,7 +298,7 @@ export const ISLANDS = [
     terms: ["AtS", "Allowance to Spend", "closing allowance list"],
   },
   {
-    id: "ishec", name: "IsHEC against your diary", region: "mountains", x: 673, y: 680,
+    id: "ishec", name: "IsHEC against your diary", region: "mountains", x: 666, y: 669,
     teaser: "How do I check what my ISP says I consumed?",
     trace: [
       { section: 5, anchor: "The household independently checks both sides of its monthly equation" },
@@ -309,7 +309,7 @@ export const ISLANDS = [
 
   // ---- L5 The Deep Valley: month-end machinery (sections 6, 8) ----
   {
-    id: "epoch-timetable", name: "The epoch timetable", region: "valley", x: 832, y: 126,
+    id: "epoch-timetable", name: "The epoch timetable", region: "valley", x: 832, y: 117,
     teaser: "In what order does a month's machinery run?",
     trace: [
       { section: 8, anchor: "The epoch timetable prevents races and premature sweeps" },
@@ -319,13 +319,13 @@ export const ISLANDS = [
     terms: ["epoch timetable", "challenge window", "claim deadline", "hard deadline", "on-chain footprint", "blockchain load", "fixed epoch footprint"],
   },
   {
-    id: "hcd", name: "Opening the month: the HCD", region: "valley", x: 787, y: 183,
+    id: "hcd", name: "Opening the month: the HCD", region: "valley", x: 791, y: 177,
     teaser: "How does an ISP open a month?",
     trace: [{ section: 6, anchor: "The ISP opens every epoch by declaring and funding its participating" }],
     terms: ["HCD", "HCDs", "Household Commitment Declaration"],
   },
   {
-    id: "rtgp", name: "Request to get Paid (RtgP)", region: "valley", x: 869, y: 244,
+    id: "rtgp", name: "Request to get Paid (RtgP)", region: "valley", x: 881, y: 238,
     teaser: "How does an app get paid for a month of requests?",
     trace: [
       { section: 6, anchor: "Each app converts many service requests into one monthly claim" },
@@ -334,7 +334,7 @@ export const ISLANDS = [
     terms: ["RtgP", "RtgPs", "Request to get Paid", "monthly claim"],
   },
   {
-    id: "reconcile-together", name: "Reconciling all claims together", region: "valley", x: 793, y: 294,
+    id: "reconcile-together", name: "Reconciling all claims together", region: "valley", x: 802, y: 283,
     teaser: "Does the first app to claim get first dibs on my allowance?",
     trace: [
       { section: 6, anchor: "The ISP reconciles all apps together rather than processing claims in" },
@@ -343,13 +343,13 @@ export const ISLANDS = [
     terms: ["reconciles all apps together", "arrival order", "all claims together", "combined claims", "payment discretion"],
   },
   {
-    id: "heea", name: "Household escrow account (HEEA)", region: "valley", x: 831, y: 387,
+    id: "heea", name: "Household escrow account (HEEA)", region: "valley", x: 834, y: 360,
     teaser: "What caps what can be paid for one household?",
     trace: [{ section: 6, anchor: "A household escrow account is an accounting container, not a separate money" }],
     terms: ["HEEA", "HEEAs", "household epoch escrow account", "household escrow account", "escrow account", "escrow cap"],
   },
   {
-    id: "iptd", name: "The IPtD: proposed payouts", region: "valley", x: 784, y: 468,
+    id: "iptd", name: "The IPtD: proposed payouts", region: "valley", x: 778, y: 447,
     teaser: "What does the ISP publish about who gets paid?",
     trace: [
       { section: 6, anchor: "The IPtD publishes settlement outcomes without exposing household app" },
@@ -359,7 +359,7 @@ export const ISLANDS = [
     terms: ["IPtD", "IPtDs", "disbursement plan", "settlement outcomes", "public verification"],
   },
   {
-    id: "freeze-settle", name: "Settle clean, freeze flagged", region: "valley", x: 853, y: 542,
+    id: "freeze-settle", name: "Settle clean, freeze flagged", region: "valley", x: 858, y: 524,
     teaser: "What happens when a household's claims exceed its cap?",
     trace: [
       { section: 6, anchor: "Clean households settle and flagged households freeze" },
@@ -368,7 +368,7 @@ export const ISLANDS = [
     terms: ["the freeze", "flagged households", "clean households", "freezes every row", "freezing an overrun", "overrun flag"],
   },
   {
-    id: "slashing-collateral", name: "Slashing and collateral", region: "valley", x: 868, y: 616,
+    id: "slashing-collateral", name: "Slashing and collateral", region: "valley", x: 855, y: 603,
     teaser: "What does an ISP or an app stand to lose if it breaks the rules?",
     trace: [
       { section: 6, anchor: "collateral slashing and forced wind-down" },
@@ -377,7 +377,7 @@ export const ISLANDS = [
     terms: ["slashing", "slashed", "collateral", "wind-down", "registration collateral", "disposable padding identities"],
   },
   {
-    id: "emergency-settlement", name: "Emergency settlement (pilot)", region: "valley", x: 798, y: 681,
+    id: "emergency-settlement", name: "Emergency settlement (pilot)", region: "valley", x: 794, y: 680,
     teaser: "What if the ISP misses its IPtD deadline in the pilot?",
     trace: [{ section: 6, anchor: "A missing pilot IPtD invokes emergency settlement" }],
     terms: ["emergency settlement", "missing IPtD", "reveal their HEIDs"],
@@ -385,7 +385,7 @@ export const ISLANDS = [
 
   // ---- L6 The Badlands: disputes and attacks (sections 3, 6, 7, 8, 9) ----
   {
-    id: "evidence-round", name: "Evidence rounds and the CfEfA", region: "badlands", x: 987, y: 128,
+    id: "evidence-round", name: "Evidence rounds and the CfEfA", region: "badlands", x: 983, y: 110,
     teaser: "What triggers a dispute, and what gets made public?",
     trace: [
       { section: 7, anchor: "An evidence round can arise from three provable triggers" },
@@ -395,7 +395,7 @@ export const ISLANDS = [
     terms: ["evidence round", "evidence rounds", "CfEfA", "Call for Evidence", "in plaintext", "bounded public proceeding"],
   },
   {
-    id: "mechanical-resolution", name: "Mechanical resolution", region: "badlands", x: 945, y: 202,
+    id: "mechanical-resolution", name: "Mechanical resolution", region: "badlands", x: 971, y: 187,
     teaser: "Is a dispute meant to be settled by arithmetic or discretion?",
     trace: [
       { section: 7, anchor: "Resolution is designed to be mechanical rather than discretionary" },
@@ -404,7 +404,7 @@ export const ISLANDS = [
     terms: ["mechanical resolution", "mechanical rather than discretionary", "signed denial", "witness list", "self-correcting"],
   },
   {
-    id: "escalation-audit", name: "Escalation audit", region: "badlands", x: 1009, y: 243,
+    id: "escalation-audit", name: "Escalation audit", region: "badlands", x: 1014, y: 264,
     teaser: "What happens to an app caught with one fake row?",
     trace: [
       { section: 7, anchor: "An unsupported row is app fraud" },
@@ -413,7 +413,7 @@ export const ISLANDS = [
     terms: ["escalation audit", "escalation audits", "unsupported row", "app fraud"],
   },
   {
-    id: "silent-padding", name: "Silent padding", region: "badlands", x: 960, y: 308,
+    id: "silent-padding", name: "Silent padding", region: "badlands", x: 930, y: 317,
     teaser: "How could an app invent charges that stay under my cap?",
     trace: [
       { section: 9, anchor: "Silent padding hides a fabricated app charge below the household" },
@@ -422,7 +422,7 @@ export const ISLANDS = [
     terms: ["silent padding", "targeted silent padding", "fabricated app charge"],
   },
   {
-    id: "household-fraud", name: "Household fraud: the pro-rata split", region: "badlands", x: 1014, y: 374,
+    id: "household-fraud", name: "Household fraud: the pro-rata split", region: "badlands", x: 1021, y: 369,
     teaser: "What if a household really consumed more than its allowance?",
     trace: [
       { section: 7, anchor: "Valid consumption beyond the closing allowance is household fraud" },
@@ -432,7 +432,7 @@ export const ISLANDS = [
     terms: ["household fraud", "pro-rata haircuts", "divided pro rata", "absorb the shortfall", "shaved entry"],
   },
   {
-    id: "timing-states", name: "Three timing states of an audit", region: "badlands", x: 966, y: 455,
+    id: "timing-states", name: "Three timing states of an audit", region: "badlands", x: 931, y: 421,
     teaser: "How does an audit tell a fair top-up race from cheating?",
     trace: [
       { section: 3, anchor: "The ex-post audit separates three timing states" },
@@ -441,7 +441,7 @@ export const ISLANDS = [
     terms: ["timing states", "pending-grant race", "spend-ahead", "ex-post audit"],
   },
   {
-    id: "hoarding", name: "Hoarding", region: "badlands", x: 932, y: 586,
+    id: "hoarding", name: "Hoarding", region: "badlands", x: 936, y: 575,
     teaser: "Why is asking for a top-up far ahead of need a violation?",
     trace: [
       { section: 9, anchor: "Allowance hoarding front-runs the ISP" },
@@ -450,7 +450,7 @@ export const ISLANDS = [
     terms: ["hoarding", "allowance hoarding", "front-runs"],
   },
   {
-    id: "fup-audit", name: "FUP audits: private, then bilateral", region: "badlands", x: 998, y: 611,
+    id: "fup-audit", name: "FUP audits: private, then bilateral", region: "badlands", x: 998, y: 609,
     note: "A production implementation may reduce exposure with zero-knowledge proofs",
     teaser: "How is my top-up behaviour audited, in the pilot and after?",
     trace: [
@@ -461,7 +461,7 @@ export const ISLANDS = [
     terms: ["FUP audit", "FUP audits", "timing audit", "timing audits", "bilateral", "zero knowledge", "zero-knowledge", "ZK"],
   },
   {
-    id: "pilot-operator", name: "The pilot operator", region: "badlands", x: 943, y: 699,
+    id: "pilot-operator", name: "The pilot operator", region: "badlands", x: 937, y: 699,
     teaser: "Who carries a household's evidence into the protocol?",
     trace: [
       { section: 8, anchor: "The pilot operator bridges household findings into protocol action" },
@@ -470,7 +470,7 @@ export const ISLANDS = [
     terms: ["pilot operator", "second instance"],
   },
   {
-    id: "settlement-finality", name: "Final at execution (pilot)", region: "badlands", x: 985, y: 529,
+    id: "settlement-finality", name: "Final at execution (pilot)", region: "badlands", x: 983, y: 498,
     teaser: "In the pilot, can an executed payment be reversed?",
     trace: [
       { section: 6, anchor: "Pilot settlement becomes final when execution runs" },
@@ -481,70 +481,70 @@ export const ISLANDS = [
 
   // ---- L7 Here be dragons: open, not ratified (section 10, and section 6) ----
   {
-    id: "tariff-format", name: "Tariff-agreement format", region: "dragons", x: 1168, y: 102,
+    id: "tariff-format", name: "Tariff-agreement format", region: "dragons", x: 1171, y: 97,
     status: "open", label: "open, not ratified",
     teaser: "What is still unspecified about tariff agreements?",
     trace: [{ section: 10, anchor: "Epoch tariff agreements still need a format and evidence specification" }],
     terms: ["format and evidence specification", "tariff-agreement format", "catalogue identifiers", "acceptance binding"],
   },
   {
-    id: "credit-calibration", name: "Credit-policy calibration", region: "dragons", x: 1083, y: 185,
+    id: "credit-calibration", name: "Credit-policy calibration", region: "dragons", x: 1083, y: 170,
     status: "open", label: "open, not ratified",
     teaser: "Which parts of the ISP credit policy still need calibration?",
     trace: [{ section: 10, anchor: "The ISP credit policy still needs numerical calibration" }],
     terms: ["credit policy", "credit-policy", "debt ceilings", "debt ageing", "collateral ratios", "amortization schedules", "default waterfall", "numerical calibration"],
   },
   {
-    id: "dishonest-isp", name: "Dishonest-ISP analysis", region: "dragons", x: 1178, y: 244,
+    id: "dishonest-isp", name: "Dishonest-ISP analysis", region: "dragons", x: 1179, y: 248,
     status: "open", label: "open, not ratified",
     teaser: "Which dishonest-ISP cases must the design still test?",
     trace: [{ section: 10, anchor: "Dishonest-ISP analysis remains incomplete" }],
     terms: ["dishonest-ISP", "dishonest ISP", "allowance shaving", "tag-to-ciphertext"],
   },
   {
-    id: "collusion-padding", name: "ISP-and-app collusion", region: "dragons", x: 1101, y: 301,
+    id: "collusion-padding", name: "ISP-and-app collusion", region: "dragons", x: 1099, y: 308,
     status: "open", label: "open, not ratified",
     teaser: "Is there a padding attack the design cannot yet stop?",
     trace: [{ section: 10, anchor: "ISP-and-app collusion still has an undefeated silent-padding form" }],
     terms: ["ISP-and-app collusion", "ISP and app collusion", "undefeated silent-padding", "accomplice app"],
   },
   {
-    id: "anti-collusion", name: "Anti-collusion candidates", region: "dragons", x: 1175, y: 358,
+    id: "anti-collusion", name: "Anti-collusion candidates", region: "dragons", x: 1177, y: 368,
     status: "open", label: "open, not ratified",
     teaser: "Which anti-collusion ideas are only candidates so far?",
     trace: [{ section: 10, anchor: "Several production anti-collusion mechanisms remain candidates" }],
     terms: ["anti-collusion", "charged-total annex", "broadcast evidence summons", "compelled verifiable decryption", "random evidence sampling"],
   },
   {
-    id: "borrow-and-default", name: "Borrow-and-default", region: "dragons", x: 1102, y: 415,
+    id: "borrow-and-default", name: "Borrow-and-default", region: "dragons", x: 1082, y: 446,
     status: "open", label: "open, not ratified",
     teaser: "When would turning an ISP overdraft into cash pay off?",
     trace: [{ section: 10, anchor: "Borrow-and-default replaces consumption-weighted allocation farming" }],
     terms: ["borrow-and-default", "borrow and default", "wash app", "allocation farming"],
   },
   {
-    id: "durable-second-instance", name: "A durable second instance", region: "dragons", x: 1170, y: 496,
+    id: "durable-second-instance", name: "A durable second instance", region: "dragons", x: 1178, y: 489,
     status: "open", label: "open, not ratified",
     teaser: "Why is the pilot operator only a temporary second instance?",
     trace: [{ section: 10, anchor: "Production needs a durable second instance" }],
     terms: ["durable second instance", "temporary institutional answer"],
   },
   {
-    id: "finality-horizon", name: "Finality and clawback horizon", region: "dragons", x: 1085, y: 553,
+    id: "finality-horizon", name: "Finality and clawback horizon", region: "dragons", x: 1088, y: 549,
     status: "open", label: "open, not ratified",
     teaser: "How is fraud found after payment handled, and what is still open?",
     trace: [{ section: 10, anchor: "Production needs a deliberate finality and clawback horizon" }],
     terms: ["clawback horizon", "restitution routing", "offsets against future payouts"],
   },
   {
-    id: "isp-fronting", name: "ISP fronting of shortfalls", region: "dragons", x: 1179, y: 610,
+    id: "isp-fronting", name: "ISP fronting of shortfalls", region: "dragons", x: 1180, y: 609,
     status: "open", label: "open, not ratified",
     teaser: "Could the ISP pay apps in full and recover from the household?",
     trace: [{ section: 10, anchor: "ISP fronting of household shortfalls remains optional future work" }],
     terms: ["ISP fronting", "fronting of household shortfalls", "obligatory insurer"],
   },
   {
-    id: "post-pilot-emergency", name: "Post-pilot emergency settlement", region: "dragons", x: 1106, y: 667,
+    id: "post-pilot-emergency", name: "Post-pilot emergency settlement", region: "dragons", x: 1104, y: 669,
     status: "open", label: "open, not ratified", note: "Undefined after the pilot",
     teaser: "Is there a post-pilot equivalent of emergency settlement?",
     trace: [{ section: 6, anchor: "the equivalent post-pilot recovery mechanism remains undefined" }],
