@@ -50,10 +50,26 @@ def _release() -> ResolvedRelease:
     return ResolvedRelease(release_id=RELEASE_ID, manifest=manifest, brain_bytes=brain, behavior_bytes=behavior)
 
 
+def _markers() -> tuple[bytes, bytes]:
+    return (
+        b"----- BEGIN SOURCE " + str(SOURCE_PATH).encode() + b" -----\n",
+        b"----- END SOURCE " + str(SOURCE_PATH).encode() + b" -----\n",
+    )
+
+
+def _embedded_source(brain: bytes) -> bytes:
+    """The bytes the brain carries between its BEGIN SOURCE and END SOURCE lines."""
+    begin, end = _markers()
+    assert brain.count(begin) == 1
+    assert brain.count(end) == 1
+    start = brain.index(begin) + len(begin)
+    return brain[start : brain.index(end)]
+
+
 def test_xai_messages_inject_the_local_draft_not_the_canary() -> None:
     brain = load_brain()
     behavior = load_behavior()
-    source = SOURCE_PATH.read_bytes()
+    source = _embedded_source(brain)
     assert RELEASE_ID == "local-draft-brain-v3"
     assert BRAIN_DIR.name == "local-draft-v3"
     assert len(brain) == BRAIN_LENGTH
@@ -113,15 +129,27 @@ def test_v3_wraps_the_source_with_the_v2_header_shape() -> None:
     """The wrapper mirrors v2: only the release id differs, and the source sits between the markers."""
     brain = load_brain()
     previous = (BRAIN_DIR.parent / "local-draft-v2" / "canonical_brain.md").read_bytes()
-    source = SOURCE_PATH.read_bytes()
-    begin = b"----- BEGIN SOURCE " + str(SOURCE_PATH).encode() + b" -----\n"
-    end = b"----- END SOURCE " + str(SOURCE_PATH).encode() + b" -----\n"
+    source = _embedded_source(brain)
+    begin, end = _markers()
     head, _, rest = brain.partition(begin)
     previous_head, _, _ = previous.partition(begin)
     assert rest == source + end
     assert head == previous_head.replace(b"local-draft-brain-v2", b"local-draft-brain-v3")
     assert head.count(b"local-draft-brain-v3") == 1
     assert b"local-draft-brain-v2" not in head
+
+
+def test_embedded_source_is_the_live_notes_file_while_that_file_is_unchanged() -> None:
+    """The notes file lives outside the repo and keeps being edited. This pins the revision v3 was built from."""
+    if not SOURCE_PATH.is_file():
+        pytest.skip(f"{SOURCE_PATH} is not available")
+    live = SOURCE_PATH.read_bytes()
+    if hashlib.sha256(live).hexdigest() != SOURCE_SHA256:
+        pytest.skip(
+            f"the notes file was revised after local-draft-brain-v3 was built from the {SOURCE_LENGTH}-byte revision "
+            f"(it now has {len(live)} bytes); publish the next local draft brain to follow it"
+        )
+    assert live == _embedded_source(load_brain())
 
 
 def test_behavior_is_paired_to_v3_and_keeps_the_v2_rules() -> None:
