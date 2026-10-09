@@ -435,6 +435,132 @@ describe("rejected runs", () => {
   });
 });
 
+describe("the draft box and the bridge's own text", () => {
+  /** What the chat does with a refused teaser: the rejected phase, with the text put back into the box. */
+  function rejectTeaser(port, text) {
+    port.setPhase("running");
+    port.setPhase("rejected");
+    port.draft = text;
+  }
+
+  for (const [label, pause] of [
+    ["409/429", REJECT_PAUSE_MS],
+    ["a later tap", REJECT_PAUSE_MS + 5000],
+  ]) {
+    test(`after a rejected teaser (${label}) its own text in the box no longer blocks a new teaser`, () => {
+      const { bridge, port, clock } = setup();
+      assert.deepEqual(bridge.sendTeaser("First teaser?"), { sent: true, reason: "" });
+      rejectTeaser(port, "First teaser?");
+      assert.equal(bridge.status().reason, "rejected", "the pause comes first");
+      assert.deepEqual(bridge.sendTeaser("Second teaser?"), { sent: false, reason: "rejected" });
+
+      clock.advance(pause);
+      assert.equal(port.draft, "First teaser?", "the refused text is still in the box");
+      assert.deepEqual(bridge.status(), { canSend: true, reason: "", message: "", resumeAt: null });
+      assert.deepEqual(bridge.sendTeaser("Second teaser?"), { sent: true, reason: "" });
+      assert.deepEqual(port.submitted, ["First teaser?", "Second teaser?"]);
+    });
+  }
+
+  test("the same teaser tapped again after the pause is allowed too", () => {
+    const { bridge, port, clock } = setup();
+    bridge.sendTeaser("Same teaser?");
+    rejectTeaser(port, "Same teaser?");
+    clock.advance(REJECT_PAUSE_MS);
+    assert.deepEqual(bridge.sendTeaser("Same teaser?"), { sent: true, reason: "" });
+    assert.deepEqual(port.submitted, ["Same teaser?", "Same teaser?"]);
+  });
+
+  test("the comparison trims and squashes whitespace (a textarea may reflow the text)", () => {
+    const { bridge, port, clock } = setup();
+    bridge.sendTeaser("  Why do I pay my ISP\n instead of each app?  ");
+    rejectTeaser(port, "  Why do I pay my ISP instead of  each app?\r\n");
+    clock.advance(REJECT_PAUSE_MS);
+    assert.equal(bridge.status().canSend, true);
+  });
+
+  test("a draft the visitor typed still blocks, whatever it is", () => {
+    const { bridge, port, clock } = setup();
+    bridge.sendTeaser("First teaser?");
+    rejectTeaser(port, "First teaser?");
+    clock.advance(REJECT_PAUSE_MS);
+    assert.equal(bridge.status().canSend, true);
+
+    for (const typed of ["something else entirely", "First teaser? and a bit more", "First teaser", "irst teaser?", "x"]) {
+      port.draft = typed;
+      const status = bridge.status();
+      assert.equal(status.canSend, false, typed);
+      assert.equal(status.reason, "draft", typed);
+      assert.ok(status.message.length > 0, typed);
+      assert.deepEqual(bridge.sendTeaser("Second teaser?"), { sent: false, reason: "draft" }, typed);
+    }
+    assert.deepEqual(port.submitted, ["First teaser?"], "nothing was overwritten");
+    port.draft = "";
+    assert.equal(bridge.status().canSend, true);
+  });
+
+  test("text that merely equals a teaser the bridge never sent still blocks", () => {
+    const { bridge, port } = setup({ draft: "Who actually pays the apps I use?" });
+    assert.equal(bridge.status().reason, "draft");
+    assert.deepEqual(bridge.sendTeaser("Who actually pays the apps I use?"), { sent: false, reason: "draft" });
+    assert.deepEqual(port.submitted, []);
+  });
+
+  test("only the LAST teaser counts as own text", () => {
+    const { bridge, port, clock } = setup();
+    assert.equal(bridge.sendTeaser("Teaser one?").sent, true);
+    port.setPhase("running");
+    port.reply = "an answer";
+    port.setPhase("ready");
+    assert.equal(bridge.sendTeaser("Teaser two?").sent, true);
+    rejectTeaser(port, "Teaser two?");
+    clock.advance(REJECT_PAUSE_MS);
+
+    port.draft = "Teaser one?"; // an older teaser is not what the bridge last put in the box
+    assert.equal(bridge.status().reason, "draft");
+    port.draft = "Teaser two?";
+    assert.equal(bridge.status().canSend, true);
+  });
+
+  test("a teaser's text in the box is not special once the visitor has sent something of their own", () => {
+    const { bridge, port } = setup();
+    assert.equal(bridge.sendTeaser("Teaser one?").sent, true);
+    port.setPhase("running");
+    port.reply = "answer one";
+    port.setPhase("ready");
+    assert.equal(bridge.status().canSend, true);
+
+    port.composerSubmit("my own question");
+    port.setPhase("running");
+    port.reply = "answer two";
+    port.setPhase("ready");
+    port.draft = "Teaser one?"; // the visitor happens to type the same words
+    assert.equal(bridge.status().reason, "draft");
+  });
+
+  test("an accepted teaser leaves an empty box and nothing changes for the visitor's typing", () => {
+    const { bridge, port } = setup();
+    bridge.sendTeaser("Teaser one?");
+    port.draft = ""; // the chat clears the box once the send is accepted
+    port.setPhase("running");
+    port.reply = "answer";
+    port.setPhase("ready");
+    assert.equal(bridge.status().canSend, true);
+    port.draft = "typed after";
+    assert.equal(bridge.status().reason, "draft");
+  });
+
+  test("a refused submit (throwing port) does not make the old text own text", () => {
+    const { bridge, port } = setup();
+    port.submit = () => {
+      throw new Error("composer unavailable");
+    };
+    assert.deepEqual(bridge.sendTeaser("Never sent?"), { sent: false, reason: "unavailable" });
+    port.draft = "Never sent?";
+    assert.equal(bridge.status().reason, "draft");
+  });
+});
+
 describe("rate limit", () => {
   test("20 composer submits inside 60 s disable teasers until the oldest ages out", () => {
     const { bridge, port, clock, changes } = setup();
@@ -1076,9 +1202,26 @@ describe("bridge on a fake page", () => {
     paint("rejected", "Teaser question"); // a rejected send keeps its text in the draft box
     assert.equal(bridge.status().reason, "rejected");
     clock.advance(REJECT_PAUSE_MS);
-    // the chat leaves the refused text in the box for a manual retry
+    // the chat leaves the refused text in the box for a manual retry: it is the bridge's own text,
+    // so it does not block the next teaser
     assert.equal(fake.draft.value, "Teaser question");
+    assert.equal(bridge.status().canSend, true);
+    assert.equal(bridge.sendTeaser("Another teaser").sent, true);
+    assert.equal(fake.draft.value, "Another teaser", "a new teaser overwrites the refused text");
+    assert.equal(fake.form.requestSubmitCalls, 2);
+  });
+
+  test("a rejected teaser followed by the visitor's own edit of the text blocks teasers", () => {
+    const { fake, clock, bridge, paint } = startPage();
+    paint("ready");
+    bridge.sendTeaser("Teaser question");
+    paint("rejected", "Teaser question");
+    clock.advance(REJECT_PAUSE_MS);
+    assert.equal(bridge.status().canSend, true);
+    fake.draft.value = "Teaser question, but about my own bill";
     assert.equal(bridge.status().reason, "draft");
+    assert.deepEqual(bridge.sendTeaser("Another teaser"), { sent: false, reason: "draft" });
+    assert.equal(fake.form.requestSubmitCalls, 1);
     fake.draft.value = "";
     assert.equal(bridge.status().canSend, true);
   });
