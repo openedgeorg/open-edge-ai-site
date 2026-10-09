@@ -190,6 +190,11 @@ export function createChatBridge({
   let awaiting = null; // {text, at}: a submit whose run has not finished yet
   let rejectUntil = 0;
   let submitEvents = 0;
+  // The last teaser this bridge submitted (whitespace squashed), so its own text coming back is not
+  // mistaken for something the visitor typed: after a 409/429 the chat puts the refused text back
+  // into the message box, and without this the teasers would stay blocked until it was cleared.
+  let ownText = "";
+  let sendingTeaser = false;
   let timer = null;
   let timerSet = false;
   const sends = []; // submit timestamps inside the rate window, ascending
@@ -236,7 +241,10 @@ export function createChatBridge({
     } catch {
       return block("unavailable");
     }
-    if (typeof draft === "string" && draft.trim() !== "") return block("draft");
+    if (typeof draft === "string") {
+      const typed = squash(draft);
+      if (typed !== "" && typed !== ownText) return block("draft");
+    }
     return { canSend: true, reason: "", message: "", resumeAt: null };
   }
 
@@ -320,6 +328,8 @@ export function createChatBridge({
     const t = now();
     submitEvents += 1;
     sends.push(t);
+    // A submit that did not come from sendTeaser is the visitor's own: their text is theirs from now on.
+    if (!sendingTeaser) ownText = "";
     awaiting = { text: typeof text === "string" ? text : "", at: t };
     changed();
   }
@@ -399,14 +409,24 @@ export function createChatBridge({
       const body = typeof text === "string" ? text.trim() : "";
       if (!body) return { sent: false, reason: "empty" };
       const before = submitEvents;
+      const previousOwn = ownText;
+      ownText = squash(body);
+      sendingTeaser = true;
       try {
-        port.submit(body);
-      } catch {
-        if (submitEvents === before) return { sent: false, reason: "unavailable" };
+        try {
+          port.submit(body);
+        } catch {
+          if (submitEvents === before) {
+            ownText = previousOwn;
+            return { sent: false, reason: "unavailable" };
+          }
+        }
+        // The port normally reports its own submit through onSubmit. If it did not, count it here
+        // so a second tap is still refused as busy.
+        if (submitEvents === before) onSubmitEvent(body);
+      } finally {
+        sendingTeaser = false;
       }
-      // The port normally reports its own submit through onSubmit. If it did not, count it here
-      // so a second tap is still refused as busy.
-      if (submitEvents === before) onSubmitEvent(body);
       return { sent: true, reason: "" };
     },
 
