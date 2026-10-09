@@ -11,8 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-BRAIN_DIR = ROOT / "knowledge" / "brain" / "local-draft-v2"
-RELEASE_ID = "local-draft-brain-v2"
+BRAIN_DIR = ROOT / "knowledge" / "brain" / "local-draft-v3"
+RELEASE_ID = "local-draft-brain-v3"
 
 
 def load_brain() -> bytes:
