@@ -1,0 +1,826 @@
+/* The Atlas: page layout and the dark fog-of-war map.
+   Toolbar, list, inspector, legend and suggestion chips live in atlas-panel.css.
+   No inline styles are used anywhere: every look below is a class. */
+
+/* ---- palette (custom properties) ---- */
+
+.atlas {
+    --atlas-sea: #0a1322;
+    --atlas-line: #2a3b5a;
+    --atlas-ink: #eaf0f9;
+    --atlas-ink-muted: #b4c2d8;
+    --atlas-caption: #8da0bd;
+    --atlas-visited: #f5c542;
+    --atlas-visited-glow: rgba(245, 197, 66, 0.85);
+    --atlas-visited-soft: rgba(245, 197, 66, 0.16);
+    --atlas-frontier: #63e6d4;
+    --atlas-frontier-glow: rgba(99, 230, 212, 0.8);
+    --atlas-contested: #c9a8ff;
+    --atlas-open: #ff9f80;
+    --atlas-open-glow: rgba(255, 159, 128, 0.7);
+    --atlas-fog: #43526f;
+    --atlas-band: rgba(148, 163, 184, 0.05);
+    --atlas-band-alt: rgba(148, 163, 184, 0.095);
+    --atlas-edge-lit: rgba(245, 197, 66, 0.5);
+    --atlas-edge-stub: rgba(99, 230, 212, 0.5);
+    --atlas-focus: #ffffff;
+    --atlas-map-min-width: 900px;
+}
+
+/* ---- page layout: map left, conversation right ---- */
+
+.atlas-section {
+    padding: calc(var(--spacing-unit, 1rem) * 3) 0;
+}
+
+/* Wider than the 1200px page container and with slimmer gutters: the map needs the room. */
+.container.atlas-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: calc(var(--spacing-unit, 1rem) * 1.5);
+    align-items: start;
+    max-width: 1680px;
+    padding-left: var(--spacing-unit, 1rem);
+    padding-right: var(--spacing-unit, 1rem);
+}
+
+.atlas-chat {
+    min-width: 0;
+    padding: 1.25rem;
+    background: var(--color-bg, #fff);
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+}
+
+.atlas-section .atlas-chat h2 {
+    font-size: 1.5rem;
+}
+
+.atlas-section .atlas-chat > p,
+.atlas-section .atlas-chat .composer p {
+    max-width: none;
+}
+
+.atlas-section .atlas-chat > p {
+    color: var(--color-text, #2d3748);
+}
+
+.atlas-chat .composer {
+    max-width: none;
+}
+
+.atlas-chat .composer textarea,
+.atlas-chat .composer select {
+    width: 100%;
+    padding: 0.5rem 0.6rem;
+    color: var(--color-text, #2d3748);
+    background: var(--color-bg, #fff);
+    border: 1px solid #a0aec0;
+    border-radius: 6px;
+}
+
+.atlas-chat .composer button {
+    min-height: 44px;
+    padding: 0.4rem 1.1rem;
+    color: var(--color-primary, #1a365d);
+    background: var(--color-bg, #fff);
+    border: 2px solid var(--color-secondary, #2b6cb0);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.atlas-chat .composer button[type="submit"] {
+    color: #fff;
+    background: var(--color-primary, #1a365d);
+    border-color: var(--color-primary, #1a365d);
+}
+
+.atlas-chat .composer button:disabled {
+    color: var(--color-text-light, #718096);
+    background: transparent;
+    border-style: dashed;
+    border-color: var(--color-text-light, #718096);
+    cursor: not-allowed;
+}
+
+/* Send and Cancel stay side by side, also on a phone. */
+.atlas-chat .composer-actions {
+    flex-direction: row;
+    align-items: stretch;
+}
+
+.atlas-chat .composer-actions button {
+    flex: 1 1 0;
+}
+
+/* The history comes first in the form, so the page reads top to bottom the way it looks.
+   It is a scroll region of its own: capped, keyboard reachable (tabindex="0" in the page) and
+   kept scrolled to the newest row by atlas.js. With nothing to show there is no box and no
+   empty tab stop. */
+.atlas-chat #history {
+    max-height: min(22rem, 36vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0.4rem 0.6rem 0.4rem 1.75rem;
+    background: var(--color-bg-alt, #f7fafc);
+    border: 1px solid #cbd5e0;
+    border-radius: 8px;
+    font-size: 0.875rem;
+    line-height: 1.45;
+}
+
+.atlas-chat #history:empty {
+    display: none;
+}
+
+.atlas-chat #history li + li {
+    margin-top: 0.5rem;
+}
+
+.atlas-chat #history:focus-visible {
+    outline: 3px solid var(--color-secondary, #2b6cb0);
+    outline-offset: 2px;
+}
+
+/* Contrast: the history rows and the status line used the page's paragraph grey (#718096,
+   4.02:1 on white). Now: rows #2d3748 on #f7fafc (11.4:1), status line #4a5568 on white (7.5:1). */
+.atlas-section .atlas-chat #history p {
+    color: var(--color-text, #2d3748);
+    overflow-wrap: anywhere;
+}
+
+.atlas-section .atlas-chat #phase {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: #4a5568;
+}
+
+/* Two columns from ~1180px up (the map then scrolls sideways a little rather than shrinking
+   its text); stacked below that. */
+@media (min-width: 1180px) {
+    .container.atlas-layout {
+        grid-template-columns: minmax(0, 1fr) clamp(17.5rem, 22vw, 24rem);
+    }
+
+    /* The card is as tall as the window allows and its history is the one flexible part: it
+       takes whatever height is left, so the suggestions, the newest answer, the message box and
+       Send all stay on screen together. Only when even the smallest history does not fit does the
+       card scroll. */
+    .atlas-chat {
+        position: sticky;
+        top: 4.75rem;
+        display: flex;
+        flex-direction: column;
+        max-height: calc(100vh - 5.5rem);
+        padding: 1rem 1.1rem;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+
+    .atlas-chat > * {
+        flex: 0 0 auto;
+    }
+
+    .atlas-chat > .composer {
+        flex: 1 1 auto;
+        min-height: 0;
+    }
+
+    .atlas-section .atlas-chat h2 {
+        margin-bottom: 0.25rem;
+        font-size: 1.15rem;
+        line-height: 1.3;
+    }
+
+    .atlas-section .atlas-chat > p {
+        font-size: 0.78rem;
+        line-height: 1.4;
+    }
+
+    .atlas-chat .composer {
+        gap: 0.4rem;
+    }
+
+    .atlas-chat .composer > * {
+        flex: 0 0 auto;
+    }
+
+    .atlas-chat .composer > #history {
+        flex: 1 1 auto;
+        min-height: 7rem;
+    }
+
+    .atlas-chat .composer label {
+        font-size: 0.8125rem;
+        line-height: 1.3;
+    }
+
+    .atlas-chat .composer textarea,
+    .atlas-chat .composer select {
+        padding: 0.35rem 0.6rem;
+    }
+
+    .atlas-chat .composer textarea {
+        height: 3.75rem;
+        resize: vertical;
+    }
+
+    .atlas-chat .composer button {
+        min-height: 40px;
+        padding: 0.25rem 1rem;
+    }
+}
+
+/* ---- dark card text (atlas-panel.css refines these) ---- */
+
+.atlas h2 {
+    color: var(--atlas-ink);
+}
+
+.atlas p {
+    max-width: none;
+    color: var(--atlas-ink-muted);
+}
+
+.atlas-intro,
+.atlas-honesty,
+.atlas-notice,
+.atlas-legend,
+.atlas-inspector {
+    max-width: 62rem;
+}
+
+.atlas-notice:empty {
+    display: none;
+}
+
+/* ---- the map ---- */
+
+.atlas-map-wrap {
+    overflow-x: auto;
+    overflow-y: hidden;
+    margin: 0.75rem 0 1rem;
+    background: var(--atlas-sea);
+    border: 1px solid var(--atlas-line);
+    border-radius: 10px;
+    scrollbar-color: #4a5f86 var(--atlas-sea);
+    overscroll-behavior-x: contain;
+}
+
+.atlas-svg {
+    display: block;
+    width: 100%;
+    min-width: var(--atlas-map-min-width);
+    height: auto;
+    font-family: var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* Zero specificity so the class rules below can set their own fill and anchor. */
+:where(.atlas-svg) text {
+    fill: var(--atlas-ink);
+    text-anchor: middle;
+    pointer-events: none;
+}
+
+.atlas-sea {
+    fill: var(--atlas-sea);
+}
+
+/* Regions: faint bands with level captions, always visible. */
+
+.atlas-band {
+    fill: var(--atlas-band);
+    stroke: rgba(148, 163, 184, 0.14);
+    stroke-width: 1;
+}
+
+.atlas-band.is-alt {
+    fill: var(--atlas-band-alt);
+}
+
+.atlas-region-level {
+    fill: var(--atlas-caption);
+    font-size: 21px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.atlas-region-name {
+    fill: var(--atlas-ink-muted);
+    font-size: 14.5px;
+    font-weight: 600;
+}
+
+.atlas-region-sub {
+    fill: var(--atlas-caption);
+    font-size: 12.5px;
+    font-style: italic;
+}
+
+/* Paths. */
+
+.atlas-edge-glow,
+.atlas-edge-line,
+.atlas-edge-hit {
+    fill: none;
+    stroke-linecap: round;
+}
+
+.atlas-edge.is-hidden {
+    display: none;
+}
+
+.atlas-edge-hit {
+    stroke: transparent;
+    stroke-width: 16px;
+    pointer-events: none;
+}
+
+.atlas-edge.is-lit .atlas-edge-hit {
+    pointer-events: stroke;
+}
+
+.atlas-edge-glow {
+    stroke: var(--atlas-visited);
+    stroke-width: 7px;
+    opacity: 0;
+}
+
+.atlas-edge.is-lit .atlas-edge-glow {
+    opacity: 0.12;
+}
+
+.atlas-edge-line {
+    stroke: var(--atlas-edge-lit);
+    stroke-width: 1.8px;
+    transition: stroke 0.2s, stroke-width 0.2s;
+}
+
+.atlas-edge.is-stub .atlas-edge-line {
+    stroke: var(--atlas-edge-stub);
+    stroke-width: 1.8px;
+    stroke-dasharray: 3 7;
+}
+
+.atlas-edge.is-lit.is-active .atlas-edge-line {
+    stroke: var(--atlas-visited);
+    stroke-width: 4px;
+}
+
+.atlas-edge.is-lit.is-active .atlas-edge-glow {
+    opacity: 0.32;
+}
+
+.atlas-edge-tip {
+    display: none;
+}
+
+.atlas-edge-tip.is-visible {
+    display: inline;
+}
+
+.atlas-edge-tip-bg {
+    fill: rgba(8, 15, 28, 0.94);
+    stroke: var(--atlas-visited);
+    stroke-width: 1.2px;
+}
+
+.atlas-edge-tip-text {
+    font-size: 14px;
+    font-weight: 600;
+    fill: var(--atlas-ink);
+}
+
+/* Islands. */
+
+.atlas-island {
+    outline: none;
+}
+
+.atlas-hit {
+    fill: transparent;
+    stroke: none;
+    pointer-events: all;
+    cursor: default;
+}
+
+.atlas-island.is-visited .atlas-hit,
+.atlas-island.is-frontier .atlas-hit {
+    cursor: pointer;
+}
+
+.atlas-island.is-fogged .atlas-hit {
+    pointer-events: none;
+}
+
+.atlas-fog-dot {
+    display: none;
+    fill: var(--atlas-fog);
+    opacity: 0.85;
+}
+
+.atlas-island.is-fogged .atlas-fog-dot {
+    display: inline;
+}
+
+.atlas-island.is-fogged .atlas-body,
+.atlas-island.is-fogged .atlas-label,
+.atlas-island.is-fogged .atlas-sublabel,
+.atlas-island.is-fogged .atlas-flare-ring,
+.atlas-island.is-fogged .atlas-focus-ring {
+    display: none;
+}
+
+.atlas-body {
+    transform-box: fill-box;
+    transform-origin: center;
+    transition: transform 0.15s ease-out;
+}
+
+.atlas-island.is-active .atlas-body {
+    transform: scale(1.14);
+}
+
+.atlas-halo,
+.atlas-contest-ring,
+.atlas-disc,
+.atlas-pip,
+.atlas-dragon-line,
+.atlas-flare-ring,
+.atlas-focus-ring {
+    fill: none;
+    stroke: none;
+}
+
+.atlas-halo {
+    transform-box: fill-box;
+    transform-origin: center;
+    opacity: 0;
+}
+
+/* Visited: a filled, glowing disc. */
+
+.atlas-island.is-visited .atlas-halo {
+    fill: var(--atlas-visited-soft);
+    opacity: 1;
+}
+
+.atlas-island.is-visited .atlas-disc {
+    fill: var(--atlas-visited);
+    stroke: #fff4cf;
+    stroke-width: 1.5px;
+    filter: drop-shadow(0 0 5px var(--atlas-visited-glow)) drop-shadow(0 0 12px var(--atlas-visited-glow));
+}
+
+.atlas-island.is-visited .atlas-pip {
+    fill: #7a5b05;
+}
+
+/* Frontier: a hollow, pulsing ring with a pip. */
+
+.atlas-island.is-frontier .atlas-disc {
+    fill: var(--atlas-sea);
+    stroke: var(--atlas-frontier);
+    stroke-width: 3px;
+    filter: drop-shadow(0 0 4px var(--atlas-frontier-glow));
+}
+
+.atlas-island.is-frontier .atlas-pip {
+    fill: var(--atlas-frontier);
+}
+
+.atlas-island.is-frontier .atlas-halo {
+    stroke: var(--atlas-frontier);
+    stroke-width: 1.6px;
+    opacity: 0.6;
+    animation: atlas-pulse 2.4s ease-in-out infinite;
+}
+
+/* Contested: a dashed outline around the island. */
+
+.atlas-island.is-contested.is-visited .atlas-contest-ring,
+.atlas-island.is-contested.is-frontier .atlas-contest-ring {
+    stroke: var(--atlas-contested);
+    stroke-width: 2.4px;
+    stroke-dasharray: 5 4;
+}
+
+.atlas-island.is-contested.is-visited .atlas-disc {
+    stroke: var(--atlas-contested);
+}
+
+/* Open: a dashed dragon, never a goal. No pulse, no solid fill. */
+
+.atlas-island.is-open .atlas-dragon-line {
+    stroke: var(--atlas-open);
+    stroke-width: 1.8px;
+    stroke-dasharray: 3 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.55;
+}
+
+.atlas-island.is-open.is-visited .atlas-dragon-line {
+    opacity: 1;
+    filter: drop-shadow(0 0 4px var(--atlas-open-glow));
+}
+
+.atlas-island.is-open.is-visited .atlas-halo {
+    fill: none;
+    stroke: var(--atlas-open);
+    stroke-width: 1.4px;
+    stroke-dasharray: 2 5;
+    opacity: 0.6;
+}
+
+.atlas-island.is-open.is-frontier .atlas-halo {
+    animation: none;
+    stroke-dasharray: 2 5;
+    stroke: var(--atlas-open);
+    opacity: 0.35;
+}
+
+/* Labels: names only on revealed islands. */
+
+.atlas-label,
+.atlas-sublabel {
+    paint-order: stroke fill;
+    stroke: var(--atlas-sea);
+    stroke-width: 5px;
+    stroke-linejoin: round;
+}
+
+.atlas-label {
+    font-size: 15px;
+    font-weight: 500;
+    fill: var(--atlas-ink);
+}
+
+.atlas-island.is-frontier .atlas-label {
+    fill: #c9f5ee;
+}
+
+.atlas-island.is-active .atlas-label {
+    font-weight: 700;
+    fill: #fff;
+}
+
+.atlas-sublabel {
+    font-size: 12.5px;
+    font-style: italic;
+    fill: var(--atlas-contested);
+}
+
+.atlas-island.is-open .atlas-sublabel {
+    fill: var(--atlas-open);
+}
+
+/* The bare map has tabindex="-1" (it is not a tab stop; it only receives focus when a visitor
+   clicks the empty sea). It must not draw an outline for that. More specific than the
+   `.atlas [tabindex]:focus-visible` ring in atlas-panel.css, which stays for buttons. */
+.atlas .atlas-map-wrap svg.atlas-svg:focus,
+.atlas .atlas-map-wrap svg.atlas-svg:focus-visible {
+    outline: none;
+}
+
+/* Focus ring (our own, so it scales with the map; the browser outline is off). */
+
+.atlas .atlas-svg g.atlas-island:focus,
+.atlas .atlas-svg g.atlas-island:focus-visible {
+    outline: none;
+}
+
+.atlas-island:focus-visible .atlas-focus-ring {
+    stroke: var(--atlas-focus);
+    stroke-width: 3px;
+    stroke-dasharray: none;
+}
+
+.atlas-island:focus-visible .atlas-label {
+    fill: #fff;
+    font-weight: 700;
+}
+
+/* Newly visited: a ring expands once. */
+
+.atlas-flare-ring {
+    transform-box: fill-box;
+    transform-origin: center;
+    opacity: 0;
+}
+
+.atlas-island.is-flare .atlas-flare-ring {
+    stroke: var(--atlas-visited);
+    stroke-width: 3px;
+    animation: atlas-flare 1.6s ease-out 1;
+}
+
+/* Paused: nothing is clickable and nothing pulses. */
+
+.atlas-svg.is-paused .atlas-island.is-frontier .atlas-halo {
+    animation: none;
+    opacity: 0.25;
+}
+
+.atlas-svg.is-paused .atlas-island.is-frontier .atlas-disc {
+    stroke-dasharray: 4 3;
+    filter: none;
+}
+
+.atlas-svg.is-paused .atlas-island.is-frontier .atlas-hit {
+    cursor: not-allowed;
+}
+
+.atlas-pause-note {
+    display: none;
+    text-anchor: start;
+    font-size: 14px;
+    font-weight: 600;
+    fill: var(--atlas-visited);
+}
+
+.atlas-pause-note.is-visible {
+    display: inline;
+}
+
+/* The edge dragon: sketched until the visitor has asked something, then inked. */
+
+.atlas-ed-body,
+.atlas-ed-fins,
+.atlas-ed-head,
+.atlas-ed-horn {
+    fill: none;
+    stroke: var(--atlas-open);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-dasharray: 4 5;
+    stroke-width: 2.2px;
+    opacity: 0.6;
+    transition: opacity 0.6s, stroke-width 0.6s;
+}
+
+.atlas-ed-eye {
+    fill: var(--atlas-open);
+    opacity: 0.6;
+    transition: opacity 0.6s;
+}
+
+.atlas-ed-caption {
+    text-anchor: end;
+    font-size: 15px;
+    font-style: italic;
+    fill: var(--atlas-caption);
+    transition: fill 0.6s;
+}
+
+.atlas-edge-dragon.is-inked .atlas-ed-body,
+.atlas-edge-dragon.is-inked .atlas-ed-fins,
+.atlas-edge-dragon.is-inked .atlas-ed-head,
+.atlas-edge-dragon.is-inked .atlas-ed-horn {
+    stroke-dasharray: none;
+    stroke-width: 3px;
+    opacity: 0.95;
+}
+
+.atlas-edge-dragon.is-inked .atlas-ed-head {
+    fill: rgba(255, 159, 128, 0.25);
+}
+
+.atlas-edge-dragon.is-inked .atlas-ed-eye {
+    opacity: 1;
+}
+
+.atlas-edge-dragon.is-inked .atlas-ed-caption {
+    fill: var(--atlas-ink);
+}
+
+/* ---- animation ---- */
+
+@keyframes atlas-pulse {
+    0%, 100% {
+        transform: scale(0.88);
+        opacity: 0.25;
+    }
+
+    50% {
+        transform: scale(1.3);
+        opacity: 0.85;
+    }
+}
+
+@keyframes atlas-flare {
+    0% {
+        transform: scale(1);
+        opacity: 0.95;
+    }
+
+    100% {
+        transform: scale(3.4);
+        opacity: 0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .atlas-svg *,
+    .atlas-svg *::before,
+    .atlas-svg *::after {
+        animation: none !important;
+        transition: none !important;
+    }
+
+    .atlas-island.is-flare .atlas-flare-ring {
+        opacity: 0.9;
+        transform: scale(1.7);
+    }
+
+    .atlas-island.is-active .atlas-body {
+        transform: none;
+    }
+}
+
+/* ---- high contrast: shape and outline carry the status, not colour ---- */
+
+@media (forced-colors: active) {
+    .atlas-sea {
+        fill: Canvas;
+    }
+
+    .atlas-svg text,
+    .atlas-label,
+    .atlas-sublabel,
+    .atlas-region-level,
+    .atlas-region-name,
+    .atlas-region-sub,
+    .atlas-ed-caption {
+        fill: CanvasText;
+        stroke: Canvas;
+    }
+
+    .atlas-band {
+        fill: none;
+        stroke: GrayText;
+    }
+
+    .atlas-fog-dot {
+        fill: GrayText;
+    }
+
+    .atlas-island.is-visited .atlas-disc {
+        fill: Highlight;
+        stroke: CanvasText;
+        filter: none;
+    }
+
+    .atlas-island.is-visited .atlas-pip {
+        fill: HighlightText;
+    }
+
+    .atlas-island.is-frontier .atlas-disc {
+        fill: Canvas;
+        stroke: CanvasText;
+        stroke-width: 3px;
+        filter: none;
+    }
+
+    .atlas-island.is-frontier .atlas-pip {
+        fill: CanvasText;
+    }
+
+    .atlas-island.is-frontier .atlas-halo {
+        stroke: CanvasText;
+        animation: none;
+    }
+
+    .atlas-island.is-contested .atlas-contest-ring,
+    .atlas-island.is-open .atlas-dragon-line,
+    .atlas-ed-body,
+    .atlas-ed-fins,
+    .atlas-ed-head,
+    .atlas-ed-horn,
+    .atlas-edge-line,
+    .atlas-edge.is-lit.is-active .atlas-edge-line {
+        stroke: CanvasText;
+        filter: none;
+    }
+
+    .atlas-edge-glow {
+        display: none;
+    }
+
+    .atlas-island:focus-visible .atlas-focus-ring {
+        stroke: Highlight;
+    }
+
+    .atlas-edge-tip-bg {
+        fill: Canvas;
+        stroke: CanvasText;
+    }
+
+    .atlas-pause-note,
+    .atlas-edge-tip-text {
+        fill: CanvasText;
+        stroke: none;
+    }
+}

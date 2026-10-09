@@ -7,6 +7,8 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'">
     <title>Open Edge AI — ESP / Clear Ledger</title>
     <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/atlas.css">
+    <link rel="stylesheet" href="css/atlas-panel.css">
 </head>
 <body>
     <header class="site-header">
@@ -49,38 +51,143 @@
             </div>
         </section>
 
-        <section id="conversation" class="section section-alt">
-            <div class="container">
-                <h2>Conversation</h2>
-                <p>The sections above stay available without JavaScript. This conversation is a development client and is not a Gate 1 claim.</p>
-                <noscript>
-                    <p>Conversation controls need JavaScript. The rest of this page remains available.</p>
-                </noscript>
-                <form id="composer" class="composer">
-                    <div id="history-state" class="history-state" role="status" aria-live="polite" hidden>
-                        <span id="history-state-text" class="history-state-text"></span>
-                        <button type="button" id="history-retry" class="history-retry" hidden>Try again</button>
+        <section id="explore" class="section section-alt atlas-section" aria-labelledby="atlas-title">
+            <div class="container atlas-layout">
+                <div id="atlas" class="atlas">
+                    <h2 id="atlas-title">The Atlas</h2>
+                    <p class="atlas-intro">This is a dark map of the ESP design. Ask in the chat, or tap a suggested question, and watch the places your answers mention light up.</p>
+                    <p class="atlas-honesty">Figures are illustrative only. The map is built from a draft summary that is not company-approved. &ldquo;Visited&rdquo; means an answer mentioned a place, not that it is understood or verified.</p>
+                    <div class="atlas-toolbar" id="atlas-toolbar" hidden>
+                        <p id="atlas-count" class="atlas-count" role="status" aria-live="polite"></p>
+                        <div class="atlas-tabs" role="group" aria-label="Atlas view">
+                            <button type="button" id="atlas-view-map" aria-pressed="true">Map</button>
+                            <button type="button" id="atlas-view-list" aria-pressed="false">List</button>
+                            <button type="button" id="atlas-reset">Clear map</button>
+                        </div>
                     </div>
-                    <ol id="history" aria-label="History" tabindex="0"></ol>
-                    <label for="provider">Provider for a new conversation</label>
-                    <select id="provider" name="provider">
-                        <option value="openai">OpenAI</option>
-                        <option value="xai">xAI</option>
-                    </select>
-                    <label for="draft">Message</label>
-                    <textarea id="draft" name="draft" rows="4"></textarea>
-                    <div class="composer-actions">
-                        <button type="submit" id="send">Send</button>
-                    </div>
-                    <div class="chat-actions">
-                        <button type="button" id="cancel" hidden>Cancel</button>
-                        <button type="button" id="check-status" hidden>Check status</button>
-                        <button type="button" id="retry" hidden>Send again</button>
-                        <button type="button" id="new-conversation" hidden>New conversation</button>
-                    </div>
-                    <p id="chat-status" class="chat-status" role="status" aria-live="polite" hidden></p>
-                    <p id="phase" class="chat-phase"></p>
-                </form>
+                    <div id="atlas-map" class="atlas-map-wrap"></div>
+                    <div id="atlas-list" class="atlas-list-wrap" hidden></div>
+                    <div id="atlas-inspector" class="atlas-inspector" aria-live="polite"></div>
+                    <p id="atlas-notice" class="atlas-notice" role="status"></p>
+                    <ul class="atlas-legend">
+                        <li><span class="atlas-swatch atlas-swatch-visited" aria-hidden="true"></span> <strong>visited</strong>: an answer mentioned this place</li>
+                        <li><span class="atlas-swatch atlas-swatch-frontier" aria-hidden="true"></span> <strong>next to explore</strong>: one step from a place you have visited</li>
+                        <li><span class="atlas-swatch atlas-swatch-contested" aria-hidden="true"></span> <strong>awaits incorporation</strong> (dashed outline): described in the draft, not yet part of the design&rsquo;s authoritative text</li>
+                        <li><span class="atlas-swatch atlas-swatch-open" aria-hidden="true"></span> <strong>open, not ratified</strong>: the designers&rsquo; own open list, not a roadmap</li>
+                    </ul>
+                    <noscript>
+                        <p>The map needs JavaScript. This plain index lists the same places, region by region. It is built from a draft summary that is not company-approved, and any figures are illustrative.</p>
+                        <!-- atlas-index:begin -->
+                        <h3>The Coast · L0 · The promise</h3>
+                        <ol>
+                            <li><strong>ISP as your counterparty</strong> · §1 · Why do I pay my ISP instead of billing each app separately?</li>
+                            <li><strong>Apps set their own prices</strong> · §1 · Do apps share a fixed subscription pool, like on Spotify?</li>
+                            <li><strong>Your internet bill</strong> · §1, §3 · Does ESP change what I pay my ISP each month?</li>
+                            <li><strong>One standing plan</strong> · §1 · Why a fixed monthly plan instead of paying per app?</li>
+                            <li><strong>Monthly epochs</strong> · §1 · What happens during one ESP month?</li>
+                        </ol>
+                        <h3>The Lowlands · L1 · Living with an allowance</h3>
+                        <ol>
+                            <li><strong>Prices push on the ISP</strong> · §1 · Can app price rises end up in my plan price?</li>
+                            <li><strong>Price feedback by experience</strong> · §1, §3 · How would I notice that an app has become expensive?</li>
+                            <li><strong>Household analytics</strong> · §3 · Can I see which app is using up my allowance?</li>
+                            <li><strong>The FUP faucet</strong> · §3 · How does my ISP decide how much extra to give me?</li>
+                            <li><strong>Base allowance and top-ups</strong> · §3 · If I run out, can I ask for more?</li>
+                            <li><strong>The retail contract</strong> · §3, §8 · Who decides how big my allowance is?</li>
+                            <li><strong>A refusal you can prove</strong> · §3 · What if my ISP refuses a top-up I was promised?</li>
+                        </ol>
+                        <h3>The Interior · L2 · Money plumbing</h3>
+                        <ol>
+                            <li><strong>The common fund</strong> · §2 · Where does the money for the apps actually sit?</li>
+                            <li><strong>ISP monthly commitment</strong> · §2 · What does my ISP prepay each month, and for whom?</li>
+                            <li><strong>The pot</strong> · §2, §3 · What is the pot an ISP gets each month?</li>
+                            <li><strong>Overdraft</strong> · §2 · Can the pot be bigger than what the ISP committed?</li>
+                            <li><strong>Debt from executed use</strong> · §2 · When does an ISP actually owe the fund money?</li>
+                            <li><strong>The monthly debt update</strong> · §2 · How is an ISP's debt recalculated after each month?</li>
+                            <li><strong>The commitment floor</strong> · §2 · What happens to an ISP that keeps underfunding?</li>
+                        </ol>
+                        <h3>The Highlands · L3 · Signed facts</h3>
+                        <ol>
+                            <li><strong>Epoch price catalogue</strong> · § status note, §4 · <em>awaits incorporation</em> · How is an app's price meant to become binding for the month?</li>
+                            <li><strong>Consumption Record (ConRec)</strong> · §4 · What proves that I really used an app?</li>
+                            <li><strong>Optimistic serving</strong> · §4 · Can an app serve me before my top-up arrives?</li>
+                            <li><strong>Evidence kept off-chain</strong> · §4, §8 · Where do the signed records live, and for how long?</li>
+                            <li><strong>Signed allowance message (HSATM)</strong> · §3 · Who signs my allowance, and what exactly do they sign?</li>
+                            <li><strong>The box declines to sign</strong> · §3, §8 · What does my box do when my allowance runs out?</li>
+                        </ol>
+                        <h3>The Mountains · L4 · Masks</h3>
+                        <ol>
+                            <li><strong>Fresh key, fresh HEID</strong> · §5 · Can apps follow me from one month to the next?</li>
+                            <li><strong>Three layers of identity</strong> · §5 · Who can see who I am, and who can't?</li>
+                            <li><strong>Encrypted HEIDs</strong> · §5 · Why can't two apps tell, from public claims, that they share a customer?</li>
+                            <li><strong>The verification tag</strong> · §5, §9 · How can I find my own entry in a public list?</li>
+                            <li><strong>Allowance to Spend (AtS)</strong> · §5, §6 · What is the public list of closing allowances?</li>
+                            <li><strong>IsHEC against your diary</strong> · §5 · How do I check what my ISP says I consumed?</li>
+                        </ol>
+                        <h3>The Deep Valley · L5 · Month-end machinery</h3>
+                        <ol>
+                            <li><strong>The epoch timetable</strong> · §6, §8 · In what order does a month's machinery run?</li>
+                            <li><strong>Opening the month: the HCD</strong> · §6 · How does an ISP open a month?</li>
+                            <li><strong>Request to get Paid (RtgP)</strong> · §6 · How does an app get paid for a month of requests?</li>
+                            <li><strong>Reconciling all claims together</strong> · §6, §8 · Does the first app to claim get first dibs on my allowance?</li>
+                            <li><strong>Household escrow account (HEEA)</strong> · §6 · What caps what can be paid for one household?</li>
+                            <li><strong>The IPtD: proposed payouts</strong> · §6, §8 · What does the ISP publish about who gets paid?</li>
+                            <li><strong>Settle clean, freeze flagged</strong> · §6, §7 · What happens when a household's claims exceed its cap?</li>
+                            <li><strong>Slashing and collateral</strong> · §6, §8 · What does an ISP or an app stand to lose if it breaks the rules?</li>
+                            <li><strong>Emergency settlement (pilot)</strong> · §6 · What if the ISP misses its IPtD deadline in the pilot?</li>
+                        </ol>
+                        <h3>The Badlands · L6 · Disputes and attacks</h3>
+                        <ol>
+                            <li><strong>Evidence rounds and the CfEfA</strong> · §7 · What triggers a dispute, and what gets made public?</li>
+                            <li><strong>Mechanical resolution</strong> · §7 · Is a dispute meant to be settled by arithmetic or discretion?</li>
+                            <li><strong>Escalation audit</strong> · §7 · What happens to an app caught with one fake row?</li>
+                            <li><strong>Silent padding</strong> · §7, §9 · How could an app invent charges that stay under my cap?</li>
+                            <li><strong>Household fraud: the pro-rata split</strong> · §7 · What if a household really consumed more than its allowance?</li>
+                            <li><strong>Three timing states of an audit</strong> · §3, §9 · How does an audit tell a fair top-up race from cheating?</li>
+                            <li><strong>Hoarding</strong> · §3, §9 · Why is asking for a top-up far ahead of need a violation?</li>
+                            <li><strong>FUP audits: private, then bilateral</strong> · §3 · A production implementation may reduce exposure with zero-knowledge proofs · How is my top-up behaviour audited, in the pilot and after?</li>
+                            <li><strong>The pilot operator</strong> · §8 · Who carries a household's evidence into the protocol?</li>
+                            <li><strong>Final at execution (pilot)</strong> · §6, §7 · In the pilot, can an executed payment be reversed?</li>
+                        </ol>
+                        <h3>Here be dragons · L7 · Open, not ratified</h3>
+                        <ol>
+                            <li><strong>Tariff-agreement format</strong> · §10 · <em>open, not ratified</em> · What is still unspecified about tariff agreements?</li>
+                            <li><strong>Credit-policy calibration</strong> · §10 · <em>open, not ratified</em> · Which parts of the ISP credit policy still need calibration?</li>
+                            <li><strong>Dishonest-ISP analysis</strong> · §10 · <em>open, not ratified</em> · Which dishonest-ISP cases must the design still test?</li>
+                            <li><strong>ISP-and-app collusion</strong> · §10 · <em>open, not ratified</em> · Is there a padding attack the design cannot yet stop?</li>
+                            <li><strong>Anti-collusion candidates</strong> · §10 · <em>open, not ratified</em> · Which anti-collusion ideas are only candidates so far?</li>
+                            <li><strong>Borrow-and-default</strong> · §10 · <em>open, not ratified</em> · When would turning an ISP overdraft into cash pay off?</li>
+                            <li><strong>A durable second instance</strong> · §10 · <em>open, not ratified</em> · Why is the pilot operator only a temporary second instance?</li>
+                            <li><strong>Finality and clawback horizon</strong> · §10 · <em>open, not ratified</em> · How is fraud found after payment handled, and what is still open?</li>
+                            <li><strong>ISP fronting of shortfalls</strong> · §10 · <em>open, not ratified</em> · Could the ISP pay apps in full and recover from the household?</li>
+                            <li><strong>Post-pilot emergency settlement</strong> · §6 · <em>open, not ratified</em> · Undefined after the pilot · Is there a post-pilot equivalent of emergency settlement?</li>
+                        </ol>
+                        <!-- atlas-index:end -->
+                    </noscript>
+                </div>
+                <div id="conversation" class="atlas-chat">
+                    <h2>Conversation</h2>
+                    <p>The sections above stay available without JavaScript. This conversation is a development client and is not a Gate 1 claim.</p>
+                    <noscript>
+                        <p>Conversation controls need JavaScript. The rest of this page remains available.</p>
+                    </noscript>
+                    <div id="atlas-suggest" class="atlas-suggest"></div>
+                    <form id="composer" class="composer">
+                        <ol id="history" aria-label="History" tabindex="0"></ol>
+                        <label for="provider">Provider for a new conversation</label>
+                        <select id="provider" name="provider">
+                            <option value="openai">OpenAI</option>
+                            <option value="xai">xAI</option>
+                        </select>
+                        <label for="draft">Message</label>
+                        <textarea id="draft" name="draft" rows="4"></textarea>
+                        <div class="composer-actions">
+                            <button type="submit" id="send">Send</button>
+                            <button type="button" id="cancel" disabled>Cancel</button>
+                        </div>
+                        <p id="phase" role="status" aria-live="polite"></p>
+                    </form>
+                </div>
             </div>
         </section>
     </main>
@@ -91,5 +198,6 @@
         </div>
     </footer>
     <script type="module" src="js/app.js"></script>
+    <script type="module" src="js/atlas.js"></script>
 </body>
 </html>
