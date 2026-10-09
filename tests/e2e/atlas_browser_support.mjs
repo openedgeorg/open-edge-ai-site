@@ -239,7 +239,9 @@ export class Cdp {
  * Two test hooks installed before any page script runs:
  * - time travel: the Atlas chat bridge reads Date.now() for its pauses and its rate window, so a
  *   test can move the clock on instead of waiting 30 or 60 seconds;
- * - a record of every securitypolicyviolation event (what Chrome blocked under the page's CSP).
+ * - a record of every securitypolicyviolation event (what Chrome blocked under the page's CSP);
+ * - a count of requestIdleCallback calls (window.__idle), so a test can see that the Atlas
+ *   warms its matcher in idle time.
  */
 const PAGE_HOOKS_SOURCE = `(() => {
   const realNow = Date.now.bind(Date);
@@ -250,6 +252,15 @@ const PAGE_HOOKS_SOURCE = `(() => {
   document.addEventListener("securitypolicyviolation", (event) => {
     window.__cspViolations.push({ directive: event.violatedDirective, blocked: event.blockedURI, sample: event.sample });
   }, true);
+  const idle = { scheduled: 0, ran: 0 };
+  Object.defineProperty(window, "__idle", { value: idle });
+  const realIdle = typeof window.requestIdleCallback === "function" ? window.requestIdleCallback.bind(window) : null;
+  if (realIdle) {
+    window.requestIdleCallback = (callback, options) => {
+      idle.scheduled += 1;
+      return realIdle((deadline) => { idle.ran += 1; return callback(deadline); }, options);
+    };
+  }
 })();`;
 
 const KEYS = {
@@ -589,7 +600,11 @@ export function splitDeltas(text) {
  */
 export function createStub() {
   const stub = {
-    /** Every request the server saw: { method, path }. */
+    /**
+     * Every request the server saw: { method, path, url, headers, body }. `url` keeps the query
+     * string, `headers` holds the lower-case header NAMES only, `body` is the parsed JSON body of a
+     * POST (null for anything else). Used to prove that the Atlas adds nothing to the chat traffic.
+     */
     requests: [],
     /** Every POST /conversations/conv-1/messages: { message, status }. */
     posts: [],
@@ -707,7 +722,9 @@ async function handle(req, res, stub) {
   const url = new URL(req.url, "http://stub.invalid");
   const pathname = url.pathname;
   const method = req.method || "GET";
-  stub.requests.push({ method, path: pathname });
+  // The body of a POST is read once, up front, and recorded whole.
+  const parsedBody = method === "POST" ? await readJson(req) : null;
+  stub.requests.push({ method, path: pathname, url: req.url || "", headers: Object.keys(req.headers).sort(), body: parsedBody });
 
   if (pathname === "/favicon.ico") {
     res.writeHead(204);
@@ -715,12 +732,10 @@ async function handle(req, res, stub) {
     return;
   }
   if (method === "POST" && pathname === "/visitor-session") {
-    await readJson(req);
     json(res, 200, { subject_id: "s-1", csrf_token: "t-1" });
     return;
   }
   if (method === "POST" && pathname === "/conversations") {
-    await readJson(req);
     if (req.headers["x-esp-csrf"] !== "t-1") {
       stub.csrfFailures.push(pathname);
       json(res, 403, { error: { code: "csrf", message: "bad csrf" } });
@@ -730,7 +745,7 @@ async function handle(req, res, stub) {
     return;
   }
   if (method === "POST" && pathname === "/conversations/conv-1/messages") {
-    const body = await readJson(req);
+    const body = parsedBody || {};
     if (req.headers["x-esp-csrf"] !== "t-1") {
       stub.csrfFailures.push(pathname);
       json(res, 403, { error: { code: "csrf", message: "bad csrf" } });

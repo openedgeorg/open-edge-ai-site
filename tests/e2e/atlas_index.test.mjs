@@ -94,7 +94,7 @@ test("index.html keeps the CSP meta tag, the stylesheet links and the module scr
 test("index.html contains every id of the page contract exactly once", () => {
   const ids = [
     "explore", "atlas", "atlas-title", "atlas-toolbar", "atlas-count", "atlas-view-map", "atlas-view-list",
-    "atlas-reset", "atlas-map", "atlas-list", "atlas-inspector", "atlas-notice", "atlas-suggest",
+    "atlas-reset", "atlas-map", "atlas-list", "atlas-inspector", "atlas-notice", "atlas-announce", "atlas-suggest",
     "conversation", "composer", "provider", "draft", "send", "cancel", "phase", "history",
   ];
   for (const id of ids) {
@@ -114,7 +114,7 @@ test("index.html contains every id of the page contract exactly once", () => {
   assert.match(html, /<div id="atlas-list" class="atlas-list-wrap" hidden><\/div>/);
   assert.match(html, /<button type="button" id="atlas-view-map" aria-pressed="true">Map<\/button>/);
   assert.match(html, /<button type="button" id="atlas-view-list" aria-pressed="false">List<\/button>/);
-  assert.match(html, /<button type="button" id="atlas-reset">Clear map<\/button>/);
+  assert.match(html, /<button type="button" id="atlas-reset" class="atlas-reset">Clear map<\/button>/);
 });
 
 test("index.html uses the honest wording and the legend entries", () => {
@@ -193,4 +193,60 @@ test("renderCount and suggestionItems follow the contract", () => {
   const dragonsLast = suggestionItems({ replies: 1, frontier: ["tariff-format", "overdraft"] });
   assert.equal(dragonsLast[0], graph.ISLANDS.find((island) => island.id === "overdraft").teaser);
   assert.deepEqual(suggestionItems({ replies: 3, frontier: [] }), []);
+});
+
+/** The opening tag (attributes included) of the first element matching a regex. */
+function tagOf(pattern) {
+  const found = html.match(pattern);
+  assert.ok(found, `${pattern} is in the page`);
+  return found[0];
+}
+
+test("the nav and the hero lead to the Atlas, and the page sections keep their order", () => {
+  const nav = html.slice(html.indexOf('<ul class="nav-links">'), html.indexOf("</ul>", html.indexOf('<ul class="nav-links">')));
+  const links = [...nav.matchAll(/<li><a href="([^"]+)">([^<]+)<\/a><\/li>/g)].map((match) => [match[1], match[2]]);
+  assert.deepEqual(links, [["#about", "About"], ["#esp", "ESP"], ["#clear-ledger", "Clear Ledger"], ["#explore", "The Atlas"]]);
+  const hero = html.slice(html.indexOf('<section class="hero">'), html.indexOf("</section>"));
+  assert.match(hero, /<a class="hero-cta-link" href="#explore">Explore the design<\/a>/);
+  assert.match(hero, /<span class="hero-cta-note" hidden>Ask a question and watch a map of the design light up\.<\/span>/, "the sentence about asking is hidden until the script runs");
+  const order = ["about", "esp", "clear-ledger", "explore"].map((id) => html.indexOf(`<section id="${id}"`));
+  assert.ok(order.every((at) => at > 0) && [...order].sort((a, b) => a - b).join() === order.join(), "About, ESP, Clear Ledger, then the Atlas");
+});
+
+test("the suggestion chips live in the Atlas card, under the honesty note and above the toolbar", () => {
+  const atlas = html.indexOf('<div id="atlas" class="atlas">');
+  const chat = html.indexOf('<div id="conversation" class="atlas-chat">');
+  const suggest = html.indexOf('<div id="atlas-suggest" class="atlas-suggest"></div>');
+  assert.ok(atlas < suggest && suggest < chat, "inside #atlas, before the chat card");
+  assert.equal((html.match(/id="atlas-suggest"/g) || []).length, 1);
+  assert.ok(html.indexOf('class="atlas-honesty"') < suggest && suggest < html.indexOf('id="atlas-toolbar"'));
+  assert.ok(!html.slice(chat).includes("atlas-suggest"), "no chips in the chat card");
+});
+
+test("without JavaScript only the honesty note and the plain index describe the Atlas", () => {
+  for (const pattern of [/<p class="atlas-intro"[^>]*>/, /<ul class="atlas-legend"[^>]*>/, /<p id="atlas-notice"[^>]*>/, /<div class="atlas-toolbar"[^>]*>/, /<span class="hero-cta-note"[^>]*>/]) {
+    assert.match(tagOf(pattern), /\shidden[\s>]/, `${pattern} is hidden until the script runs`);
+  }
+  assert.doesNotMatch(tagOf(/<p class="atlas-honesty"[^>]*>/), /hidden/, "the honesty note is always shown");
+  assert.match(html, /Glowing places are next to explore: tap one to ask about it\./);
+});
+
+test("the status elements: one polite notice, one spoken summary, and no live region on the inspector", () => {
+  assert.match(tagOf(/<p id="atlas-notice"[^>]*>/), /role="status"/);
+  assert.match(tagOf(/<p id="atlas-announce"[^>]*>/), /role="status"/);
+  assert.doesNotMatch(tagOf(/<div id="atlas-inspector"[^>]*>/), /aria-live|role=/, "keyboard focus already announces a place");
+  assert.doesNotMatch(tagOf(/<p id="atlas-count"[^>]*>/), /aria-live|role=/, "the spoken summary carries the count");
+});
+
+test("the chat card copy no longer points at sections 'above' it", () => {
+  const chat = html.slice(html.indexOf('<div id="conversation"'));
+  assert.match(chat, /<p>The rest of the page stays available without JavaScript\. This conversation is a development client and is not a Gate 1 claim\.<\/p>/);
+  assert.doesNotMatch(html, /The sections above/);
+});
+
+test("the generated no-JS index is made of bulleted lists, never numbered ones", () => {
+  const index = noscriptIndex();
+  assert.doesNotMatch(index, /<ol[\s>]/, "a numbered list would read the dragons as a ranked to-do list");
+  assert.equal((index.match(/<ul>/g) || []).length, graph.REGIONS.filter((region) => graph.ISLANDS.some((island) => island.region === region.id)).length);
+  assert.doesNotMatch(decodeEntities(index), /next to explore|not reached yet/i, "no goal wording in the plain index");
 });

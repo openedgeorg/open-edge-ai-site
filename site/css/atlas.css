@@ -2,6 +2,19 @@
    Toolbar, list, inspector, legend and suggestion chips live in atlas-panel.css.
    No inline styles are used anywhere: every look below is a class. */
 
+/* The sticky site header is 64px high: a control brought into view by Tab, Shift+Tab or an in-page
+   link must not end up under it (WCAG 2.4.11 Focus Not Obscured). */
+html {
+    scroll-padding-top: 5rem;
+}
+
+/* A header that wraps to two rows on a very narrow phone is taller. */
+@media (max-width: 400px) {
+    html {
+        scroll-padding-top: 7rem;
+    }
+}
+
 /* ---- palette (custom properties) ---- */
 
 .atlas {
@@ -18,7 +31,7 @@
     --atlas-contested: #c9a8ff;
     --atlas-open: #ff9f80;
     --atlas-open-glow: rgba(255, 159, 128, 0.7);
-    --atlas-fog: #43526f;
+    --atlas-fog: #7587a6;
     --atlas-band: rgba(148, 163, 184, 0.05);
     --atlas-band-alt: rgba(148, 163, 184, 0.095);
     --atlas-edge-lit: rgba(245, 197, 66, 0.5);
@@ -65,6 +78,13 @@
     color: var(--color-text, #2d3748);
 }
 
+/* Enlarged text on a 320px phone: a long word wraps instead of pushing the card sideways. */
+.atlas-chat h2,
+.atlas-chat p,
+.atlas-chat label {
+    overflow-wrap: anywhere;
+}
+
 .atlas-chat .composer {
     max-width: none;
 }
@@ -89,6 +109,13 @@
     cursor: pointer;
 }
 
+/* The page's teal focus ring is only 2.6:1 on this white card (WCAG 1.4.11 asks for 3:1). */
+.atlas-chat .composer button:focus-visible,
+.atlas-chat .composer textarea:focus-visible,
+.atlas-chat .composer select:focus-visible {
+    outline-color: var(--color-secondary, #2b6cb0);
+}
+
 .atlas-chat .composer button[type="submit"] {
     color: #fff;
     background: var(--color-primary, #1a365d);
@@ -103,14 +130,17 @@
     cursor: not-allowed;
 }
 
-/* Send and Cancel stay side by side, also on a phone. */
+/* Send and Cancel stay side by side, also on a phone; at 320px or with text enlarged to 200% they
+   wrap onto two rows instead of pushing the page sideways. */
 .atlas-chat .composer-actions {
     flex-direction: row;
+    flex-wrap: wrap;
     align-items: stretch;
 }
 
 .atlas-chat .composer-actions button {
-    flex: 1 1 0;
+    flex: 1 1 7rem;
+    min-width: 0;
 }
 
 /* The history comes first in the form, so the page reads top to bottom the way it looks.
@@ -225,8 +255,8 @@
         resize: vertical;
     }
 
+    /* The buttons keep their 44px touch target here too (large tablets and touch laptops get this layout). */
     .atlas-chat .composer button {
-        min-height: 40px;
         padding: 0.25rem 1rem;
     }
 }
@@ -248,10 +278,6 @@
 .atlas-legend,
 .atlas-inspector {
     max-width: 62rem;
-}
-
-.atlas-notice:empty {
-    display: none;
 }
 
 /* ---- the map ---- */
@@ -313,9 +339,10 @@
     font-weight: 600;
 }
 
+/* 13px is the most that "Living with an allowance" can take inside its band (14px overflows it). */
 .atlas-region-sub {
     fill: var(--atlas-caption);
-    font-size: 12.5px;
+    font-size: 13px;
     font-style: italic;
 }
 
@@ -568,7 +595,7 @@
 }
 
 .atlas-sublabel {
-    font-size: 12.5px;
+    font-size: 14px;
     font-style: italic;
     fill: var(--atlas-contested);
 }
@@ -631,18 +658,6 @@
 
 .atlas-svg.is-paused .atlas-island.is-frontier .atlas-hit {
     cursor: not-allowed;
-}
-
-.atlas-pause-note {
-    display: none;
-    text-anchor: start;
-    font-size: 14px;
-    font-weight: 600;
-    fill: var(--atlas-visited);
-}
-
-.atlas-pause-note.is-visible {
-    display: inline;
 }
 
 /* The edge dragon: sketched until the visitor has asked something, then inked. */
@@ -756,6 +771,10 @@
     .atlas-ed-caption {
         fill: CanvasText;
         stroke: Canvas;
+        /* The Canvas-coloured halo goes under the glyphs, never over them. */
+        paint-order: stroke fill;
+        stroke-width: 4px;
+        stroke-linejoin: round;
     }
 
     .atlas-band {
@@ -818,7 +837,6 @@
         stroke: CanvasText;
     }
 
-    .atlas-pause-note,
     .atlas-edge-tip-text {
         fill: CanvasText;
         stroke: none;
