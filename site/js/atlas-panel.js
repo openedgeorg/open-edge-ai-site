@@ -3,10 +3,11 @@
  *
  * Everything the graph supplies is inserted with textContent. Trace anchors (the raw summary
  * text behind each island and path) are never read here: only section numbers are shown.
- * Island words are "visited", "next to explore" and "not reached yet". Nothing is "learned".
+ * Island words are "visited", "next to explore" and "not reached yet"; a place on the designers'
+ * open list is "open, not ratified" until it is visited. Nothing is "learned".
  */
 
-import { FIRST_SUGGESTION, ISLANDS, buildIndex, edgeKey } from "./atlas-graph.js";
+import { FIRST_SUGGESTION, ISLANDS, OPEN_LABEL, buildIndex, edgeKey } from "./atlas-graph.js";
 
 export const STATUS_WORDS = Object.freeze({
   visited: "visited",
@@ -14,14 +15,25 @@ export const STATUS_WORDS = Object.freeze({
   fogged: "not reached yet",
 });
 
+/**
+ * What a place on the designers' open list (a dragon) is called until an answer mentions it. It is
+ * never "next to explore" or "not reached yet": an open item is not a goal and not a next step.
+ */
+export const OPEN_STATUS_WORD = OPEN_LABEL;
+
 const INSPECTOR_HINT = "Point at or focus a lit place on the map to read about it here.";
 const OPEN_LIST_NOTE = "On the designers' own open list. No answer has been ratified yet.";
 
 /**
- * The status word for a view status ("visited" | "frontier" | "fogged").
+ * The status word for a view status ("visited" | "frontier" | "fogged"). For a place on the open
+ * list (`island.status === "open"`) the two unvisited states both read "open, not ratified", so a
+ * dragon never looks like a goal or a roadmap; a visited dragon is "visited" like any other place
+ * (its label line keeps "open, not ratified").
  * @param {string|undefined} status
+ * @param {{status?: string}|null} [island]
  */
-export function statusWord(status) {
+export function statusWord(status, island = null) {
+  if (island && island.status === "open" && status !== "visited") return OPEN_STATUS_WORD;
   return STATUS_WORDS[status] || STATUS_WORDS.fogged;
 }
 
@@ -104,8 +116,8 @@ function litEdgesOf(index, view, id) {
 }
 
 /**
- * The inspector card inside `mount` (an aria-live region). It repaints only when the content
- * changes, so repeated hover events do not make a screen reader repeat itself.
+ * The inspector card inside `mount`. It is not a live region (keyboard focus on an island already
+ * announces it); it repaints only when the content changes, so repeated hover events stay quiet.
  * @param {{document: Document, graph: object, index?: ReturnType<typeof buildIndex>, mount: HTMLElement}} options
  */
 export function createInspector({ document: doc, graph, index = buildIndex(), mount }) {
@@ -140,10 +152,12 @@ export function createInspector({ document: doc, graph, index = buildIndex(), mo
     add(card, "h3", "atlas-inspector-name", island.name);
     const region = regions.get(island.region);
     if (region) add(card, "p", "atlas-inspector-where", regionHeading(region));
-    add(card, "p", `atlas-inspector-status is-${status}`, `Status: ${statusWord(status)}`);
+    const word = statusWord(status, island);
+    add(card, "p", `atlas-inspector-status is-${island.status === "open" && status !== "visited" ? "open" : status}`, `Status: ${word}`);
     const sections = formatSections(island);
     if (sections) add(card, "p", "atlas-inspector-sections", `In the draft summary: ${sections}`);
-    if (island.label) {
+    // The status line already says it for an unvisited dragon: do not repeat the same words as a badge.
+    if (island.label && island.label !== word) {
       add(card, "p", `atlas-inspector-label ${island.status === "open" ? "is-open" : "is-contested"}`, island.label);
     }
     if (island.status === "open") add(card, "p", "atlas-inspector-open", OPEN_LIST_NOTE);
@@ -233,57 +247,84 @@ export function createInspector({ document: doc, graph, index = buildIndex(), mo
 
 /**
  * Suggestion chips inside `mount`. Idempotent: the same items and pause state leave the DOM alone.
- * @param {{document: Document, mount: HTMLElement, onPick?: (text: string) => void}} options
+ *
+ * The chips are updated in place, never rebuilt: a chip keeps keyboard focus through a tap, the
+ * pause that follows it and the reply (its text changes, the element stays). While paused a chip
+ * is `aria-disabled="true"` (not `disabled`, which would drop focus) and points at the notice that
+ * says why; its click does nothing. When the new list is shorter, the surplus chips are removed and
+ * focus moves to the first chip that is left.
+ * @param {{document: Document, mount: HTMLElement, onPick?: (text: string) => void,
+ *   describedBy?: string, fallbackFocus?: () => (HTMLElement|null|undefined)}} options
  */
-export function createSuggestions({ document: doc, mount, onPick }) {
+export function createSuggestions({ document: doc, mount, onPick, describedBy = "atlas-notice", fallbackFocus }) {
   let lastSignature = null;
+  let label = null;
+  let list = null;
+  /** @type {HTMLButtonElement[]} */
+  const chips = [];
   mount.setAttribute("role", "group");
   mount.setAttribute("aria-label", "Suggested questions");
+
+  function setAttr(node, name, value) {
+    if (value === null) {
+      if (node.hasAttribute(name)) node.removeAttribute(name);
+    } else if (node.getAttribute(name) !== value) {
+      node.setAttribute(name, value);
+    }
+  }
+
+  function addChip() {
+    const item = make(doc, "li", "atlas-suggest-item");
+    const chip = make(doc, "button", "atlas-chip", "");
+    chip.type = "button";
+    chip.addEventListener("click", () => {
+      if (chip.getAttribute("aria-disabled") === "true" || typeof onPick !== "function") return;
+      onPick(chip.textContent);
+    });
+    item.appendChild(chip);
+    list.appendChild(item);
+    chips.push(chip);
+  }
 
   return {
     /**
      * @param {string[]} items
-     * @param {{paused?: boolean, pausedMessage?: string}} [options]
+     * @param {{paused?: boolean, pausedMessage?: string}} [options] pausedMessage is accepted for
+     *   compatibility and ignored: the reason is shown in one place, the page's notice
      */
-    render(items, { paused = false, pausedMessage = "" } = {}) {
+    render(items, { paused = false } = {}) {
       const texts = (Array.isArray(items) ? items : []).filter((item) => typeof item === "string" && item);
-      const signature = JSON.stringify([texts, Boolean(paused), paused ? String(pausedMessage || "") : ""]);
+      const signature = JSON.stringify([texts, Boolean(paused)]);
       if (signature === lastSignature) return;
       lastSignature = signature;
 
       const active = doc.activeElement;
-      const focusedText = active && mount.contains(active) && active.classList.contains("atlas-chip")
-        ? active.textContent
-        : null;
+      const hadFocus = Boolean(active && mount.contains(active));
+      const focusedAt = hadFocus ? chips.indexOf(active) : -1;
 
       mount.hidden = texts.length === 0;
       if (!texts.length) {
-        mount.replaceChildren();
+        for (const chip of chips.splice(0)) chip.parentNode.remove();
+        if (hadFocus && typeof fallbackFocus === "function") {
+          const target = fallbackFocus();
+          if (target && typeof target.focus === "function") target.focus();
+        }
         return;
       }
-      const label = make(doc, "p", "atlas-suggest-label", "Try asking");
-      const list = make(doc, "ul", "atlas-suggest-list");
-      let refocus = null;
-      for (const text of texts) {
-        const item = make(doc, "li", "atlas-suggest-item");
-        const chip = make(doc, "button", "atlas-chip", text);
-        chip.type = "button";
-        if (paused) {
-          chip.disabled = true;
-          chip.setAttribute("aria-disabled", "true");
-        }
-        chip.addEventListener("click", () => {
-          if (chip.disabled || typeof onPick !== "function") return;
-          onPick(text);
-        });
-        item.appendChild(chip);
-        list.appendChild(item);
-        if (!paused && focusedText === text) refocus = chip;
+      if (!list) {
+        label = make(doc, "p", "atlas-suggest-label", "Try asking");
+        list = make(doc, "ul", "atlas-suggest-list");
+        mount.replaceChildren(label, list);
       }
-      const children = [label, list];
-      if (paused && pausedMessage) children.push(make(doc, "p", "atlas-suggest-paused", String(pausedMessage)));
-      mount.replaceChildren(...children);
-      if (refocus) refocus.focus();
+      while (chips.length < texts.length) addChip();
+      while (chips.length > texts.length) chips.pop().parentNode.remove();
+      texts.forEach((text, at) => {
+        const chip = chips[at];
+        if (chip.textContent !== text) chip.textContent = text;
+        setAttr(chip, "aria-disabled", paused ? "true" : null);
+        setAttr(chip, "aria-describedby", paused && describedBy ? describedBy : null);
+      });
+      if (hadFocus && focusedAt >= texts.length) chips[0].focus();
     },
   };
 }

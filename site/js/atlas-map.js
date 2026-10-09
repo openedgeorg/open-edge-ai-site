@@ -31,7 +31,6 @@ const FLARE_MS = 1800;
 const BAND_TOP = 10;
 const BAND_BOTTOM = 742;
 const CAPTION_Y = { level: 36, name: 54, sub: 70 };
-const PAUSE_NOTE_MAX = 72;
 /** An arrow key only follows a path that lies within about 66 degrees of its direction. */
 const ARROW_MIN_COS = 0.4;
 
@@ -168,6 +167,8 @@ const ARROWS = {
  * @param {(id: string|null) => void} [config.onSelect] hover / focus / click of an island
  * @param {(key: string|null) => void} [config.onSelectEdge] hover of a lit path
  * @param {(id: string) => void} [config.onActivate] click / Enter / Space on a frontier island
+ * @param {string} [config.noticeId] id of the page element that says why teasers are paused;
+ *   a paused frontier island is `aria-disabled` and `aria-describedby` that element
  * @param {(fn: () => void, ms: number) => any} [config.setTimer]
  * @param {(handle: any) => void} [config.clearTimer]
  */
@@ -178,6 +179,7 @@ export function createAtlasMap({
   onSelect = () => {},
   onSelectEdge = () => {},
   onActivate = () => {},
+  noticeId = "atlas-notice",
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (handle) => clearTimeout(handle),
 }) {
@@ -202,7 +204,6 @@ export function createAtlasMap({
 
   let current = { status: {}, edges: {} };
   let paused = false;
-  let pausedMessage = "";
   let rovingId = null;
   let hoverId = null;
   let hoverEdgeKey = null;
@@ -264,9 +265,6 @@ export function createAtlasMap({
   dragonCaption.textContent = graph.EDGE_DRAGON_CAPTION || "Unfinished. You will get here.";
   dragonGroup.appendChild(dragonCaption);
   svg.appendChild(dragonGroup);
-
-  const pauseNote = svgEl(doc, "text", { x: 24, y: 769 }, "atlas-pause-note");
-  svg.appendChild(pauseNote);
 
   // Edges (paths). Lit when both ends are visited; faint dashed stubs when one end is.
   const edgeLayer = svgEl(doc, "g", { "aria-hidden": "true" }, "atlas-edges");
@@ -365,13 +363,12 @@ export function createAtlasMap({
     } else {
       text = `${name}, next to explore. ${island.teaser}`;
     }
-    if (status === "frontier" && paused && pausedMessage) text = `${text} ${pausedMessage}`;
     return text;
   }
 
   function paintIsland(node) {
     const status = statusOf(node.island.id);
-    const sig = `${status}|${paused ? 1 : 0}|${paused ? pausedMessage : ""}`;
+    const sig = `${status}|${paused ? 1 : 0}`;
     if (node.sig === sig) return;
     node.sig = sig;
     const g = node.g;
@@ -383,14 +380,21 @@ export function createAtlasMap({
       g.removeAttribute("role");
       g.removeAttribute("aria-label");
       g.removeAttribute("aria-disabled");
+      g.removeAttribute("aria-describedby");
       g.removeAttribute("tabindex");
       return;
     }
     g.removeAttribute("aria-hidden");
     g.setAttribute("role", "button");
     g.setAttribute("aria-label", labelFor(node, status));
-    if (status === "frontier" && paused) g.setAttribute("aria-disabled", "true");
-    else g.removeAttribute("aria-disabled");
+    // The reason for a pause is shown once, in the page's notice: a paused island only points at it.
+    if (status === "frontier" && paused) {
+      g.setAttribute("aria-disabled", "true");
+      g.setAttribute("aria-describedby", noticeId);
+    } else {
+      g.removeAttribute("aria-disabled");
+      g.removeAttribute("aria-describedby");
+    }
     g.setAttribute("tabindex", node.island.id === rovingId ? "0" : "-1");
   }
 
@@ -518,14 +522,6 @@ export function createAtlasMap({
     flareTimers.delete(id);
   }
 
-  function setPauseNote() {
-    const text = paused && pausedMessage
-      ? (pausedMessage.length > PAUSE_NOTE_MAX ? `${pausedMessage.slice(0, PAUSE_NOTE_MAX - 1)}…` : pausedMessage)
-      : "";
-    pauseNote.textContent = text;
-    pauseNote.classList.toggle("is-visible", Boolean(text));
-  }
-
   // ---- public API ----
 
   function render(view, opts = {}) {
@@ -534,7 +530,6 @@ export function createAtlasMap({
       edges: (view && view.edges) || {},
     };
     paused = Boolean(opts.paused);
-    pausedMessage = paused ? String(opts.pausedMessage || "") : "";
     const flare = Array.isArray(opts.flare) ? opts.flare : [];
 
     // A reset (or any island dropping back to fog) forgets its flare and selection state.
@@ -551,7 +546,6 @@ export function createAtlasMap({
     svg.classList.toggle("is-paused", paused);
     svg.classList.toggle("has-replies", Number(opts.replies) > 0);
     dragonGroup.classList.toggle("is-inked", Number(opts.replies) > 0);
-    setPauseNote();
 
     for (const edgeNode of edgeNodes.values()) {
       paintEdge(edgeNode, edgeKey(edgeNode.edge.a, edgeNode.edge.b));

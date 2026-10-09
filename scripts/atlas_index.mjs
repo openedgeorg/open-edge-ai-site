@@ -7,8 +7,9 @@
  *
  * The region sits inside the <noscript> of the Atlas, between
  *   <!-- atlas-index:begin -->  and  <!-- atlas-index:end -->
- * and is built from site/js/atlas-graph.js: per region an <h3>, then an <ol> with one <li> per
- * island (name, section references, label, note, teaser). Trace anchors are never written.
+ * and is built from site/js/atlas-graph.js: per region an <h3>, then a <ul> with one <li> per
+ * island (name, section references, label, note, teaser). It is a bulleted list on purpose: a
+ * numbered list would read the open (dragon) items as a ranked to-do list. Trace anchors are never written.
  * An alternative page can be named with --html <path> (used by tests).
  */
 
@@ -41,7 +42,7 @@ export function indexLines(source = graph) {
     const islands = source.ISLANDS.filter((island) => island.region === region.id);
     if (!islands.length) continue;
     lines.push(`<h3>${escapeHtml(regionHeading(region))}</h3>`);
-    lines.push("<ol>");
+    lines.push("<ul>");
     for (const island of islands) {
       const parts = [`<strong>${escapeHtml(island.name)}</strong>`];
       const sections = formatSections(island);
@@ -51,7 +52,7 @@ export function indexLines(source = graph) {
       if (island.teaser) parts.push(escapeHtml(island.teaser));
       lines.push(`    <li>${parts.join(" · ")}</li>`);
     }
-    lines.push("</ol>");
+    lines.push("</ul>");
   }
   return lines;
 }

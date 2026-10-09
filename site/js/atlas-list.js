@@ -4,6 +4,11 @@
  * The DOM is built once and updated in place, so render() can be called after every reply
  * without losing keyboard focus. Everything from the graph goes in through textContent.
  * Trace anchors are never shown: only section numbers.
+ *
+ * While the chat is paused an "Ask" button is `aria-disabled="true"` (not `disabled`, so a focused
+ * button keeps focus) and points at the page's notice; the reason itself is shown in one place only.
+ * A place on the designers' open list reads "open, not ratified" until it is visited, never "next
+ * to explore" or "not reached yet".
  */
 
 import { buildIndex, edgeKey } from "./atlas-graph.js";
@@ -38,17 +43,13 @@ function make(doc, tag, className, text) {
 
 /**
  * @param {{document: Document, graph: object, index?: ReturnType<typeof buildIndex>,
- *   onActivate?: (id: string) => void, onSelect?: (id: string|null) => void}} options
+ *   onActivate?: (id: string) => void, onSelect?: (id: string|null) => void, describedBy?: string}} options
  * @returns {{element: HTMLElement, render: (view: object, opts?: {paused?: boolean, pausedMessage?: string}) => void}}
  */
-export function createAtlasList({ document: doc, graph, index = buildIndex(), onActivate, onSelect }) {
+export function createAtlasList({ document: doc, graph, index = buildIndex(), onActivate, onSelect, describedBy = "atlas-notice" }) {
   const element = make(doc, "div", "atlas-list");
   element.setAttribute("role", "group");
   element.setAttribute("aria-label", "All places in the Atlas");
-
-  const note = make(doc, "p", "atlas-list-paused");
-  note.hidden = true;
-  element.appendChild(note);
 
   /** @type {Map<string, {island: object, item: HTMLElement, status: HTMLElement, meta: HTMLElement, ask: HTMLButtonElement, paths: HTMLUListElement, pathsKey: string, current: string}>} */
   const rows = new Map();
@@ -66,14 +67,14 @@ export function createAtlasList({ document: doc, graph, index = buildIndex(), on
       item.tabIndex = -1;
       const head = make(doc, "p", "atlas-list-head");
       const name = make(doc, "span", "atlas-list-name", island.name);
-      const status = make(doc, "span", "atlas-list-status", statusWord("fogged"));
+      const status = make(doc, "span", "atlas-list-status", statusWord("fogged", island));
       head.append(name, " ", status);
       const meta = make(doc, "p", "atlas-list-meta");
       const ask = make(doc, "button", "atlas-list-ask", island.teaser || "");
       ask.type = "button";
       ask.hidden = true;
       ask.addEventListener("click", () => {
-        if (ask.disabled || typeof onActivate !== "function") return;
+        if (ask.getAttribute("aria-disabled") === "true" || typeof onActivate !== "function") return;
         onActivate(island.id);
       });
       const paths = make(doc, "ul", "atlas-list-paths");
@@ -92,11 +93,12 @@ export function createAtlasList({ document: doc, graph, index = buildIndex(), on
     element.appendChild(section);
   }
 
-  function metaText(island) {
+  function metaText(island, status) {
     const parts = [];
     const sections = formatSections(island);
     if (sections) parts.push(sections);
-    if (island.label) parts.push(island.label);
+    // The status word already says it for an unvisited dragon: do not repeat the same words.
+    if (island.label && island.label !== statusWord(status, island)) parts.push(island.label);
     if (island.note) parts.push(island.note);
     return parts.join(" · ");
   }
@@ -123,12 +125,11 @@ export function createAtlasList({ document: doc, graph, index = buildIndex(), on
     element,
     /**
      * @param {object} view the deriveView() result
-     * @param {{paused?: boolean, pausedMessage?: string}} [opts]
+     * @param {{paused?: boolean, pausedMessage?: string}} [opts] pausedMessage is accepted for
+     *   compatibility and ignored: the reason is shown in one place, the page's notice
      */
-    render(view, { paused = false, pausedMessage = "" } = {}) {
+    render(view, { paused = false } = {}) {
       const statuses = (view && view.status) || {};
-      setHidden(note, !(paused && pausedMessage));
-      setText(note, paused ? String(pausedMessage || "") : "");
       for (const row of rows.values()) {
         const { island, item, ask } = row;
         const status = statuses[island.id] === "visited" || statuses[island.id] === "frontier"
@@ -140,17 +141,16 @@ export function createAtlasList({ document: doc, graph, index = buildIndex(), on
         setClass(item, "is-fogged", status === "fogged");
         setClass(item, "is-open", island.status === "open");
         setClass(item, "is-contested", island.status === "contested");
-        setText(row.status, statusWord(status));
-        setText(row.meta, metaText(island));
+        setText(row.status, statusWord(status, island));
+        setText(row.meta, metaText(island, status));
         setHidden(row.meta, row.meta.textContent === "");
 
         const showAsk = status === "frontier";
         if (!showAsk && !ask.hidden && doc.activeElement === ask) item.focus();
         setHidden(ask, !showAsk);
         const locked = showAsk && Boolean(paused);
-        if (ask.disabled !== locked) ask.disabled = locked;
         setAttr(ask, "aria-disabled", locked ? "true" : null);
-        setAttr(ask, "title", locked && pausedMessage ? String(pausedMessage) : null);
+        setAttr(ask, "aria-describedby", locked && describedBy ? describedBy : null);
 
         renderPaths(row, view || {}, status);
       }

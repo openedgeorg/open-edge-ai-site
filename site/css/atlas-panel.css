@@ -5,7 +5,7 @@
     --ap-bg: #0e1626;
     --ap-surface: #16233a;
     --ap-surface-2: #1d2d49;
-    --ap-border: #3a4f72;
+    --ap-border: #6a80a8;
     --ap-text: #eaf0f9;
     --ap-muted: #b4c2d8;
     --ap-dim: #93a4bf;
@@ -30,6 +30,20 @@
 .atlas-chat [hidden],
 .atlas-suggest[hidden] {
     display: none !important;
+}
+
+/* Spoken only: the polite status element that sums up each reply for a screen reader. */
+.atlas-announce {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
 }
 
 /* Text inside the dark card must not inherit the light-page paragraph colour or width. */
@@ -90,6 +104,13 @@
     margin: 0;
 }
 
+.atlas-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1.75rem;
+}
+
 .atlas-tabs {
     display: flex;
     flex-wrap: wrap;
@@ -119,9 +140,29 @@
     box-shadow: inset 0 -4px 0 var(--ap-lit);
 }
 
-.atlas-tabs #atlas-reset {
+/* Clear map is not a view: it sits apart from the Map / List toggles, and is as wide as its
+   confirm label so the toolbar does not shift when the label changes. */
+.atlas-reset {
+    font: inherit;
+    min-height: 44px;
+    min-width: 12rem;
+    padding: 0.4rem 1rem;
+    color: var(--ap-text);
     background: transparent;
-    border-style: dashed;
+    border: 2px dashed var(--ap-border);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.atlas-reset:hover {
+    background: var(--ap-surface-2);
+}
+
+.atlas-reset.is-confirming {
+    font-weight: 700;
+    color: var(--ap-lit);
+    border-style: solid;
+    border-color: var(--ap-lit);
 }
 
 /* List view */
@@ -257,19 +298,20 @@
     color: var(--ap-frontier);
 }
 
-.atlas-list-ask:hover:not(:disabled) {
+.atlas-list-ask:hover:not([aria-disabled="true"]) {
     background: var(--ap-surface-2);
 }
 
-.atlas-list-ask:disabled {
+/* Paused: still in the tab order (aria-disabled, not disabled) so a focused button keeps focus. */
+.atlas-list-ask[aria-disabled="true"] {
     border-style: dashed;
     border-color: var(--ap-dim);
-    color: var(--ap-dim);
+    color: var(--ap-muted);
     cursor: not-allowed;
 }
 
-.atlas-list-ask:disabled::before {
-    color: var(--ap-dim);
+.atlas-list-ask[aria-disabled="true"]::before {
+    color: var(--ap-muted);
 }
 
 .atlas-list-paths {
@@ -281,14 +323,6 @@
 
 .atlas-list-path + .atlas-list-path {
     margin-top: 0.2rem;
-}
-
-.atlas .atlas-list-paused {
-    margin-bottom: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    border: 1px dashed var(--ap-lit);
-    border-radius: 6px;
-    font-size: 0.9rem;
 }
 
 /* Inspector */
@@ -333,6 +367,11 @@
 
 .atlas .atlas-inspector-status.is-frontier {
     color: var(--ap-frontier);
+}
+
+/* An unvisited dragon is "open, not ratified": the open list's colour, never the "next to explore" teal. */
+.atlas .atlas-inspector-status.is-open {
+    color: var(--ap-open);
 }
 
 .atlas .atlas-inspector-label {
@@ -389,11 +428,16 @@
     font-size: 1.05rem;
 }
 
-/* Notice */
+/* Notice: the one place a pause is explained. It is always rendered (so its role="status" is a
+   live region from the start) and always two lines high (so a message coming or going moves nothing
+   below it); when empty it is just a blank slot. */
 
 .atlas .atlas-notice {
-    margin: 0 0 1rem;
-    padding: 0.6rem 0.9rem;
+    min-height: calc(2 * 0.9rem * 1.4 + 0.5rem + 4px);
+    margin: 0.25rem 0 0.4rem;
+    padding: 0.25rem 0.8rem;
+    font-size: 0.9rem;
+    line-height: 1.4;
     color: var(--ap-text);
     background: var(--ap-surface);
     border: 2px dashed var(--ap-lit);
@@ -401,7 +445,8 @@
 }
 
 .atlas .atlas-notice:empty {
-    display: none;
+    background: transparent;
+    border-color: transparent;
 }
 
 /* Legend */
@@ -470,7 +515,7 @@
     padding-bottom: 0.3rem;
 }
 
-.atlas noscript ol {
+.atlas noscript ul {
     margin-left: 1.5rem;
 }
 
@@ -478,87 +523,75 @@
     margin-bottom: 0.3rem;
 }
 
-/* Suggestion chips (in the light conversation column) */
+/* Suggestion chips: in the dark card, directly under the intro, so the first one is on screen next
+   to the map at every width. Text 13.7:1 on the chip, border 10:1 on the card. */
 
+/* "Try asking" sits beside the chips where there is room (a line saved above the map), and above
+   them on a phone, where the chips take the full width. */
 .atlas-suggest {
-    margin: 0.75rem 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.3rem 0.9rem;
+    margin: 0 0 0.25rem;
 }
 
-.atlas-suggest .atlas-suggest-label {
-    color: var(--color-primary);
+.atlas .atlas-suggest .atlas-suggest-label {
+    flex: 0 0 auto;
+    margin: 0;
+    padding-top: 0.7rem;
+    color: var(--ap-lit);
     font-weight: 700;
     font-size: 0.9375rem;
     line-height: 1.4;
-    margin-bottom: 0.3rem;
 }
 
 .atlas-suggest-list {
+    flex: 1 1 18rem;
+    min-width: 0;
     list-style: none;
     display: flex;
-    flex-direction: column;
+    flex-wrap: wrap;
     align-items: flex-start;
-    gap: 0.4rem;
+    gap: 0.5rem;
 }
 
-/* Compact chips: the whole question stays, only the type and the padding are smaller. */
+.atlas-suggest-item {
+    max-width: 100%;
+}
+
 .atlas-chip {
     font: inherit;
-    font-size: 0.875rem;
-    line-height: 1.3;
+    font-size: 0.9375rem;
+    line-height: 1.35;
     text-align: left;
     min-height: 44px;
-    padding: 0.35rem 0.85rem;
-    color: var(--color-primary);
-    background: var(--color-bg);
-    border: 2px solid var(--color-secondary);
-    border-radius: 1.1rem;
+    max-width: 100%;
+    padding: 0.4rem 1rem;
+    color: var(--ap-text);
+    background: var(--ap-surface);
+    border: 2px solid var(--ap-frontier);
+    border-radius: 1.4rem;
     cursor: pointer;
 }
 
-/* Two-column page: the chat card has to fit chips, answer and message box in one window. */
-@media (min-width: 1180px) {
-    .atlas-suggest {
-        margin: 0.5rem 0 0.6rem;
-    }
-
-    .atlas-suggest .atlas-suggest-label {
-        font-size: 0.8125rem;
-        margin-bottom: 0.2rem;
-    }
-
-    .atlas-suggest-list {
-        gap: 0.3rem;
-    }
-
-    .atlas-chip {
-        min-height: 36px;
-        padding: 0.2rem 0.7rem;
-        font-size: 0.8125rem;
-        border-width: 1.5px;
-        border-radius: 0.9rem;
-    }
+.atlas-chip:hover:not([aria-disabled="true"]) {
+    background: var(--ap-surface-2);
 }
 
-.atlas-chip:hover:not(:disabled) {
-    background: #ebf4ff;
-}
-
+/* The dark card's white focus ring (the page's blue is only 2.5:1 to 3.4:1 on this card). */
 .atlas-chip:focus-visible {
-    outline: 3px solid var(--color-accent);
+    outline: 3px solid var(--ap-focus);
     outline-offset: 2px;
 }
 
-.atlas-chip:disabled {
-    color: #4a5568;
+/* Paused: still focusable (aria-disabled, not disabled), so a focused chip keeps focus while a
+   question runs. The dashed border and the muted text carry the state; the notice says why. */
+.atlas-chip[aria-disabled="true"] {
+    color: var(--ap-muted);
     border-style: dashed;
-    border-color: #718096;
+    border-color: var(--ap-dim);
     cursor: not-allowed;
-}
-
-.atlas-suggest .atlas-suggest-paused {
-    margin-top: 0.5rem;
-    font-size: 0.9rem;
-    color: var(--color-text);
 }
 
 @media (max-width: 640px) {
@@ -566,12 +599,24 @@
         padding: var(--spacing-unit);
     }
 
-    .atlas-tabs {
+    /* One row on a phone: Map, List, and Clear map taking what is left, a clear gap before it. */
+    .atlas-controls {
+        flex-wrap: nowrap;
         width: 100%;
+        gap: 1rem;
+    }
+
+    .atlas-tabs {
+        flex-wrap: nowrap;
     }
 
     .atlas-tabs button {
+        flex: 0 0 auto;
+    }
+
+    .atlas-reset {
         flex: 1 1 auto;
+        min-width: 0;
     }
 
     .atlas-chip {
@@ -579,14 +624,20 @@
         border-radius: 12px;
     }
 
+    .atlas-suggest .atlas-suggest-label {
+        padding-top: 0;
+    }
+
     .atlas-suggest-list,
     .atlas-suggest-item {
+        flex-basis: 100%;
         width: 100%;
     }
 }
 
 @media (forced-colors: active) {
     .atlas-tabs button,
+    .atlas-reset,
     .atlas-list-ask,
     .atlas-chip {
         border: 2px solid ButtonText;
@@ -597,8 +648,8 @@
         color: HighlightText;
     }
 
-    .atlas-list-ask:disabled,
-    .atlas-chip:disabled {
+    .atlas-list-ask[aria-disabled="true"],
+    .atlas-chip[aria-disabled="true"] {
         border-style: dashed;
         border-color: GrayText;
         color: GrayText;

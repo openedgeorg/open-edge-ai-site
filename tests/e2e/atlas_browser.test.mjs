@@ -21,12 +21,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 
+import { CLEAR_CONFIRM_LABEL, CLEAR_CONFIRM_MS, CLEAR_LABEL, NO_GLOSSARY_NOTICE, describeLit } from "../../site/js/atlas.js";
 import { REJECT_PAUSE_MS } from "../../site/js/atlas-chat.js";
 import { EDGES, EDGE_DRAGON_CAPTION, FIRST_SUGGESTION, ISLANDS, REGIONS, START_ID, buildIndex } from "../../site/js/atlas-graph.js";
 import { classifyTerm, compileGlossary, matchReply } from "../../site/js/atlas-match.js";
-import { regionHeading, suggestionItems } from "../../site/js/atlas-panel.js";
+import { regionHeading, statusWord, suggestionItems } from "../../site/js/atlas-panel.js";
 import { deriveView } from "../../site/js/atlas-state.js";
-import { OUT_DIR, findChrome, launchBrowser, sleep, startSite } from "./atlas_browser_support.mjs";
+import { OUT_DIR, SITE_DIR, findChrome, launchBrowser, sleep, startSite } from "./atlas_browser_support.mjs";
 
 const INDEX = buildIndex();
 const GLOSSARY = compileGlossary(ISLANDS);
@@ -50,9 +51,13 @@ let browser = null;
 // helpers
 // ---------------------------------------------------------------------------------------------
 
+/** Every stub of this run: the last test audits all the traffic they saw. */
+const allStubs = [];
+
 /** Fresh server + stub + isolated browser context for one test. Cleaned up even on failure. */
 async function openSite(t, label, pageOptions = {}) {
   const site = await startSite();
+  allStubs.push({ label, stub: site.stub });
   const page = await browser.openPage({ label, diagnostics, ...pageOptions });
   t.after(async () => {
     await page.close();
@@ -70,7 +75,7 @@ async function boot(page, url) {
   await page.waitFor(
     `(() => {
       const chip = document.querySelector("#atlas-suggest .atlas-chip");
-      return !!chip && !chip.disabled && document.querySelector("#phase").textContent.trim() === "ready";
+      return !!chip && chip.getAttribute("aria-disabled") !== "true" && document.querySelector("#phase").textContent.trim() === "ready";
     })()`,
     { what: "the chat to be ready and the first suggestion enabled" },
   );
@@ -112,6 +117,7 @@ const READ_ATLAS = `(() => {
   let session = null;
   try { session = JSON.parse(sessionStorage.getItem("esp-atlas")); } catch (error) { session = "unreadable"; }
   const draft = q("#draft");
+  const announce = q("#atlas-announce");
   const history = Array.from(document.querySelectorAll("#history li > p")).map((p) => ({ text: p.textContent, children: p.children.length }));
   return {
     count: q("#atlas-count") ? q("#atlas-count").textContent : null,
@@ -120,6 +126,7 @@ const READ_ATLAS = `(() => {
     chips,
     asks,
     notice: q("#atlas-notice") ? q("#atlas-notice").textContent.trim() : null,
+    announce: announce ? announce.textContent.trim() : null,
     inked: !!dragon && dragon.classList.contains("is-inked"),
     session,
     localKeys: Object.keys(localStorage),
@@ -132,6 +139,16 @@ const READ_ATLAS = `(() => {
 })()`;
 
 const readAtlas = (page) => page.eval(READ_ATLAS);
+
+/** Clear map is two presses: arm, then confirm. */
+async function clearMap(page) {
+  await page.click("#atlas-reset");
+  await page.click("#atlas-reset");
+}
+
+/** A suggestion chip is there and not paused. Paused chips are aria-disabled, never `disabled`. */
+const CHIP_ENABLED = `(() => { const chip = document.querySelector("#atlas-suggest .atlas-chip"); return !!chip && chip.getAttribute("aria-disabled") !== "true"; })()`;
+const CHIP_BLOCKED = `(() => { const chip = document.querySelector("#atlas-suggest .atlas-chip"); return !!chip && chip.getAttribute("aria-disabled") === "true"; })()`;
 
 /** Compare a page read with what the state model says the map must show. */
 function assertMatchesModel(snap, visited, replies) {
@@ -186,19 +203,26 @@ async function nudge(page) {
   await page.clearFocused();
 }
 
-/** Every revealed-but-not-visited island is disabled and every chip and Ask button too. */
-function assertPaused(snap, label) {
+/**
+ * Every revealed-but-not-visited island, chip and Ask button is paused: aria-disabled="true", and
+ * NOT the `disabled` attribute (a disabled control drops keyboard focus). With `notice: false` (the
+ * visitor has text in the message box) no explanation is written anywhere.
+ */
+function assertPaused(snap, label, { notice = true } = {}) {
   const frontier = idsWithStatus(snap, "frontier");
   assert.ok(frontier.length > 0, `${label}: there are frontier islands to check`);
   for (const id of frontier) assert.equal(snap.islands[id].ariaDisabled, "true", `${label}: frontier island ${id} is aria-disabled`);
   assert.ok(snap.chips.length > 0, `${label}: there are chips to check`);
   for (const chip of snap.chips) {
-    assert.ok(chip.disabled || chip.ariaDisabled === "true", `${label}: chip "${chip.text}" is disabled`);
+    assert.equal(chip.ariaDisabled, "true", `${label}: chip "${chip.text}" is aria-disabled`);
+    assert.equal(chip.disabled, false, `${label}: chip "${chip.text}" keeps focus: it is not the disabled attribute`);
   }
   for (const ask of snap.asks) {
-    assert.ok(ask.disabled || ask.ariaDisabled === "true", `${label}: Ask button "${ask.text}" is disabled`);
+    assert.equal(ask.ariaDisabled, "true", `${label}: Ask button "${ask.text}" is aria-disabled`);
+    assert.equal(ask.disabled, false, `${label}: Ask button "${ask.text}" is not the disabled attribute`);
   }
-  assert.ok(snap.notice && snap.notice.length > 0, `${label}: the notice says why`);
+  if (notice) assert.ok(snap.notice && snap.notice.length > 0, `${label}: the notice says why`);
+  else assert.equal(snap.notice, "", `${label}: no explanation is written for the visitor's own draft`);
 }
 
 function assertEnabled(snap, label) {
@@ -246,11 +270,16 @@ function assertQuiet(entries, label = "page") {
 const scrollToAtlas = (page) =>
   page.eval(`(document.querySelector("#explore").scrollIntoView({ block: "start", behavior: "instant" }), true)`);
 
+/** The toolbar at the top of the screen (under the sticky header): the map fills the rest. */
+const scrollToMap = (page) =>
+  page.eval(`(document.querySelector("#atlas-toolbar").scrollIntoView({ block: "start", behavior: "instant" }), true)`);
+
 /** Everything the chat-card layout tests look at, in viewport pixels. */
 const READ_CARD = `(() => {
   const box = (el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height }; };
   const card = document.querySelector("#conversation");
   const history = document.querySelector("#history");
+  const chatChips = card.querySelectorAll(".atlas-chip, #atlas-suggest").length;
   const form = document.querySelector("#composer");
   const rows = Array.from(history.querySelectorAll("li > p"));
   const last = rows[rows.length - 1];
@@ -264,6 +293,7 @@ const READ_CARD = `(() => {
     historyScroll: { top: history.scrollTop, height: history.scrollHeight, client: history.clientHeight },
     lastRow: last ? box(last) : null,
     rowCount: rows.length,
+    chatChips,
     chips: Array.from(document.querySelectorAll("#atlas-suggest .atlas-chip")).map(box),
     textarea: box(document.querySelector("#draft")),
     send: box(document.querySelector("#send")),
@@ -394,7 +424,22 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
     assert.equal(snap.chips.length, 1, "exactly one suggestion chip");
     assert.equal(snap.chips[0].text, FIRST_SUGGESTION);
     assert.equal(snap.chips[0].text, "Who actually pays the apps I use?");
-    assert.ok(!snap.chips[0].disabled);
+    assert.equal(snap.chips[0].ariaDisabled, null, "the first suggestion is enabled");
+    assert.equal(snap.chips[0].disabled, false);
+    const chipPlace = await page.eval(`(() => {
+      const atlas = document.querySelector("#atlas");
+      const chip = document.querySelector("#atlas-suggest");
+      const nodes = Array.from(atlas.children);
+      const at = (el) => nodes.indexOf(el);
+      return {
+        inAtlas: atlas.contains(chip),
+        inChat: document.querySelector("#conversation").contains(chip),
+        underHonesty: at(chip) === at(document.querySelector(".atlas-honesty")) + 1,
+        beforeToolbar: at(chip) < at(document.querySelector("#atlas-toolbar")),
+        label: chip.getAttribute("aria-label"),
+      };
+    })()`);
+    assert.deepEqual(chipPlace, { inAtlas: true, inChat: false, underHonesty: true, beforeToolbar: true, label: "Suggested questions" }, "the chips sit in the Atlas card, under the honesty note and above the toolbar");
 
     const page1 = await page.eval(`(() => {
       const dragon = document.querySelector(".atlas-edge-dragon");
@@ -508,6 +553,11 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
     assert.deepEqual(snap.localKeys, [], "localStorage has no keys at all");
     assert.ok(snap.sessionKeys.includes("esp-atlas"));
 
+    assert.equal(
+      snap.announce,
+      describeLit(newIds.map((id) => INDEX.byId.get(id).name), expectedVisited.length, ISLANDS.length),
+      "the polite status element names what lit",
+    );
     assert.equal(snap.history.length, 2, "the history shows the question and the reply");
     assert.deepEqual(snap.history[0], { text: FIRST_SUGGESTION, children: 0 });
     assert.deepEqual(snap.history[1], { text: HOOK_REPLY, children: 0 }, "the reply is plain text in the history list");
@@ -607,7 +657,7 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
       // After the pause has run its course the teasers work again (the clock is moved on, not waited for).
       await page.eval(`window.__atlasSkew(${REJECT_PAUSE_MS + 1000})`);
       await nudge(page);
-      await page.waitFor(`document.querySelector("#atlas-suggest .atlas-chip") && !document.querySelector("#atlas-suggest .atlas-chip").disabled`, {
+      await page.waitFor(CHIP_ENABLED, {
         what: "chips to come back after the pause",
       });
       const resumed = await readAtlas(page);
@@ -639,7 +689,7 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
       // The pause is over (the clock is moved on, not waited for). The box still holds the refused text.
       await page.eval(`window.__atlasSkew(${REJECT_PAUSE_MS + 1000})`);
       await poke(page);
-      await page.waitFor(`document.querySelector("#atlas-suggest .atlas-chip") && !document.querySelector("#atlas-suggest .atlas-chip").disabled`, {
+      await page.waitFor(CHIP_ENABLED, {
         what: "the chip to come back although the refused text is still in the box",
       });
       const resumed = await readAtlas(page);
@@ -648,14 +698,13 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
 
       // Whatever the visitor adds to it is theirs, and blocks teasers with the usual message.
       await page.type(" and my own words");
-      await page.waitFor(`document.querySelector("#atlas-suggest .atlas-chip").disabled`, { what: "the chip to be blocked by typed text" });
+      await page.waitFor(CHIP_BLOCKED, { what: "the chip to be blocked by typed text" });
       const typed = await readAtlas(page);
       assert.equal(typed.draft, `${FIRST_SUGGESTION} and my own words`);
-      assertPaused(typed, "typed text in the box");
-      assert.match(typed.notice, /message box has text/i, `the notice names the message box: "${typed.notice}"`);
+      assertPaused(typed, "typed text in the box", { notice: false });
       assert.equal(stub.posts.length, 1, "nothing was sent while the box held the visitor's text");
       for (let i = 0; i < " and my own words".length; i += 1) await page.press("Backspace");
-      await page.waitFor(`!document.querySelector("#atlas-suggest .atlas-chip").disabled`, { what: "the chip to come back when the text is the bridge's own again" });
+      await page.waitFor(CHIP_ENABLED, { what: "the chip to come back when the text is the bridge's own again" });
 
       // A new tap overwrites the old text and is sent exactly once, unchanged.
       await page.click(".atlas-chip");
@@ -692,7 +741,7 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
     // The window moves on: a minute later the teasers are back.
     await page.eval(`window.__atlasSkew(61000)`);
     await nudge(page);
-    await page.waitFor(`document.querySelector("#atlas-suggest .atlas-chip") && !document.querySelector("#atlas-suggest .atlas-chip").disabled`, {
+    await page.waitFor(CHIP_ENABLED, {
       what: "chips to come back after the window",
     });
     assertEnabled(await readAtlas(page), "a minute later");
@@ -926,21 +975,42 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
     if (restored.draft === "") await page.type("typed again after the reload");
     const withDraft = await readAtlas(page);
     assert.notEqual(withDraft.draft.trim(), "");
-    assertPaused(withDraft, "with a draft in the box");
+    assertPaused(withDraft, "with a draft in the box", { notice: false });
     await page.clickIsland(idsWithStatus(withDraft, "frontier")[0]);
     await page.click(".atlas-chip");
     await sleep(250);
     assert.equal(stub.posts.length, 1, "a non-empty draft stops teaser taps");
     await page.click("#draft");
     await page.clearFocused();
-    await page.waitFor(`document.querySelector("#atlas-suggest .atlas-chip") && !document.querySelector("#atlas-suggest .atlas-chip").disabled`, {
+    await page.waitFor(CHIP_ENABLED, {
       what: "chips to come back when the draft is empty",
     });
     assertEnabled(await readAtlas(page), "empty draft");
 
-    // Clear map.
+    // Clear map takes two presses. One only arms it, and it disarms itself.
+    const resetState = () =>
+      page.eval(`(() => {
+        const button = document.querySelector("#atlas-reset");
+        return { text: button.textContent, confirming: button.classList.contains("is-confirming"), width: Math.round(button.getBoundingClientRect().width) };
+      })()`);
+    const idle = await resetState();
+    assert.deepEqual({ text: idle.text, confirming: idle.confirming }, { text: CLEAR_LABEL, confirming: false });
+    await page.click("#atlas-reset");
+    const armed = await resetState();
+    assert.deepEqual({ text: armed.text, confirming: armed.confirming }, { text: CLEAR_CONFIRM_LABEL, confirming: true }, "the first press asks for confirmation");
+    assert.equal(armed.width, idle.width, "the button does not change width, so the toolbar does not shift");
+    assertMatchesModel(await readAtlas(page), expectedVisited, 1);
+    assert.match((await readAtlas(page)).announce, /again/i, "the status element says to press again");
+    await page.waitFor(`document.querySelector("#atlas-reset").textContent === ${JSON.stringify(CLEAR_LABEL)}`, {
+      what: "the button to disarm itself",
+      timeout: CLEAR_CONFIRM_MS + 3000,
+    });
+    assertMatchesModel(await readAtlas(page), expectedVisited, 1);
+    await page.click("#atlas-reset");
     await page.click("#atlas-reset");
     const cleared = await readAtlas(page);
+    assert.equal((await resetState()).text, CLEAR_LABEL, "the button is a plain button again");
+    assert.equal(cleared.announce, `Map cleared. 1 of ${ISLANDS.length} visited.`);
     assertMatchesModel(cleared, [START_ID], 0);
     assert.equal(cleared.count, `1 of ${ISLANDS.length} visited`);
     assert.equal(cleared.inked, false, "the edge dragon is faint again");
@@ -998,7 +1068,7 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
     for (const key of ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Escape"]) await page.press(key);
     await page.click("#atlas-view-list");
     await page.click("#atlas-view-map");
-    await page.click("#atlas-reset");
+    await clearMap(page);
     await sleep(100);
 
     const dom = await page.eval(`(() => {
@@ -1085,20 +1155,37 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
       names: ISLANDS.filter((island) => island.region === region.id).map((island) => island.name),
     }));
     assert.deepEqual(rawSections, expected, "raw HTML: the noscript index lists every island, grouped by region");
+    assert.ok(!/<ol[\s>]/.test(block), "the plain index is a bulleted list: the open (dragon) items must not read as a numbered to-do list");
+    assert.equal((block.match(/<ul>/g) || []).length, REGIONS.length, "one bulleted list per region");
 
     // The same through Chrome with script execution disabled (it renders <noscript> content).
     await page.goto(url);
     const dom = await page.eval(`(() => {
       const sections = [];
       for (const h3 of document.querySelectorAll("#atlas noscript h3")) {
-        const ol = h3.nextElementSibling;
-        sections.push({ heading: h3.textContent, names: Array.from(ol.querySelectorAll("li > strong")).map((s) => s.textContent) });
+        const list = h3.nextElementSibling;
+        sections.push({ heading: h3.textContent, tag: list.tagName, listStyle: getComputedStyle(list.querySelector("li")).listStyleType, names: Array.from(list.querySelectorAll("li > strong")).map((s) => s.textContent) });
       }
       const box = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
       const toolbar = document.querySelector("#atlas-toolbar");
       const chatNote = document.querySelector("#conversation noscript p");
+      const shown = (selector) => {
+        const el = document.querySelector(selector);
+        if (!el) return "missing";
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 ? "shown" : "hidden";
+      };
       return {
         sections,
+        parts: {
+          honesty: shown(".atlas-honesty"),
+          intro: shown(".atlas-intro"),
+          legend: shown(".atlas-legend"),
+          heroNote: shown(".hero-cta-note"),
+          heroLink: shown(".hero-cta-link"),
+          suggest: shown("#atlas-suggest .atlas-chip"),
+          notice: shown("#atlas-notice"),
+        },
         indexVisible: box(document.querySelector("#atlas noscript h3")),
         toolbarHidden: toolbar.hidden && !box(toolbar),
         count: document.querySelector("#atlas-count").textContent,
@@ -1107,7 +1194,20 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
         chatNote: chatNote ? chatNote.textContent : null,
       };
     })()`);
-    assert.deepEqual(dom.sections, expected, "rendered noscript index matches the graph");
+    assert.deepEqual(
+      dom.sections.map(({ heading, names }) => ({ heading, names })),
+      expected,
+      "rendered noscript index matches the graph",
+    );
+    for (const section of dom.sections) {
+      assert.equal(section.tag, "UL", `${section.heading}: a bulleted list`);
+      assert.notEqual(section.listStyle, "decimal", `${section.heading}: no numbering`);
+    }
+    assert.deepEqual(
+      dom.parts,
+      { honesty: "shown", intro: "hidden", legend: "hidden", heroNote: "hidden", heroLink: "shown", suggest: "missing", notice: "hidden" },
+      "without JavaScript only the honesty note and the plain index describe the Atlas: no sentence about a map, chips or a legend",
+    );
     assert.equal(dom.indexVisible, true, "the plain index is visible");
     assert.equal(dom.toolbarHidden, true, "the toolbar stays hidden");
     assert.equal(dom.count, "");
@@ -1122,7 +1222,7 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
     [1400, 1000],
     [1280, 800],
   ]) {
-    it(`13. chat card at ${width}x${height}: after tapping a place the chips, the newest answer, the box and Send are all on screen`, async (t) => {
+    it(`13. chat card at ${width}x${height}: after tapping a place the newest answer, the box and Send are on screen, with the chips beside the map`, async (t) => {
       const { page, stub, url } = await openSite(t, `13-card-${width}x${height}`, { width, height });
       const SECOND_REPLY =
         "The pot is where the month's commitments wait before they are shared out. Your ISP puts the monthly commitment in, and app payouts come out. Figures are illustrative.";
@@ -1131,8 +1231,17 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
       await page.click(".atlas-chip");
       await waitReply(page, stub, 1);
 
-      // A visitor with the map in view taps a place that is next to explore. Nothing is scrolled for them.
+      // At the top of the Atlas the new suggestions are on screen, above the map and outside the chat card.
       await scrollToAtlas(page);
+      const top = await page.eval(READ_CARD);
+      assert.ok(top.chips.length >= 1, "there are suggestion chips");
+      assert.equal(top.chatChips, 0, "the chat card holds no chips: they live in the Atlas card");
+      for (const chip of top.chips) {
+        assert.ok(inside(chip, { top: 0, bottom: top.viewport.height }), `a chip is fully visible next to the map: ${JSON.stringify(chip)}`);
+      }
+
+      // A visitor with the map in view taps a place that is next to explore. Nothing is scrolled for them.
+      await scrollToMap(page);
       await page.clickInView(`#atlas-map [data-id="the-pot"] .atlas-hit`, { within: ".atlas-island" });
       const before = await page.eval(`scrollY`);
       await stub.waitFor(() => stub.posts.length >= 2, { what: "the tap's POST" });
@@ -1146,8 +1255,6 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
       assert.ok(inside(m.card, screen), `the card is on screen: ${JSON.stringify(m.card)}`);
       assert.ok(m.cardScroll.height <= m.cardScroll.client + 1, `the card itself does not scroll (${m.cardScroll.height} > ${m.cardScroll.client})`);
       assert.equal(m.cardScroll.top, 0);
-      assert.ok(m.chips.length >= 1, "there are suggestion chips");
-      for (const chip of m.chips) assert.ok(inside(chip, m.card) && inside(chip, screen), `a chip is fully visible: ${JSON.stringify(chip)}`);
       for (const [name, box] of [["message box", m.textarea], ["Send", m.send], ["status line", m.phase]]) {
         assert.ok(inside(box, m.card) && inside(box, screen), `the ${name} is visible: ${JSON.stringify(box)}`);
       }
@@ -1173,15 +1280,15 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
         `after the visitor's own send the history is at its newest row (${JSON.stringify(own.historyScroll)})`,
       );
 
-      // The history is a keyboard stop right after the chips, and shows a focus ring when it has focus.
-      await page.eval(`Array.from(document.querySelectorAll("#atlas-suggest .atlas-chip")).at(-1).focus()`);
+      // The history is the first keyboard stop of the chat card (right after the map), and shows a focus ring when it has focus.
+      await page.eval(`document.querySelector('#atlas-map [tabindex="0"]').focus()`);
       await page.press("Tab");
       const stop = await page.eval(`(() => {
         const a = document.activeElement;
         const s = a ? getComputedStyle(a) : null;
         return { id: a ? a.id : "", focusVisible: !!a && a.matches(":focus-visible"), outlineStyle: s && s.outlineStyle, outlineWidth: s && s.outlineWidth };
       })()`);
-      assert.equal(stop.id, "history", "Tab from the last suggestion lands on the history");
+      assert.equal(stop.id, "history", "Tab from the map lands on the history");
       assert.equal(stop.focusVisible, true);
       assert.ok(stop.outlineStyle !== "none" && stop.outlineWidth !== "0px", `the history shows a focus ring: ${stop.outlineStyle} ${stop.outlineWidth}`);
 
@@ -1224,5 +1331,567 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
     await waitReply(page, stub, 1);
     await page.waitFor(`document.querySelectorAll("#atlas-map .is-flare").length === 0`, { what: "flare removed by its timer", timeout: 6000 });
     assertQuiet(page.diagnostics.filter((entry) => entry.test === "12-reduced-motion"), "reduced-motion page");
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // review fixes: discoverability, wording, focus, layout stability, spoken summary, warm-up, traffic
+  // -------------------------------------------------------------------------------------------
+
+  /** Seed the saved map, reload, and wait until the Atlas has painted it. */
+  async function seedAndReload(page, visited, replies = 1) {
+    await page.eval(`sessionStorage.setItem("esp-atlas", ${JSON.stringify(JSON.stringify({ v: 1, visited, replies }))}); true`);
+    await page.reload();
+    await page.waitFor(`(document.querySelector("#atlas-count")?.textContent || "").length > 0`, { what: "the Atlas to paint the seeded map" });
+    await page.waitFor(`document.querySelectorAll("#atlas-map .is-flare").length === 0`, { what: "no flare" });
+  }
+
+  /** Let a smooth scroll come to rest. */
+  const settleScroll = (page) =>
+    page.waitFor(
+      `new Promise((resolve) => {
+        let last = scrollY;
+        setTimeout(() => { const now = scrollY; resolve(now === last && now > 0 ? now : false); }, 250);
+      })`,
+      { what: "the page to stop scrolling", timeout: 8000, interval: 50 },
+    );
+
+  for (const [width, height] of [
+    [1400, 1000],
+    [1280, 800],
+    [390, 844],
+  ]) {
+    it(`14. discoverability at ${width}x${height}: the nav and the hero lead to the Atlas, and its first question is on screen beside the map`, async (t) => {
+      const { page, url } = await openSite(t, `14-discover-${width}x${height}`, { width, height });
+      await boot(page, url);
+
+      const top = await page.eval(`(() => {
+        window.scrollTo({ top: 0, behavior: "instant" });
+        const box = (el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, width: r.width, height: r.height }; };
+        const nav = document.querySelector('.nav-links a[href="#explore"]');
+        const cta = document.querySelector('.hero-cta-link[href="#explore"]');
+        const note = document.querySelector(".hero-cta-note");
+        const order = ["#about", "#esp", "#clear-ledger", "#explore"].map((selector) => document.querySelector(selector));
+        const inOrder = order.every((el, i) => i === 0 || !!(order[i - 1].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING));
+        return {
+          nav: nav ? { text: nav.textContent.trim(), box: box(nav) } : null,
+          navLinks: Array.from(document.querySelectorAll(".nav-links a")).map((a) => a.getAttribute("href")),
+          cta: cta ? { text: cta.textContent.trim(), box: box(cta) } : null,
+          note: note ? { hidden: note.hidden, text: note.textContent.trim(), box: box(note) } : null,
+          inOrder,
+          innerHeight,
+          scrollPaddingTop: getComputedStyle(document.documentElement).scrollPaddingTop,
+          scrollWidth: document.documentElement.scrollWidth,
+          clientWidth: document.documentElement.clientWidth,
+        };
+      })()`);
+      assert.deepEqual(top.navLinks, ["#about", "#esp", "#clear-ledger", "#explore"], "the nav gains one link, the others keep their order");
+      assert.equal(top.nav.text, "The Atlas");
+      assert.ok(top.nav.box.width > 0 && top.nav.box.height > 0, "the nav link is visible");
+      assert.ok(top.cta, "the hero has a call to action");
+      assert.ok(top.cta.box.bottom <= top.innerHeight, `the call to action is on the first screen (bottom ${Math.round(top.cta.box.bottom)} of ${top.innerHeight})`);
+      assert.ok(top.cta.box.height >= 44, "the call to action is a 44px touch target");
+      assert.equal(top.note.hidden, false, "the note about asking questions is shown once JavaScript runs");
+      assert.match(top.note.text, /ask a question/i);
+      assert.ok(top.inOrder, "About, ESP, Clear Ledger and the Atlas keep their order");
+      assert.ok(parseFloat(top.scrollPaddingTop) >= 80, `scroll-padding-top clears the sticky header (${top.scrollPaddingTop})`);
+      assert.ok(top.scrollWidth <= top.clientWidth, `the page does not scroll sideways (${top.scrollWidth} > ${top.clientWidth})`);
+
+      // The nav link takes a visitor to the Atlas, not under the sticky header.
+      await page.click('.nav-links a[href="#explore"]');
+      await settleScroll(page);
+      const landed = await page.eval(`(() => {
+        const box = (el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
+        const header = document.querySelector(".site-header").getBoundingClientRect();
+        const chip = document.querySelector("#atlas-suggest .atlas-chip");
+        return {
+          headerBottom: header.bottom,
+          title: box(document.querySelector("#atlas-title")),
+          chip: box(chip),
+          chipText: chip.textContent,
+          map: box(document.querySelector("#atlas-map")),
+          innerHeight,
+          innerWidth,
+        };
+      })()`);
+      assert.ok(landed.title.top >= landed.headerBottom, `the Atlas title is not under the sticky header (${Math.round(landed.title.top)} vs ${Math.round(landed.headerBottom)})`);
+      assert.equal(landed.chipText, FIRST_SUGGESTION);
+      assert.ok(landed.chip.bottom <= landed.innerHeight && landed.chip.top >= landed.headerBottom, `the first suggestion is on screen: ${JSON.stringify(landed.chip)}`);
+      assert.ok(landed.chip.right <= landed.innerWidth, "the first suggestion is not cut off at the side");
+      assert.ok(landed.map.top < landed.innerHeight - 40, `the top of the map is on screen with it (map top ${Math.round(landed.map.top)} of ${landed.innerHeight})`);
+    });
+  }
+
+  it("15. dragons never read as a goal: inspector, list and map say \"open, not ratified\" until they are visited", async (t) => {
+    const { page, url } = await openSite(t, "15-dragons");
+    await boot(page, url);
+    const dragons = ISLANDS.filter((island) => island.status === "open");
+    assert.ok(dragons.length >= 9, "the graph has its dragons");
+    const FORBIDDEN = /next to explore|not reached yet/i;
+
+    // The pure rule first.
+    for (const island of dragons) {
+      assert.equal(statusWord("frontier", island), "open, not ratified", `${island.id} frontier`);
+      assert.equal(statusWord("fogged", island), "open, not ratified", `${island.id} fogged`);
+      assert.equal(statusWord("visited", island), "visited", `${island.id} visited`);
+    }
+    assert.equal(statusWord("frontier", INDEX.byId.get("the-pot")), "next to explore", "an ordinary place keeps its words");
+    assert.equal(statusWord("fogged", INDEX.byId.get("the-pot")), "not reached yet");
+    assert.equal(statusWord("frontier"), "next to explore");
+
+    const readDragonRows = () =>
+      page.eval(`Array.from(document.querySelectorAll("#atlas-list .atlas-list-item.is-open")).map((li) => ({
+        name: li.querySelector(".atlas-list-name").textContent,
+        status: li.querySelector(".atlas-list-status").textContent,
+        cls: li.className,
+        text: li.textContent,
+        askShown: !!li.querySelector(".atlas-list-ask") && !li.querySelector(".atlas-list-ask").hidden,
+      }))`);
+
+    // 1. Only the start is visited: every dragon is in the fog.
+    await page.click("#atlas-view-list");
+    const fogged = await readDragonRows();
+    assert.equal(fogged.length, dragons.length);
+    for (const row of fogged) {
+      assert.match(row.cls, /is-fogged/);
+      assert.equal(row.status, "open, not ratified", `${row.name} (fogged)`);
+      assert.doesNotMatch(row.text, FORBIDDEN, `${row.name} (fogged) row text`);
+    }
+
+    // 2. Everything except the dragons is visited: the dragons next to a visited place are on the frontier.
+    const ordinary = ISLANDS.filter((island) => island.status !== "open").map((island) => island.id);
+    const view = deriveView({ visited: ordinary, replies: 3 }, INDEX);
+    const frontierDragons = dragons.filter((island) => view.status[island.id] === "frontier");
+    assert.ok(frontierDragons.length >= 1, "some dragon is next to a visited place in this state");
+    await seedAndReload(page, ordinary, 3);
+    await page.click("#atlas-view-list");
+    const frontierRows = await readDragonRows();
+    for (const island of dragons) {
+      const row = frontierRows.find((candidate) => candidate.name === island.name);
+      const expected = view.status[island.id];
+      assert.match(row.cls, new RegExp(`is-${expected}`), `${island.id} is ${expected}`);
+      assert.equal(row.status, "open, not ratified", `${island.id} (${expected}) list status`);
+      assert.doesNotMatch(row.text, FORBIDDEN, `${island.id} (${expected}) list row text`);
+    }
+    const asking = frontierRows.filter((row) => row.askShown);
+    assert.ok(asking.length >= 1, "a dragon on the frontier can still be asked about, in its own words");
+
+    // The map says the same, and the inspector for a frontier dragon too.
+    const target = frontierDragons[0];
+    const labelled = await page.eval(`document.querySelector('#atlas-map [data-id="${target.id}"]').getAttribute("aria-label")`);
+    assert.match(labelled, /open, not ratified/);
+    assert.doesNotMatch(labelled, FORBIDDEN, "the map's accessible name");
+    await page.click("#atlas-view-map");
+    assert.ok(await focusIsland(page, target.id), "the frontier dragon takes focus");
+    await page.waitFor(`document.querySelector("#atlas-inspector .atlas-inspector-name")?.textContent === ${JSON.stringify(target.name)}`, {
+      what: "the inspector to show the dragon",
+    });
+    const card = await page.eval(`document.querySelector("#atlas-inspector").textContent`);
+    assert.match(card, /Status: open, not ratified/, "the inspector's status line");
+    assert.doesNotMatch(card, FORBIDDEN, "the inspector card");
+    assert.match(card, /open list/i, "the card says it is the designers' own open list");
+    assert.doesNotMatch(card, /roadmap/i);
+
+    // 3. A visited dragon is "visited", and its label keeps "open, not ratified".
+    await seedAndReload(page, [...ordinary, target.id], 4);
+    await page.click("#atlas-view-list");
+    const visitedRow = (await readDragonRows()).find((row) => row.name === target.name);
+    assert.equal(visitedRow.status, "visited");
+    assert.match(visitedRow.text, /open, not ratified/, "the visited dragon's meta line keeps the label");
+    await page.click("#atlas-view-map");
+    assert.ok(await focusIsland(page, target.id));
+    await page.waitFor(`document.querySelector("#atlas-inspector .atlas-inspector-status")?.textContent === "Status: visited"`, {
+      what: "the visited dragon's status",
+    });
+    const visitedCard = await page.eval(`document.querySelector("#atlas-inspector").textContent`);
+    assert.match(visitedCard, /open, not ratified/);
+    assert.doesNotMatch(visitedCard, FORBIDDEN);
+    assert.doesNotMatch(visitedCard, /learned/i);
+  });
+
+  it("16. focus survives a tap: chips and Ask buttons stay in the DOM and keep focus while paused and after the reply", async (t) => {
+    const { page, stub, url } = await openSite(t, "16-focus");
+    stub.reply = () => HOOK_REPLY;
+    const release = stub.holdStreams();
+    await boot(page, url);
+
+    // Keyboard: focus the chip, press Enter.
+    assert.equal(
+      await page.eval(`(() => { const chip = document.querySelector("#atlas-suggest .atlas-chip"); window.__chip = chip; chip.focus(); return document.activeElement === chip; })()`),
+      true,
+      "the chip takes keyboard focus",
+    );
+    await page.press("Enter");
+    await stub.waitFor(() => stub.posts.length >= 1, { what: "the chip's POST" });
+    const READ_CHIP = `(() => ({
+      focused: document.activeElement === window.__chip,
+      connected: window.__chip.isConnected,
+      inList: document.querySelector("#atlas-suggest").contains(window.__chip),
+      ariaDisabled: window.__chip.getAttribute("aria-disabled"),
+      disabled: window.__chip.disabled,
+      describedBy: window.__chip.getAttribute("aria-describedby"),
+      text: window.__chip.textContent,
+    }))()`;
+    const during = await page.eval(READ_CHIP);
+    assert.deepEqual(
+      { focused: during.focused, connected: during.connected, inList: during.inList, ariaDisabled: during.ariaDisabled, disabled: during.disabled, describedBy: during.describedBy },
+      { focused: true, connected: true, inList: true, ariaDisabled: "true", disabled: false, describedBy: "atlas-notice" },
+      "while the question runs the same chip is still there, focused, aria-disabled and pointing at the notice",
+    );
+    await page.press("Enter");
+    await page.press(" ");
+    await sleep(150);
+    assert.equal(stub.posts.length, 1, "an aria-disabled chip does nothing when activated");
+
+    release();
+    await waitReply(page, stub, 1);
+    const after = await page.eval(READ_CHIP);
+    assert.equal(after.focused, true, "after the reply the same chip still has focus");
+    assert.equal(after.connected, true, "the same chip element is still in the page after the reply");
+    assert.equal(after.ariaDisabled, null, "and it is enabled again");
+    assert.equal(after.describedBy, null);
+    const view = deriveView({ visited: visitedAfter([START_ID], HOOK_REPLY), replies: 1 }, INDEX);
+    assert.equal(after.text, suggestionItems(view)[0], "its text is now the first of the new suggestions");
+    assertMatchesModel(await readAtlas(page), visitedAfter([START_ID], HOOK_REPLY), 1);
+
+    // The list's Ask button: same rule.
+    await page.click("#atlas-view-list");
+    const ask = await page.eval(`(() => {
+      const button = document.querySelector("#atlas-list .atlas-list-item.is-frontier .atlas-list-ask");
+      window.__ask = button; button.focus();
+      return { focused: document.activeElement === button, text: button.textContent };
+    })()`);
+    assert.equal(ask.focused, true, "the Ask button takes keyboard focus");
+    stub.reply = (_message, n) => hookReplyFor(n);
+    const hold = stub.holdStreams();
+    await page.press("Enter");
+    await stub.waitFor(() => stub.posts.length >= 2, { what: "the Ask POST" });
+    assert.equal(stub.posts[1].message, ask.text);
+    const askDuring = await page.eval(`({ same: document.activeElement === window.__ask, connected: window.__ask.isConnected, ariaDisabled: window.__ask.getAttribute("aria-disabled"), disabled: window.__ask.disabled, hidden: window.__ask.hidden })`);
+    assert.deepEqual(askDuring, { same: true, connected: true, ariaDisabled: "true", disabled: false, hidden: false });
+    hold();
+    await waitReply(page, stub, 2);
+    const askAfter = await page.eval(`({ body: document.activeElement === document.body, inList: !!document.activeElement.closest && !!document.activeElement.closest("#atlas-list"), tag: document.activeElement.tagName })`);
+    assert.equal(askAfter.body, false, "focus is not dropped to the page when the place the button asked about is visited");
+    assert.equal(askAfter.inList, true, `focus stays in the list (${askAfter.tag})`);
+  });
+
+  it("17. nothing moves while typing or while a question runs, and a pause is explained in one place", async (t) => {
+    const { page, stub, url } = await openSite(t, "17-stable");
+    stub.reply = () => HOOK_REPLY;
+    await boot(page, url);
+    await page.click("#atlas-view-map");
+
+    // Document coordinates, so a scroll does not look like a move.
+    const BOXES = `(() => {
+      const r = (selector) => { const b = document.querySelector(selector).getBoundingClientRect(); return [b.left + scrollX, b.top + scrollY, b.width, b.height].map(Math.round); };
+      return { suggest: r("#atlas-suggest"), notice: r("#atlas-notice"), toolbar: r("#atlas-toolbar"), map: r("#atlas-map"), inspector: r("#atlas-inspector"), draft: r("#draft"), send: r("#send"), phase: r("#phase"), card: r("#conversation") };
+    })()`;
+    const idle = await page.eval(BOXES);
+
+    const noticeFacts = await page.eval(`(() => {
+      const el = document.querySelector("#atlas-notice");
+      const s = getComputedStyle(el);
+      return { hidden: el.hidden, display: s.display, role: el.getAttribute("role"), height: el.getBoundingClientRect().height, text: el.textContent, lineHeight: parseFloat(s.lineHeight) };
+    })()`);
+    assert.equal(noticeFacts.hidden, false, "the notice is rendered while empty, so its live region exists before it speaks");
+    assert.notEqual(noticeFacts.display, "none");
+    assert.equal(noticeFacts.role, "status");
+    assert.equal(noticeFacts.text, "");
+    assert.ok(noticeFacts.height >= 2 * noticeFacts.lineHeight, `the notice slot is two lines high even when empty (${noticeFacts.height}px, line ${noticeFacts.lineHeight}px)`);
+
+    // 1. The visitor types: chips pause, nothing is written, nothing moves.
+    await page.click("#draft");
+    const afterClick = await page.eval(BOXES);
+    await page.type("a");
+    const typed = await page.eval(BOXES);
+    assert.deepEqual(typed, afterClick, "typing the first character moves nothing");
+    const snapTyped = await readAtlas(page);
+    assertPaused(snapTyped, "typing", { notice: false });
+    const extraText = await page.eval(`document.querySelectorAll(".atlas-suggest-paused, .atlas-list-paused, .atlas-pause-note").length`);
+    assert.equal(extraText, 0, "no second copy of any pause message exists in the DOM");
+    await page.clearFocused();
+    await page.waitFor(CHIP_ENABLED, { what: "the chip to come back" });
+    const cleared = await page.eval(BOXES);
+    assert.deepEqual(cleared, afterClick, "clearing the box moves nothing either");
+
+    // 2. A question runs: the notice speaks into its reserved slot, nothing around it moves.
+    const release = stub.holdStreams();
+    await page.click(".atlas-chip");
+    await stub.waitFor(() => stub.posts.length >= 1, { what: "the chip's POST" });
+    await page.waitFor(`document.querySelector("#atlas-notice").textContent.trim().length > 0`, { what: "the busy notice" });
+    const busy = await page.eval(BOXES);
+    for (const part of ["suggest", "notice", "toolbar", "map", "inspector"]) {
+      assert.deepEqual(busy[part], idle[part], `${part} did not move when the notice appeared`);
+    }
+    const snapBusy = await readAtlas(page);
+    assertPaused(snapBusy, "busy");
+    const message = snapBusy.notice;
+
+    // The message is written once: in the notice. Not in the SVG, the list, a chip paragraph, a title or a label.
+    const copies = await page.eval(`(() => {
+      const message = ${JSON.stringify(message)};
+      const textCopies = Array.from(document.querySelectorAll("body *"))
+        .filter((el) => el.tagName !== "SCRIPT" && el.tagName !== "NOSCRIPT" && el.textContent.includes(message) && !Array.from(el.children).some((child) => child.textContent.includes(message)))
+        .map((el) => el.tagName.toLowerCase() + "#" + el.id);
+      const attrCopies = Array.from(document.querySelectorAll("[aria-label], [title], [aria-description]"))
+        .filter((el) => ["aria-label", "title", "aria-description"].some((name) => (el.getAttribute(name) || "").includes(message)))
+        .map((el) => el.tagName.toLowerCase() + "#" + el.id);
+      const describedBy = {
+        islands: Array.from(document.querySelectorAll('#atlas-map .atlas-island[aria-disabled="true"]')).map((g) => g.getAttribute("aria-describedby")),
+        chips: Array.from(document.querySelectorAll('#atlas-suggest [aria-disabled="true"]')).map((b) => b.getAttribute("aria-describedby")),
+        asks: Array.from(document.querySelectorAll('#atlas-list [aria-disabled="true"]')).map((b) => b.getAttribute("aria-describedby")),
+      };
+      return { textCopies, attrCopies, describedBy };
+    })()`);
+    assert.deepEqual(copies.textCopies, ["p#atlas-notice"], "the pause message is written in one visible place");
+    assert.deepEqual(copies.attrCopies, [], "and in no accessible name or tooltip");
+    assert.ok(copies.describedBy.islands.length > 0 && copies.describedBy.islands.every((value) => value === "atlas-notice"), "paused islands point at the notice");
+    assert.ok(copies.describedBy.chips.every((value) => value === "atlas-notice"), "paused chips point at the notice");
+    release();
+    await waitReply(page, stub, 1);
+    await page.waitFor(`document.querySelector("#atlas-notice").textContent === ""`, { what: "the notice to clear" });
+  });
+
+  it("18. spoken summary: after each reply a polite status element says which places lit", async (t) => {
+    const { page, stub, url } = await openSite(t, "18-announce");
+    stub.reply = (_message, n) => (n === 1 ? HOOK_REPLY : `${PLAIN_REPLY} (answer ${n})`);
+    await boot(page, url);
+    const facts = await page.eval(`(() => {
+      const el = document.querySelector("#atlas-announce");
+      const r = el.getBoundingClientRect();
+      const inspector = document.querySelector("#atlas-inspector");
+      return { role: el.getAttribute("role"), width: r.width, height: r.height, position: getComputedStyle(el).position, inspectorLive: inspector.hasAttribute("aria-live"), inspectorRole: inspector.getAttribute("role"), text: el.textContent };
+    })()`);
+    assert.equal(facts.role, "status");
+    assert.ok(facts.width <= 1 && facts.height <= 1 && facts.position === "absolute", "the status element is visually hidden");
+    assert.equal(facts.inspectorLive, false, "the inspector is not a live region: keyboard focus already announces a place");
+    assert.equal(facts.text, "");
+
+    await page.click(".atlas-chip");
+    await waitReply(page, stub, 1);
+    const newIds = matchReply(HOOK_REPLY, GLOSSARY).filter((id) => id !== START_ID);
+    const names = newIds.map((id) => INDEX.byId.get(id).name);
+    const expected = describeLit(names, 1 + newIds.length, ISLANDS.length);
+    assert.match(expected, /^Lit: .+\. \d+ of \d+ visited\.$/);
+    const said = (await readAtlas(page)).announce;
+    assert.equal(said, expected);
+    const listed = names.slice(0, 5);
+    for (const name of listed) assert.ok(said.includes(name), `${name} is named`);
+    if (names.length > 5) assert.ok(said.includes(`(+${names.length - 5} more)`), "the rest is counted");
+    assert.ok(!said.includes(names[5] || "\u0000"), "no more than five names are listed");
+
+    // A reply that lights nothing says so, and says it again for the next one that lights nothing.
+    await sendViaComposer(page, stub, "tell me something general", 2);
+    assert.equal((await readAtlas(page)).announce, "No new places lit.");
+    await sendViaComposer(page, stub, "and another general question", 3);
+    await page.waitFor(`document.querySelector("#atlas-announce").textContent === "No new places lit."`, { what: "the same sentence to be spoken again" });
+    assert.equal((await readAtlas(page)).announce, "No new places lit.");
+  });
+
+  it("19. the matcher is warmed in idle time; an engine that cannot compile it gets an honest notice", async (t) => {
+    const { page, url } = await openSite(t, "19-warm");
+    await boot(page, url);
+    await page.waitFor(`window.__idle.scheduled >= 1`, { what: "the Atlas to schedule its warm-up" });
+    await page.waitFor(`window.__idle.ran >= 1`, { what: "the warm-up to run" });
+    const quiet = await readAtlas(page);
+    assert.equal(quiet.notice, "", "a working matcher shows no standing notice");
+
+    // A browser whose RegExp cannot compile Unicode property classes: no term can be compiled.
+    const broken = await openSite(t, "19-no-regexp", { diagnostics: [] });
+    await broken.page.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(() => {
+        const Real = RegExp;
+        window.RegExp = new Proxy(Real, {
+          construct(target, args, newTarget) {
+            if (typeof args[0] === "string" && args[0].includes("\\\\p{")) throw new SyntaxError("Invalid regular expression: unsupported property escape");
+            return Reflect.construct(target, args, newTarget === window.RegExp ? target : newTarget);
+          },
+        });
+      })();`,
+    });
+    broken.stub.reply = () => HOOK_REPLY;
+    await broken.page.goto(broken.url);
+    await broken.page.waitFor(`(document.querySelector("#atlas-count")?.textContent || "").length > 0 && document.querySelector("#phase").textContent.trim() === "ready"`, {
+      what: "the Atlas to start without a matcher",
+    });
+    const notice = await readAtlas(broken.page);
+    assert.equal(notice.notice, NO_GLOSSARY_NOTICE);
+    assert.equal(NO_GLOSSARY_NOTICE, "This browser cannot read answers for the map; the list still works.");
+    assert.equal(notice.count, `1 of ${ISLANDS.length} visited`);
+    await broken.page.click("#atlas-view-list");
+    const list = await broken.page.eval(`document.querySelectorAll("#atlas-list .atlas-list-item").length`);
+    assert.equal(list, ISLANDS.length, "the list still works");
+    // A question still goes out and is answered; the map just does not light.
+    await broken.page.click(".atlas-chip");
+    await waitReply(broken.page, broken.stub, 1);
+    const after = await readAtlas(broken.page);
+    assert.equal(after.count, `1 of ${ISLANDS.length} visited`, "nothing lit");
+    assert.equal(after.history.length, 2, "the conversation itself is fine");
+    assert.equal(after.announce, "No new places lit.");
+  });
+
+  it("20. CSS: touch targets, contrast, focus ring, forced colours and text zoom", async (t) => {
+    const { page, stub, url } = await openSite(t, "20-css", { width: 1400, height: 1000 });
+    stub.reply = () => HOOK_REPLY;
+    await boot(page, url);
+    await page.click(".atlas-chip");
+    await waitReply(page, stub, 1);
+    await page.click("#atlas-view-list");
+    await page.click("#atlas-view-map");
+    await page.press("Shift");
+
+    const MEASURE = `(() => {
+      const parse = (c) => (c.match(/[\\d.]+/g) || []).map(Number);
+      const lum = ([r, g, b]) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+      const backgroundOf = (el) => {
+        for (let node = el; node; node = node.parentElement) {
+          const c = parse(getComputedStyle(node).backgroundColor);
+          if (c.length === 3 || (c.length === 4 && c[3] > 0.99)) return c.slice(0, 3);
+        }
+        return [255, 255, 255];
+      };
+      const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+      const textContrast = (el) => ratio(parse(getComputedStyle(el).color).slice(0, 3), backgroundOf(el));
+      const borderContrast = (el, side = "Top") => ratio(parse(getComputedStyle(el)["border" + side + "Color"]).slice(0, 3), backgroundOf(el.parentElement || el));
+      const h = (selector) => document.querySelector(selector).getBoundingClientRect().height;
+      const chip = document.querySelector("#atlas-suggest .atlas-chip");
+      chip.focus();
+      const ring = getComputedStyle(chip);
+      const fog = document.querySelector("#atlas-map .is-fogged .atlas-fog-dot");
+      const sea = parse(getComputedStyle(document.querySelector("#atlas-map .atlas-sea")).fill);
+      const tab = document.querySelector("#atlas-view-list");
+      return {
+        chipHeight: h("#atlas-suggest .atlas-chip"),
+        sendHeight: h("#send"),
+        cancelHeight: h("#cancel"),
+        resetHeight: h("#atlas-reset"),
+        tabHeight: h("#atlas-view-list"),
+        chipText: textContrast(chip),
+        chipBorder: borderContrast(chip),
+        tabBorder: borderContrast(tab),
+        outlineStyle: ring.outlineStyle,
+        outlineWidth: ring.outlineWidth,
+        outlineColor: parse(ring.outlineColor).slice(0, 3),
+        cardColor: backgroundOf(chip.parentElement),
+        fogFill: getComputedStyle(fog).fill,
+        fogOpacity: getComputedStyle(fog).opacity,
+        gap: (() => { const a = document.querySelector("#atlas-view-list").getBoundingClientRect(); const b = document.querySelector("#atlas-reset").getBoundingClientRect(); return b.left - a.right; })(),
+      };
+    })()`;
+    const m = await page.eval(MEASURE);
+    for (const key of ["chipHeight", "sendHeight", "cancelHeight", "resetHeight", "tabHeight"]) {
+      assert.ok(m[key] >= 44, `${key} is at least 44px at 1400 (${m[key]})`);
+    }
+    assert.ok(m.chipText >= 4.5, `chip text contrast ${m.chipText.toFixed(2)}:1`);
+    assert.ok(m.chipBorder >= 3, `chip border contrast ${m.chipBorder.toFixed(2)}:1`);
+    assert.ok(m.tabBorder >= 3, `toolbar button border contrast ${m.tabBorder.toFixed(2)}:1`);
+    assert.notEqual(m.outlineStyle, "none", "the focused chip has an outline");
+    assert.ok(parseFloat(m.outlineWidth) >= 3, `its outline is 3px (${m.outlineWidth})`);
+    assert.ok(m.gap >= 16, `Clear map sits apart from the Map and List toggles (${m.gap}px)`);
+
+    // Fog dots and the focus ring against the dark card (non-text contrast, WCAG 1.4.11).
+    const ratioOf = await page.eval(`(() => {
+      const parse = (c) => (c.match(/[\\d.]+/g) || []).map(Number);
+      const lum = ([r, g, b]) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+      const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+      const chip = document.querySelector("#atlas-suggest .atlas-chip");
+      const fog = parse(getComputedStyle(document.querySelector("#atlas-map .is-fogged .atlas-fog-dot")).fill).slice(0, 3);
+      const opacity = parseFloat(getComputedStyle(document.querySelector("#atlas-map .is-fogged .atlas-fog-dot")).opacity);
+      const sea = parse(getComputedStyle(document.querySelector("#atlas-map .atlas-sea")).fill).slice(0, 3);
+      const dot = fog.map((c, i) => c * opacity + sea[i] * (1 - opacity));
+      const card = parse(getComputedStyle(document.querySelector("#atlas")).backgroundColor).slice(0, 3);
+      chip.focus();
+      const ring = parse(getComputedStyle(chip).outlineColor).slice(0, 3);
+      return { fogOnSea: ratio(dot, sea), ringOnCard: ratio(ring, card) };
+    })()`);
+    assert.ok(ratioOf.fogOnSea >= 3, `a fogged place's dot is 3:1 against the sea (${ratioOf.fogOnSea.toFixed(2)}:1)`);
+    assert.ok(ratioOf.ringOnCard >= 3, `the chip's focus ring is 3:1 against the card (${ratioOf.ringOnCard.toFixed(2)}:1)`);
+
+    // Forced colours: text on the map keeps its glyphs on top of its halo.
+    await page.send("Emulation.setEmulatedMedia", { features: [{ name: "forced-colors", value: "active" }] });
+    const forced = await page.eval(`(() => {
+      const pick = (selector) => { const el = document.querySelector(selector); const s = getComputedStyle(el); return { paintOrder: s.paintOrder, strokeWidth: s.strokeWidth, stroke: s.stroke }; };
+      return { sub: pick(".atlas-region-sub"), name: pick(".atlas-region-name"), level: pick(".atlas-region-level"), caption: pick(".atlas-ed-caption"), label: pick(".atlas-label") };
+    })()`);
+    await page.send("Emulation.setEmulatedMedia", { features: [{ name: "forced-colors", value: "none" }] });
+    for (const [what, style] of Object.entries(forced)) {
+      assert.match(style.paintOrder, /^stroke/, `forced colours: the halo of ${what} is painted under its glyphs (${style.paintOrder})`);
+    }
+
+    // Text at 200% on a 320px phone: the composer's buttons wrap instead of overflowing.
+    const narrow = await openSite(t, "20-narrow", { width: 320, height: 700 });
+    await boot(narrow.page, narrow.url);
+    const plain = await narrow.page.eval(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+    assert.ok(plain <= 0, `at 320px and normal text the page does not scroll sideways (${plain}px)`);
+    const zoomed = await narrow.page.eval(`(() => {
+      document.documentElement.style.setProperty("font-size", "32px");
+      const card = document.querySelector("#conversation");
+      const cardBox = card.getBoundingClientRect();
+      const buttons = ["#send", "#cancel"].map((selector) => document.querySelector(selector).getBoundingClientRect());
+      return {
+        cardRight: cardBox.right,
+        buttons: buttons.map((b) => ({ left: b.left, right: b.right, top: b.top })),
+        overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        cardOverflow: card.scrollWidth - card.clientWidth,
+      };
+    })()`);
+    for (const button of zoomed.buttons) assert.ok(button.right <= zoomed.cardRight + 0.5, `a composer button stays inside the card (${button.right} > ${zoomed.cardRight})`);
+    assert.ok(zoomed.cardOverflow <= 1, `the chat card does not scroll sideways (${zoomed.cardOverflow}px)`);
+  });
+
+  it("21. traffic: the Atlas adds nothing to what the chat sends, and asks for nothing of its own", async (t) => {
+    // A last tour that uses every way of asking, on top of everything the earlier tests did.
+    const { page, stub, url } = await openSite(t, "21-traffic");
+    stub.reply = (_message, n) => hookReplyFor(n);
+    await boot(page, url);
+    await page.click(".atlas-chip");
+    await waitReply(page, stub, 1);
+    await page.click("#atlas-view-list");
+    await page.click(".atlas-list-item.is-frontier .atlas-list-ask");
+    await waitReply(page, stub, 2);
+    await page.click("#atlas-view-map");
+    await sendViaComposer(page, stub, "My own question, typed by hand.", 3);
+    await page.click("#atlas-reset");
+    await page.click("#atlas-reset");
+    await page.reload();
+    await page.waitFor(`(document.querySelector("#atlas-count")?.textContent || "").length > 0`);
+
+    const CHAT_PATHS = [/^\/visitor-session$/, /^\/conversations$/, /^\/conversations\/conv-1\/(messages|events|history)$/, /^\/conversations\/conv-1\/status$/];
+    const STATIC_PATHS = [/^\/$/, /^\/favicon\.ico$/, /^\/css\/[a-z-]+\.css$/, /^\/js\/[a-z-]+\.js$/];
+    const KEYS = ["client_request_id", "conversation_id", "message"];
+    let posts = 0;
+    for (const { label, stub: seen } of allStubs) {
+      for (const request of seen.requests) {
+        const where = `${label}: ${request.method} ${request.url}`;
+        const allowed = [...CHAT_PATHS, ...STATIC_PATHS].some((pattern) => pattern.test(request.path));
+        assert.ok(allowed, `${where} is neither a chat endpoint nor a static file of the site`);
+        if (request.path.startsWith("/js/") || request.path.startsWith("/css/")) {
+          const file = path.join(SITE_DIR, request.path);
+          assert.ok(fs.existsSync(file), `${where} names a file that exists in site/`);
+        }
+        assert.ok(!request.headers.some((name) => /atlas|island|visited/i.test(name)), `${where} carries no Atlas header: ${request.headers.join(",")}`);
+        if (!/^\/(css|js)\//.test(request.path)) {
+          const query = new URL(request.url, "http://x.invalid").searchParams;
+          const keys = [...query.keys()];
+          assert.deepEqual(keys, request.path.endsWith("/status") ? ["client_request_id"] : [], `${where}: no query parameter beyond the chat's own`);
+        }
+        if (request.path === "/conversations/conv-1/messages") {
+          posts += 1;
+          assert.equal(request.method, "POST");
+          assert.deepEqual(Object.keys(request.body || {}).sort(), KEYS, `${where}: the body has exactly conversation_id, client_request_id and message`);
+          assert.equal(request.body.conversation_id, "conv-1");
+          assert.equal(typeof request.body.client_request_id, "string");
+          assert.ok(request.body.client_request_id.length > 0);
+          assert.equal(typeof request.body.message, "string");
+        }
+        if (request.path === "/conversations") assert.deepEqual(Object.keys(request.body || {}), ["provider"], `${where}: only the provider`);
+        if (request.path === "/visitor-session") assert.deepEqual(request.body, {}, `${where}: no body`);
+      }
+    }
+    assert.ok(posts >= 20, `the audit looked at ${posts} message POSTs across ${allStubs.length} pages`);
+    // The three asks of this test went out as exactly their own text.
+    const mine = stub.requests.filter((request) => request.path === "/conversations/conv-1/messages").map((request) => request.body.message);
+    assert.equal(mine[0], FIRST_SUGGESTION);
+    assert.equal(mine[2], "My own question, typed by hand.");
   });
 });
