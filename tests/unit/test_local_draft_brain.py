@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -23,11 +24,12 @@ PREVIOUS_LENGTH = 18514
 PREVIOUS_V2_SHA256 = "64992ad1e7890727873ee2505af5d18b61cd6afe5279684c088809fde45fc478"
 PREVIOUS_V2_LENGTH = 34918
 SOURCE_PATH = Path("/home/ibmko/lab/oe/materials/Whitepaper/v0.2/notes-allowance-architecture-summary.md")
-SOURCE_SHA256 = "b2f2982d6df3d9d003fb284c110ef1ebe21e890c5c30de5a00ae967af288b59b"
-SOURCE_LENGTH = 37749
-BRAIN_SHA256 = "bdf63df96427f25b9f7489b25398465a24c9ccf2c253fea01f6ffad2dc6f08a1"
-BRAIN_LENGTH = 38497
+SOURCE_SHA256 = "61f8361d77db0657cdbb29132a5ebe6930d663d07ce01bc6157fda6ef1660c88"
+SOURCE_LENGTH = 50394
+BRAIN_SHA256 = "cc99c36557eacd9e3cbae9a83715b68c780312e5079f8180e8e09d806f669b9c"
+BRAIN_LENGTH = 51142
 LISTENER = Path("scripts/local_listen.py")
+DRIFT_OPT_OUT = "ESP_ALLOW_NOTES_DRIFT"
 
 
 def _release() -> ResolvedRelease:
@@ -139,16 +141,21 @@ def test_v3_wraps_the_source_with_the_v2_header_shape() -> None:
     assert b"local-draft-brain-v2" not in head
 
 
-def test_embedded_source_is_the_live_notes_file_while_that_file_is_unchanged() -> None:
-    """The notes file lives outside the repo and keeps being edited. This pins the revision v3 was built from."""
+def test_embedded_source_is_the_live_notes_file() -> None:
+    """The notes file lives outside the repo and is still being edited. v3 must carry its current bytes.
+
+    A mismatch fails: republish the brain (and re-ground the site's Atlas graph) when the notes change.
+    Set ESP_ALLOW_NOTES_DRIFT=1 to skip this one check, for example while the owner is mid-edit.
+    """
     if not SOURCE_PATH.is_file():
         pytest.skip(f"{SOURCE_PATH} is not available")
+    if os.environ.get(DRIFT_OPT_OUT) == "1":
+        pytest.skip(f"{DRIFT_OPT_OUT}=1: the live notes file is not compared with the embedded source")
     live = SOURCE_PATH.read_bytes()
-    if hashlib.sha256(live).hexdigest() != SOURCE_SHA256:
-        pytest.skip(
-            f"the notes file was revised after local-draft-brain-v3 was built from the {SOURCE_LENGTH}-byte revision "
-            f"(it now has {len(live)} bytes); publish the next local draft brain to follow it"
-        )
+    assert hashlib.sha256(live).hexdigest() == SOURCE_SHA256, (
+        f"the notes file changed after local-draft-brain-v3 was built: the brain embeds {SOURCE_LENGTH} bytes "
+        f"but the file has {len(live)} bytes; republish the brain and re-ground the Atlas graph"
+    )
     assert live == _embedded_source(load_brain())
 
 
