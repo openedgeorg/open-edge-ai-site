@@ -17,17 +17,22 @@
  *   the bridge keeps a `late` record and watches #history; once the list has been quiet for a
  *   moment it looks again and delivers the reply, once.
  * - A reply is tied to its question. The bridge remembers the text that was submitted and, whenever
- *   it looks for the reply, takes the first non-blank row AFTER the last row that equals that text.
- *   If the question is not in the list (a reload, or the chat showing an older snapshot) there is
- *   nothing to deliver yet and the bridge keeps waiting. A row is never taken merely because it is
- *   the last one.
- * - A delivered reply is remembered as `${position}:${hash of its text}`, so an identical canned
- *   answer in a later turn still counts while a second read of the very same list does not.
+ *   it looks for the reply, takes the rows with text AFTER the last row that equals that text, up to
+ *   (not including) the first row that is an echo of a question the visitor submitted. The chat's
+ *   history can hold one turn as several rows (a preamble, then the answer: the adapter starts a new
+ *   history item whenever the message id changes), so those rows are delivered together, joined by a
+ *   newline; a row that is an echo, and anything after it, belongs to a later turn. If the question
+ *   is not in the list (a reload, or the chat showing an older snapshot) there is nothing to deliver
+ *   yet and the bridge keeps waiting. A row is never taken merely because it is the last one.
+ * - A delivered reply is remembered as `${position of its first row}:${hash of its squashed text}`, so an
+ *   identical canned answer in a later turn still counts while a second read of the very same list does not.
  * - That memory also lives in sessionStorage (SEEN_KEY, passed in as `storage`), because a reload
  *   empties the page's memory while the chat can still show an OLDER list: Clear map, then the same
  *   first suggestion again, and the chat's /history still says [Q1, A1]. Without the memory the old
- *   A1 would be taken for the new answer and light its places. Only short hashes are stored, never
- *   a reply, a row or a question.
+ *   A1 would be taken for the new answer and light its places. The same array also holds a short
+ *   fingerprint (`q:` and 8 hex digits) of every question submitted, so after a reload the visitor's own
+ *   earlier questions are still recognised as echoes in a stale list such as [T1, Q2, A2]. Only short
+ *   hashes are stored, never a reply, a row or a question; 200 entries in all, the oldest dropped first.
  */
 
 import { FIRST_SUGGESTION, ISLANDS } from "./atlas-graph.js";
@@ -53,12 +58,17 @@ export const START_GIVE_UP_MS = 10000;
 export const LATE_SETTLE_MS = 1500;
 
 const BUSY_PHASES = new Set(["submitting", "running", "reconciling", "recovering"]);
-const DELIVERED_LIMIT = 200;
+/** The most entries the stored memory holds, replies and questions together; the oldest go first. */
+const SEEN_LIMIT = 200;
 const ECHO_LIMIT = 100;
-/** The sessionStorage key of the delivered-reply memory: a JSON array of `${position}:${8 hex digits}`. */
+/**
+ * The sessionStorage key of the memory: one JSON array of fingerprints, oldest first. A delivered
+ * reply is `${position}:${8 hex digits}`, a submitted question is `q:${8 hex digits}`.
+ */
 export const SEEN_KEY = "esp-atlas-seen";
-/** What one stored entry must look like; anything else in the array is ignored. */
-const SEEN_ENTRY = /^\d{1,9}:[0-9a-f]{8}$/;
+/** What one stored entry must look like (a reply, or a question); anything else in the array is ignored. */
+const SEEN_REPLY_ENTRY = /^\d{1,9}:[0-9a-f]{8}$/;
+const SEEN_QUESTION_ENTRY = /^q:[0-9a-f]{8}$/;
 /** A stored value longer than this is not even parsed (200 entries need about 3 KB). */
 const SEEN_MAX_CHARS = 65536;
 
@@ -326,11 +336,12 @@ export function createChatBridge({
   let lateTimer = null;
   let lateTimerSet = false;
   const sends = []; // submit timestamps inside the rate window, ascending
-  // `${position}:${fnv1a32 of the squashed text}` of every reply handed to onReply, oldest first. Seeded from
-  // storage when the bridge is created and written back after each delivery (see SEEN_KEY). The position
-  // is the row's index among the rows that have text.
-  const delivered = new Set();
-  const echoes = new Set(); // squashed text of every submit seen: a row equal to one is the visitor's echo
+  // The fingerprints this bridge keeps, oldest first (see SEEN_KEY): `${position}:${fnv1a32 of the squashed
+  // text}` of every reply handed to onReply (the position is the index of the reply's first row among the
+  // rows that have text), and `q:${fnv1a32 of the squashed text}` of every question submitted. Seeded from
+  // storage when the bridge is created and written back after each change.
+  const seen = new Set();
+  const echoes = new Set(); // squashed text of every submit of this page: a row equal to one is the visitor's echo
   const unsubscribers = [];
 
   function readPhase() {
@@ -469,17 +480,19 @@ export function createChatBridge({
     changed();
   }
 
-  function rememberDelivered(key) {
-    delivered.add(key);
-    if (delivered.size > DELIVERED_LIMIT) delivered.delete(delivered.values().next().value);
+  /** Add `entry` as the newest (an entry that is already there moves to the end); past SEEN_LIMIT the oldest go. */
+  function remember(entry) {
+    seen.delete(entry);
+    seen.add(entry);
+    while (seen.size > SEEN_LIMIT) seen.delete(seen.values().next().value);
   }
 
   /**
-   * Seed `delivered` from what an earlier page of this tab stored. Whatever is wrong with the stored
+   * Seed `seen` from what an earlier page of this tab stored. Whatever is wrong with the stored
    * value (no storage, a storage that throws, bad JSON, not an array, entries of the wrong shape or
    * size) is ignored: the bridge then simply starts with an empty memory.
    */
-  function loadDelivered() {
+  function loadSeen() {
     let raw;
     try {
       if (!storage || typeof storage.getItem !== "function") return;
@@ -496,25 +509,34 @@ export function createChatBridge({
     }
     if (!Array.isArray(list)) return;
     for (const entry of list) {
-      if (typeof entry === "string" && entry.length <= 32 && SEEN_ENTRY.test(entry)) rememberDelivered(entry);
+      if (typeof entry !== "string" || entry.length > 32) continue;
+      if (SEEN_REPLY_ENTRY.test(entry) || SEEN_QUESTION_ENTRY.test(entry)) remember(entry);
     }
   }
 
-  /** Write `delivered` to storage. Only fingerprints go in; a failure (private mode, quota) keeps the memory-only behaviour. */
-  function storeDelivered() {
+  /** Write `seen` to storage. Only fingerprints go in; a failure (private mode, quota) keeps the memory-only behaviour. */
+  function storeSeen() {
     try {
       if (!storage || typeof storage.setItem !== "function") return;
-      storage.setItem(SEEN_KEY, JSON.stringify([...delivered]));
+      storage.setItem(SEEN_KEY, JSON.stringify([...seen]));
     } catch {
       /* storage disabled or full: the memory of this page still works */
     }
   }
 
+  /** The visitor submitted `plain` (squashed): rows with this text are echoes now, also after a reload. */
   function rememberEcho(plain) {
     if (!plain) return;
     echoes.delete(plain);
     echoes.add(plain);
     if (echoes.size > ECHO_LIMIT) echoes.delete(echoes.values().next().value);
+    remember(`q:${fnv1a32(plain)}`);
+    storeSeen();
+  }
+
+  /** Whether the row `plain` (squashed) is the text of a question submitted by this page or, by its fingerprint, an earlier page. */
+  function isEcho(plain) {
+    return echoes.has(plain) || seen.has(`q:${fnv1a32(plain)}`);
   }
 
   /**
@@ -533,14 +555,19 @@ export function createChatBridge({
   }
 
   /**
-   * The reply to `submitted`: the first row with text AFTER the last row that equals the submitted
-   * text (whitespace squashed). Nothing is returned when
+   * The reply to `submitted`: the rows with text AFTER the last row that equals the submitted text
+   * (whitespace squashed), up to the first row that is an echo of a submitted question, joined by a
+   * newline. A turn can be several rows ([Q, preamble, answer]): the xAI adapter starts a new history
+   * item whenever the message id changes. With a single row this is that row, as the page shows it.
+   * Nothing is returned when
    * - the question is not in the list yet (a reload, or an older snapshot of the list), or it is the
    *   last row (the run is not done), or only blank rows follow it;
-   * - that row is an echo of something submitted (the run failed and a question follows the question);
-   * - that row was already handed on (the very same list read again, for a question asked twice, or an
+   * - the first row after it is an echo of something submitted (the run failed and a question follows
+   *   the question). An echo later on ends the reply there: that row and what follows belong to a later turn;
+   * - the reply was already handed on (the very same list read again, for a question asked twice, or an
    *   older snapshot of the list that a reload left behind: the memory is kept in sessionStorage).
-   * A row is never taken merely because it is the last one in the list.
+   * A row is never taken merely because it is the last one in the list. While the list is still growing
+   * the late path waits for it to be quiet (see onLateSettled) before it looks here.
    */
   function pickReply(submitted) {
     const question = squash(submitted);
@@ -559,14 +586,19 @@ export function createChatBridge({
         break;
       }
     }
-    if (at < 0 || at + 1 >= rows.length) return null;
-    const row = rows[at + 1];
-    if (echoes.has(row.plain)) return null;
-    const key = `${at + 1}:${fnv1a32(row.plain)}`;
-    if (delivered.has(key)) return null;
-    rememberDelivered(key);
-    storeDelivered();
-    return row.text;
+    if (at < 0) return null;
+    const turn = [];
+    for (let i = at + 1; i < rows.length; i += 1) {
+      if (isEcho(rows[i].plain)) break;
+      turn.push(rows[i]);
+    }
+    if (turn.length === 0) return null;
+    // The hash is of the squashed concatenation, so a one-row reply keeps the key it always had.
+    const key = `${at + 1}:${fnv1a32(turn.map((row) => row.plain).join(" "))}`;
+    if (seen.has(key)) return null;
+    remember(key);
+    storeSeen();
+    return turn.map((row) => row.text).join("\n");
   }
 
   function deliver(reply) {
@@ -692,7 +724,7 @@ export function createChatBridge({
     }
   }
 
-  loadDelivered();
+  loadSeen();
   phase = readPhase();
   if (phase === "rejected") rejectUntil = now() + REJECT_PAUSE_MS;
   subscribe((handler) => port.onPhase(handler), onPhaseEvent);
