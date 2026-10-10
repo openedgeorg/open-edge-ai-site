@@ -1,0 +1,146 @@
+/**
+ * Reference matcher for the differential tests of site/js/atlas-match.js.
+ *
+ * This is the matcher as it was before round 2: one boundary regular expression per term, tested
+ * against the whole reply. It is slow (hundreds of ms for the shipped glossary) but obviously
+ * correct, which is exactly what a reference is for. It lives ONLY in tests/: the shipped matcher
+ * tokenises the reply once and never builds a regex per term.
+ *
+ * The only differences from the old matcher are the two F10 rules, which the shipped matcher also
+ * has: a phrase whose first character is uppercase (an acronym expansion written out) is matched
+ * case-sensitively, and the single-word allowlist is a parameter (the reviewed list is pinned in
+ * the test files, not read from the matcher).
+ *
+ * Not a test file (no .test.mjs suffix): node --test ignores it, other test files import it.
+ */
+
+import { spawnSync } from "node:child_process";
+
+const BEFORE = "(?:^|[^\\p{L}\\p{N}])";
+const AFTER = "(?![\\p{L}\\p{N}])";
+const SEPARATOR = "[\\s\\-]+";
+
+export function referenceNormalise(text) {
+  if (typeof text !== "string") return "";
+  return text
+    .replace(/[‘’‚‛′]/g, "'")
+    .replace(/[“”„‟″]/g, '"')
+    .replace(/[‐‑]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const escapeRegExp = (text) => text.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
+const phraseTokens = (term) => term.split(/[\s-]+/).filter(Boolean);
+
+/** @param {Set<string>|string[]} allowed lowercase single words that are valid terms */
+export function referenceClassify(term, allowed) {
+  const words = allowed instanceof Set ? allowed : new Set(allowed);
+  if (typeof term !== "string") return "rejected";
+  const text = referenceNormalise(term);
+  if (!text) return "rejected";
+  if (/[\s-]/.test(text)) return phraseTokens(text).length >= 2 ? "phrase" : "rejected";
+  if (/^[\p{Lu}\p{N}]{2,}$/u.test(text) && /\p{Lu}/u.test(text)) return "acronym";
+  if (/\p{Lu}/u.test(Array.from(text).slice(1).join(""))) return "acronym";
+  return words.has(text.toLowerCase()) ? "word" : "rejected";
+}
+
+export function referenceCaseSensitive(text, kind) {
+  if (kind === "acronym") return true;
+  if (kind === "phrase") return /^\p{Lu}/u.test(text);
+  return false;
+}
+
+function pattern(term, kind) {
+  const exact = referenceCaseSensitive(term, kind);
+  if (kind === "acronym") return new RegExp(`${BEFORE}${escapeRegExp(term)}s?${AFTER}`, "u");
+  if (kind === "phrase") {
+    const body = phraseTokens(term).map(escapeRegExp).join(SEPARATOR);
+    return new RegExp(`${BEFORE}${body}s?${AFTER}`, exact ? "u" : "iu");
+  }
+  return new RegExp(`${BEFORE}${escapeRegExp(term)}${AFTER}`, "iu");
+}
+
+/** @returns {{entries: {id: string, res: RegExp[]}[], rejected: {id: string, term: unknown}[]}} */
+export function referenceCompile(islands, allowed) {
+  const entries = [];
+  const rejected = [];
+  for (const island of Array.isArray(islands) ? islands : []) {
+    if (!island || typeof island.id !== "string") continue;
+    const res = [];
+    const seen = new Set();
+    for (const term of Array.isArray(island.terms) ? island.terms : []) {
+      const kind = referenceClassify(term, allowed);
+      if (kind === "rejected") {
+        rejected.push({ id: island.id, term });
+        continue;
+      }
+      const text = referenceNormalise(term);
+      const exact = referenceCaseSensitive(text, kind);
+      const key = `${kind}:${exact ? `exact:${text}` : `any:${text.toLowerCase()}`}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      res.push(pattern(text, kind));
+    }
+    entries.push({ id: island.id, res });
+  }
+  return { entries, rejected };
+}
+
+export function referenceMatch(text, reference) {
+  const reply = referenceNormalise(text);
+  if (!reply) return [];
+  const ids = [];
+  for (const entry of reference.entries) {
+    if (ids.includes(entry.id)) continue;
+    if (entry.res.some((re) => re.test(reply))) ids.push(entry.id);
+  }
+  return ids;
+}
+
+/** A small deterministic generator (mulberry32), so a failing case can be replayed from its seed. */
+export function seededRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Time the FIRST matchReply of a fresh node process (cold engine, nothing warmed): the number the
+ * page actually pays for its first reply. The child compiles the glossary first and times only the
+ * match. Returns milliseconds, or the best of `attempts` runs so that a busy host does not fail a
+ * bound that the code meets (the bound itself is not relaxed).
+ * @param {{id: string, terms: string[]}[]} islands
+ * @param {string} reply
+ * @param {number} [attempts]
+ */
+export function coldFirstMatchMs(islands, reply, attempts = 3) {
+  const script = `
+    import { readFileSync } from "node:fs";
+    const { islands, reply, matcher } = JSON.parse(readFileSync(0, "utf8"));
+    const { compileGlossary, matchReply } = await import(matcher);
+    const glossary = compileGlossary(islands);
+    const start = performance.now();
+    const ids = matchReply(reply, glossary);
+    process.stdout.write(JSON.stringify({ ms: performance.now() - start, ids }));
+  `;
+  const matcher = new URL("../../site/js/atlas-match.js", import.meta.url).href;
+  let best = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const done = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      input: JSON.stringify({ islands, reply, matcher }),
+      encoding: "utf8",
+      timeout: 60000,
+    });
+    if (done.status !== 0) throw new Error(`cold benchmark child failed: ${done.stderr}`);
+    const measured = JSON.parse(done.stdout);
+    if (best === null || measured.ms < best.ms) best = measured;
+    if (best.ms < 5) break;
+  }
+  return best;
+}
