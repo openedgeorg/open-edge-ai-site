@@ -294,6 +294,36 @@ describe("edges", () => {
       "a path to a contested or open island must carry its qualifier",
     );
   });
+
+  it("lets only a path that touches an open island cite section 10 (F31)", () => {
+    const open = new Set(openIslands.map((island) => island.id));
+    const citing = EDGES.filter((edge) => edge.trace.section === 10);
+    assert.ok(citing.length >= 1, "no path cites section 10");
+    const bad = citing.filter((edge) => !open.has(edge.a) && !open.has(edge.b));
+    assert.deepEqual(
+      bad.map((edge) => `${edge.a}|${edge.b}: ${edge.label}`),
+      [],
+      "a path that cites section 10 must touch an open island",
+    );
+  });
+
+  it("makes every path whose quotation is about the price catalogue say it awaits incorporation (F31)", () => {
+    const open = new Set(openIslands.map((island) => island.id));
+    const aboutCatalogue = EDGES.filter((edge) => /catalogue/i.test(fixture.edges[edgeKey(edge.a, edge.b)] ?? ""));
+    assert.ok(aboutCatalogue.length >= 1, "no path quotes the price catalogue");
+    // A path that ends at a dragon already carries that dragon's own qualifier (checked above): it is exempt here.
+    const bad = aboutCatalogue.filter(
+      (edge) => !open.has(edge.a) && !open.has(edge.b) && !edge.label.includes(CONTESTED_LABEL),
+    );
+    assert.deepEqual(
+      bad.map((edge) => `${edge.a}|${edge.b}: ${edge.label}`),
+      [],
+      "a path that rests on the price catalogue must say it awaits incorporation",
+    );
+    for (const edge of aboutCatalogue.filter((candidate) => open.has(candidate.a) || open.has(candidate.b))) {
+      assert.match(edge.label, QUALIFIER, `${edge.a}|${edge.b}: the dragon end needs its own qualifier`);
+    }
+  });
 });
 
 describe("islands", () => {

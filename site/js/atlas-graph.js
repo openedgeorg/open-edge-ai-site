@@ -177,7 +177,7 @@ export const ISLANDS = [
     terms: ["off-chain evidence", "off-chain during ordinary operation", "evidence retention", "ConRec diary", "local diary", "retention period", "fine-grained evidence"],
   },
   {
-    id: "hsatm", name: "Signed allowance message (HSATM)", region: "highlands", x: 470, y: 575,
+    id: "hsatm", name: "HSATM: signed allowance message", region: "highlands", x: 466, y: 575,
     teaser: "Who signs my allowance, and what exactly do they sign?",
     trace: [{ section: 3 }, { section: 3 }, { section: 3 }],
     terms: ["HSATM", "HSAT", "Household Signed Allowance Message", "Household Signed Allowance Total", "signed allowance message", "highest-sequence"],
@@ -203,7 +203,7 @@ export const ISLANDS = [
     terms: ["epoch opening", "dependency order", "household activation", "zero allowance", "sequence-zero"],
   },
   {
-    id: "hpc", name: "Admission credential (HPC)", region: "mountains", x: 607, y: 301,
+    id: "hpc", name: "HPC: participation credential", region: "mountains", x: 606, y: 301,
     teaser: "How does an app check that a household is admitted for the epoch?",
     trace: [{ section: 5 }, { section: 5 }, { section: 5 }],
     terms: ["HPC", "Household Participation Credential", "participation credential", "admission proof"],
@@ -267,7 +267,7 @@ export const ISLANDS = [
     terms: ["reconciles all accepted", "arrival order", "all claims together", "combined claims"],
   },
   {
-    id: "heea", name: "Household epoch escrow (HEEA)", region: "valley", x: 740, y: 394,
+    id: "heea", name: "HEEA: epoch escrow account", region: "valley", x: 740, y: 394,
     teaser: "What caps what can be paid for one household?",
     trace: [{ section: 6 }, { section: 6 }],
     terms: ["HEEA", "household epoch escrow account", "escrow account", "escrow cap", "accounting container"],
@@ -292,7 +292,7 @@ export const ISLANDS = [
     terms: ["establishes an ISP default", "missed AtS", "no participating epoch", "forced wind-down", "unpaid required debt service", "unfunded allowance correction"],
   },
   {
-    id: "who-does-what", name: "Who does what: box, ISP, apps", region: "valley", x: 729, y: 281,
+    id: "who-does-what", name: "Who does what: box, ISP, apps", region: "valley", x: 732, y: 281,
     teaser: "What do the box, the ISP and the apps each do, and what is the ISP trusted with?",
     trace: [{ section: 8 }, { section: 8 }, { section: 8 }],
     terms: ["household box is an observer", "payment discretion", "evidence custodians", "private mapping"],
@@ -341,7 +341,7 @@ export const ISLANDS = [
     terms: ["false closing entry", "allowance correction", "honest household"],
   },
   {
-    id: "timing-states", name: "The FUP timing audit", region: "badlands", x: 900, y: 609,
+    id: "timing-states", name: "Two timing states", region: "badlands", x: 900, y: 609,
     note: "Invocation, proofs and result record are deferred",
     teaser: "What counts as compliant consumption, and what counts as spend-ahead?",
     trace: [{ section: 3 }, { section: 3 }, { section: 9 }, { section: 3 }, { section: 3 }],
@@ -492,9 +492,9 @@ export const EDGES = [
   { a: "app-set-prices", b: "funding-pressure", label: "higher app prices can push payouts past ISP contributions", trace: { section: 1 } },
   { a: "app-set-prices", b: "price-feedback", label: "higher app prices consume allowance faster", trace: { section: 1 } },
   { a: "price-feedback", b: "fup-faucet", label: "FUP limits on further grants can interrupt expected app use", trace: { section: 3 } },
-  { a: "base-and-topups", b: "retail-contract", label: "the plan sets the base, top-up entitlements and rate limits", trace: { section: 3 } },
+  { a: "base-and-topups", b: "retail-contract", label: "the base allowance is defined by the retail relationship", trace: { section: 3 } },
   { a: "base-and-topups", b: "fup-faucet", label: "a top-up request carries no amount; the ISP sizes the grant", trace: { section: 3 } },
-  { a: "base-and-topups", b: "signed-refusal", label: "a top-up refusal is legitimate under FUP and pot management", trace: { section: 3 } },
+  { a: "base-and-topups", b: "signed-refusal", label: "a refusal is legitimate only if it follows the FUP and pot", trace: { section: 3 } },
 
   // Paths reaching the Interior
   { a: "isp-counterparty", b: "common-fund", label: "ISP commitments flow into the fund, app payouts flow out", trace: { section: 2 } },

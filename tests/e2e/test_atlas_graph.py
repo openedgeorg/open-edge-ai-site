@@ -522,6 +522,33 @@ def test_every_path_to_a_contested_or_open_island_says_so(graph: Graph) -> None:
     assert unqualified == []
 
 
+def test_only_a_path_that_touches_an_open_island_cites_section_ten(graph: Graph) -> None:
+    """F31: a section 10 citation is the summary's own open list, so its path must end at a dragon."""
+    open_ids = {island.id for island in graph.islands if island.status == "open"}
+    citing = [edge for edge in graph.edges if edge.section == 10]
+    assert citing, "no path cites section 10"
+    assert [edge.name for edge in citing if edge.a not in open_ids and edge.b not in open_ids] == []
+
+
+def test_every_path_quoting_the_price_catalogue_says_it_awaits_incorporation(graph: Graph, fixture: Fixture) -> None:
+    """F31: the catalogue mechanism awaits incorporation, so a path resting on it must say so itself.
+
+    A path that ends at a dragon is exempt, because the dragon's own qualifier is already required
+    of it by the open-island rule above.
+    """
+    open_ids = {island.id for island in graph.islands if island.status == "open"}
+    about = [edge for edge in graph.edges if re.search(r"catalogue", fixture.edges.get(edge.key, ""), re.IGNORECASE)]
+    assert about, "no path quotes the price catalogue"
+    unqualified = [
+        f"{edge.name}: {edge.label}"
+        for edge in about
+        if edge.a not in open_ids and edge.b not in open_ids and CONTESTED_LABEL not in edge.label
+    ]
+    assert unqualified == []
+    dragon_ends = [edge for edge in about if edge.a in open_ids or edge.b in open_ids]
+    assert [f"{edge.name}: {edge.label}" for edge in dragon_ends if not QUALIFIER.search(edge.label)] == []
+
+
 def test_path_labels_are_short_and_do_not_open_with_a_pronoun(graph: Graph) -> None:
     assert [f"{edge.name}: {edge.label}" for edge in graph.edges if not 3 <= len(edge.label) <= 60] == []
     assert [f"{edge.name}: {edge.label}" for edge in graph.edges if PRONOUN_START.match(edge.label)] == []
