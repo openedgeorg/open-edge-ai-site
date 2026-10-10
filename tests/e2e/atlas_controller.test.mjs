@@ -18,6 +18,9 @@ import {
   conversationInView,
   describeLit,
 } from "../../site/js/atlas.js";
+import { SEEN_KEY } from "../../site/js/atlas-chat.js";
+import { buildIndex } from "../../site/js/atlas-graph.js";
+import { ATLAS_KEY, persistAtlas, reduceAtlas, restoreAtlas } from "../../site/js/atlas-state.js";
 
 describe("describeLit: the polite sentence after a reply", () => {
   it("says so when nothing lit", () => {
@@ -82,5 +85,50 @@ describe("conversationInView: is the visitor reading the answer?", () => {
     assert.equal(TWO_COLUMNS_QUERY, "(min-width: 1180px)");
     const css = readFileSync(new URL("../../site/css/atlas.css", import.meta.url), "utf8");
     assert.ok(css.includes(`@media ${TWO_COLUMNS_QUERY} {`), "atlas.css switches to two columns at the same width");
+  });
+});
+
+describe("the replies already read survive a reload (F11)", () => {
+  const source = readFileSync(new URL("../../site/js/atlas.js", import.meta.url), "utf8");
+
+  it("the controller hands its sessionStorage to the chat bridge", () => {
+    // The controller itself needs a real DOM (tests/e2e/atlas_browser_reload.test.mjs drives it in Chrome and
+    // would fail without this); this is the cheap guard that runs without a browser.
+    const call = source.match(/createChatBridge\(\{([^}]*)\}\)/s);
+    assert.ok(call, "atlas.js creates the bridge with an options object");
+    assert.match(call[1], /^\s*storage,?\s*$/m, "the same storage the map progress uses is passed on");
+    assert.match(source, /createAtlas\(\{[^)]*\bstorage = null\b/s, "and that storage is the controller's own option");
+  });
+
+  it("Clear map leaves the stored memory alone: it rewrites its own key only", () => {
+    const index = buildIndex();
+    const data = new Map([[SEEN_KEY, '["1:e40c292c"]']]);
+    const calls = [];
+    const storage = {
+      getItem: (key) => (data.has(key) ? data.get(key) : null),
+      setItem(key, value) {
+        calls.push(["setItem", key]);
+        data.set(key, String(value));
+      },
+      removeItem(key) {
+        calls.push(["removeItem", key]);
+        data.delete(key);
+      },
+      clear() {
+        calls.push(["clear"]);
+        data.clear();
+      },
+    };
+    assert.notEqual(SEEN_KEY, ATLAS_KEY);
+    let state = restoreAtlas(storage, index);
+    state = reduceAtlas(state, { type: "reply", ids: [] }, index);
+    persistAtlas(storage, state);
+    state = reduceAtlas(state, { type: "reset" }, index);
+    persistAtlas(storage, state);
+    assert.equal(data.get(SEEN_KEY), '["1:e40c292c"]');
+    assert.deepEqual(calls.filter((call) => call[0] !== "setItem" || call[1] !== ATLAS_KEY), []);
+    // The controller's reset() is exactly that: the reducer and persistAtlas, nothing else touches storage.
+    assert.ok(!/removeItem|storage\.clear/.test(source), "atlas.js never removes or clears a storage key");
+    assert.ok(!source.includes(SEEN_KEY), "and never mentions the memory's key");
   });
 });

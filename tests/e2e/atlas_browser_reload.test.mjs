@@ -25,10 +25,11 @@
  * the same modules the page runs (atlas-graph.js, atlas-match.js, atlas-state.js). Teasers are read
  * from the graph. The only literal texts are the visitor's own typed questions.
  *
- * Known gap (test e, marked todo, expected to fail today): when turn 2 is the very same text as turn 1,
- * which is what a visitor gets by pressing Clear map and tapping the first suggestion again, the older
- * snapshot [Q1, A1] is indistinguishable from the answer to the new question. Remove the todo when the
- * bridge can tell them apart.
+ * Test e is the hard case of F11: turn 2 is the very same text as turn 1, which is what a visitor gets by
+ * pressing Clear map and tapping the first suggestion again, so the older snapshot [Q1, A1] looks exactly
+ * like the answer to the new question. The list alone cannot tell them apart; the bridge keeps a short
+ * fingerprint of every reply it delivered in sessionStorage ("esp-atlas-seen": position and hash, never
+ * text), which a reload does not clear, and so recognises the old A1. Test f looks at what is stored.
  *
  * What the conversation client does that matters here (the double reproduces it):
  *  - After a reload the list (#history) is EMPTY and stays so until the visitor sends something.
@@ -55,7 +56,7 @@ import http from "node:http";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { LATE_SETTLE_MS, REJECT_PAUSE_MS } from "../../site/js/atlas-chat.js";
+import { LATE_SETTLE_MS, REJECT_PAUSE_MS, SEEN_KEY } from "../../site/js/atlas-chat.js";
 import { FIRST_SUGGESTION, ISLANDS, START_ID, buildIndex } from "../../site/js/atlas-graph.js";
 import { compileGlossary, matchReply } from "../../site/js/atlas-match.js";
 import { deriveView } from "../../site/js/atlas-state.js";
@@ -637,25 +638,54 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
     });
   });
 
-  it(
-    "e. (known gap) turn 2 is the very same suggestion as turn 1, and the older snapshot is [Q1, A1]: nothing lights",
-    {
-      todo:
-        "F11 is not closed for this case: Clear map brings the first suggestion back, so a visitor can ask Q1 again after a reload, and an older [Q1, A1] snapshot then looks exactly like the answer to the new question. The bridge cannot tell them apart from the list alone, delivers A1 and lights its places.",
-    },
-    async (t) => {
-      const { first } = plan();
-      await staleScenario(t, "reload-stale-same-text", {
-        stale: (backend) => {
-          backend.lagging = true;
-          backend.lagFromTurn = 2;
-        },
-        staleRows: [FIRST_SUGGESTION, first.text],
-        question: FIRST_SUGGESTION,
-        ask: (page) => page.click(CHIP),
-      });
-    },
-  );
+  it("e. turn 2 is the very same suggestion as turn 1 (Clear map, then the first suggestion again), and the older snapshot is [Q1, A1]: nothing from A1 lights; A2 lights once", async (t) => {
+    const { first } = plan();
+    await staleScenario(t, "reload-stale-same-text", {
+      stale: (backend) => {
+        backend.lagging = true;
+        backend.lagFromTurn = 2; // only turn 1 is shown: [Q1, A1]
+      },
+      staleRows: [FIRST_SUGGESTION, first.text],
+      question: FIRST_SUGGESTION,
+      ask: (page) => page.click(CHIP),
+    });
+  });
+
+  it("f. what the Atlas keeps of the replies it read: short position:hash entries in sessionStorage, no text, and a reload and Clear map leave them", async (t) => {
+    const { first } = plan();
+    const { page, url } = await openSite(t, "seen-memory", (b) => {
+      b.eventsMode = "sse";
+      b.runMs = 600;
+      b.reply = () => first.text;
+    });
+    await boot(page, url);
+    const STORAGE = `(() => {
+      const out = {};
+      for (let i = 0; i < sessionStorage.length; i += 1) { const name = sessionStorage.key(i); out[name] = sessionStorage.getItem(name); }
+      return out;
+    })()`;
+    assert.equal((await page.eval(STORAGE))[SEEN_KEY], undefined, "nothing is kept before a reply was read");
+
+    await page.click(CHIP);
+    await page.waitFor(`${REPLIES_ARE(1)} && ${PHASE_IS("ready")}`, { timeout: 15000, what: "turn 1 to be answered and scanned" });
+    const afterTurn = (await page.eval(STORAGE))[SEEN_KEY];
+    assert.ok(typeof afterTurn === "string", "a reply was read, so its fingerprint is kept");
+    const entries = JSON.parse(afterTurn);
+    assert.deepEqual(entries.length, 1);
+    assert.match(entries[0], /^1:[0-9a-f]{8}$/, "the reply sits at position 1 of the list and is kept as a hash");
+
+    // Not a word of the conversation is in any value of sessionStorage that the Atlas wrote.
+    const words = [...new Set(`${FIRST_SUGGESTION} ${first.text}`.toLowerCase().match(/[a-z]{4,}/g))].filter((word) => !/^[0-9a-f]+$/.test(word));
+    assert.ok(words.length >= 5, "precondition: the check has real words to look for");
+    for (const word of words) assert.ok(!afterTurn.toLowerCase().includes(word), `"${word}" is not kept in ${SEEN_KEY}`);
+
+    // A reload does not forget it, and neither does Clear map.
+    await reloadTab(page);
+    assert.equal((await page.eval(STORAGE))[SEEN_KEY], afterTurn, "kept over a reload");
+    await clearMap(page);
+    assert.equal((await page.eval(STORAGE))[SEEN_KEY], afterTurn, "kept over Clear map");
+    assertNothingLit(await read(page), "after Clear map");
+  });
 
   // ---- the normal path still works -------------------------------------------------------------
 

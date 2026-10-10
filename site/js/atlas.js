@@ -108,7 +108,8 @@ export function followHistory(doc) {
  * through the same composer form. The model is never told that the map exists, and nothing in
  * the chat client, the API or the prompt changes.
  *
- * Progress lives in sessionStorage only (island ids, never transcripts).
+ * Progress lives in sessionStorage only: island ids and short fingerprints of the replies already read
+ * (so an older chat list after a reload is not read twice), never transcripts.
  * @param {{document?: Document, storage?: Storage|null, port?: object, now?: () => number,
  *   setTimer?: (fn: () => void, ms: number) => any, clearTimer?: (handle: any) => void}} options
  */
@@ -323,6 +324,7 @@ export function createAtlas({ document: doc = globalThis.document, storage = nul
     now,
     setTimer,
     clearTimer,
+    storage,
     onReply: applyReply,
     onChange: () => render(),
   });

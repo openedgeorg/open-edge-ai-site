@@ -6,11 +6,13 @@ import {
   MAX_SENDS_PER_WINDOW,
   NO_PROGRESS_MS,
   REJECT_PAUSE_MS,
+  SEEN_KEY,
   SEND_WINDOW_MS,
   STALE_SUBMIT_MS,
   START_GIVE_UP_MS,
   createChatBridge,
   createDomPort,
+  fnv1a32,
 } from "../../site/js/atlas-chat.js";
 import { FIRST_SUGGESTION, ISLANDS } from "../../site/js/atlas-graph.js";
 
@@ -132,6 +134,41 @@ function composerCycle(port, question, answer) {
   port.setPhase("running");
   port.say(answer);
   port.setPhase("ready");
+}
+
+/**
+ * A fake Storage that remembers every call, so a test can see what the bridge reads and writes.
+ * `fail` names the methods that throw ("getItem", "setItem").
+ */
+function makeFakeStorage(initial = {}, { fail = [] } = {}) {
+  const data = new Map(Object.entries(initial));
+  const calls = [];
+  const storage = {
+    data,
+    calls,
+    getItem(key) {
+      calls.push(["getItem", key]);
+      if (fail.includes("getItem")) throw new Error("storage is disabled");
+      return data.has(key) ? data.get(key) : null;
+    },
+    setItem(key, value) {
+      calls.push(["setItem", key, value]);
+      if (fail.includes("setItem")) throw new Error("quota exceeded");
+      data.set(key, String(value));
+    },
+    removeItem(key) {
+      calls.push(["removeItem", key]);
+      data.delete(key);
+    },
+    clear() {
+      calls.push(["clear"]);
+      data.clear();
+    },
+    /** The list the bridge stored under its key (null when nothing was stored). */
+    seen: () => (data.has(SEEN_KEY) ? JSON.parse(data.get(SEEN_KEY)) : null),
+    writes: () => calls.filter((call) => call[0] === "setItem"),
+  };
+  return storage;
 }
 
 /* ---------- bridge ---------- */
@@ -914,6 +951,302 @@ describe("replies are remembered by position and text", () => {
     };
     composerCycle(port, "q", "answer");
     assert.deepEqual(replies, ["answer"]);
+  });
+});
+
+/* ---------- the delivered replies survive a reload (F11) ---------- */
+
+describe("the delivered replies are kept in sessionStorage (F11)", () => {
+  /** What a stored entry is: the row's position among the rows with text, a colon, 8 lowercase hex digits. */
+  const ENTRY = /^\d+:[0-9a-f]{8}$/;
+  const key = (position, text) => `${position}:${fnv1a32(text)}`;
+
+  /** A page after a reload: a fresh bridge with empty memory on the same storage and a list the chat has not filled yet. */
+  function reloaded(storage, bridgeOptions = {}) {
+    return setup({}, { storage, ...bridgeOptions });
+  }
+
+  test("fnv1a32 is the standard 32 bit FNV-1a, in 8 lowercase hex digits", () => {
+    assert.equal(fnv1a32(""), "811c9dc5");
+    assert.equal(fnv1a32("a"), "e40c292c");
+    assert.equal(fnv1a32("foobar"), "bf9cf968");
+    assert.match(fnv1a32("anything at all, however long ".repeat(50)), /^[0-9a-f]{8}$/);
+    assert.equal(fnv1a32(undefined), "811c9dc5");
+    assert.equal(SEEN_KEY, "esp-atlas-seen");
+  });
+
+  test("a delivery is written to storage as position:hash of the squashed reply", () => {
+    const storage = makeFakeStorage();
+    const { port, replies } = setup({}, { storage });
+    assert.equal(storage.seen(), null, "nothing is stored before anything is delivered");
+    composerCycle(port, "Q1", "  foo\n bar  ");
+    assert.deepEqual(replies, ["  foo\n bar  "], "the reply itself is passed on as the page shows it");
+    assert.deepEqual(storage.seen(), [`1:${fnv1a32("foo bar")}`], "the hash is of the squashed text");
+    composerCycle(port, "Q2", "a");
+    assert.deepEqual(storage.seen(), [`1:${fnv1a32("foo bar")}`, "3:e40c292c"], "the second reply sits at position 3 of the list");
+    assert.deepEqual(storage.writes().map((call) => call[1]), [SEEN_KEY, SEEN_KEY], "only its own key is written, once per delivery");
+  });
+
+  test("a late reply is written to storage too", () => {
+    const storage = makeFakeStorage();
+    const { port, clock, replies } = setup({}, { storage });
+    port.composerSubmit("Q1");
+    port.setPhase("running");
+    port.setPhase("ready"); // ready, but the list has no reply yet
+    assert.equal(storage.seen(), null);
+    port.setHistory(["Q1", "A1"]);
+    clock.advance(LATE_SETTLE_MS);
+    assert.deepEqual(replies, ["A1"]);
+    assert.deepEqual(storage.seen(), [key(1, "A1")]);
+  });
+
+  test("after a reload the older snapshot [Q1, A1] delivers nothing, and the real [Q1, A1, Q1, A2] delivers A2 once", () => {
+    const storage = makeFakeStorage();
+    const first = setup({}, { storage });
+    composerCycle(first.port, "Q1", "A1");
+    assert.deepEqual(first.replies, ["A1"]);
+    first.bridge.dispose();
+
+    // The page is reloaded. The visitor presses Clear map and asks Q1 again; /history lags.
+    const { port, clock, replies, bridge } = reloaded(storage);
+    assert.equal(bridge.sendTeaser("Q1").sent, true);
+    port.setPhase("running");
+    port.setHistory(["Q1", "A1"]);
+    port.setPhase("ready");
+    clock.advance(LATE_SETTLE_MS * 4);
+    assert.deepEqual(replies, [], "the old A1 is not the answer to the new Q1");
+    port.setHistory(["Q1", "A1", "Q1", "A2"]);
+    clock.advance(LATE_SETTLE_MS);
+    assert.deepEqual(replies, ["A2"]);
+    port.setHistory(["Q1", "A1", "Q1", "A2"]); // the chat repaints the very same list
+    clock.advance(LATE_SETTLE_MS * 4);
+    assert.deepEqual(replies, ["A2"], "once only");
+    assert.deepEqual(storage.seen(), [key(1, "A1"), key(3, "A2")]);
+  });
+
+  test("the same stale snapshot without the stored memory is taken for the answer (what the memory is for)", () => {
+    const { port, clock, replies, bridge } = reloaded(null);
+    assert.equal(bridge.sendTeaser("Q1").sent, true);
+    port.setPhase("running");
+    port.setHistory(["Q1", "A1"]);
+    port.setPhase("ready");
+    clock.advance(LATE_SETTLE_MS * 4);
+    assert.deepEqual(replies, ["A1"], "a memory-only bridge cannot tell the old A1 from a new answer");
+  });
+
+  test("the stale snapshot arriving on the fast path (ready at once) delivers nothing either", () => {
+    const storage = makeFakeStorage({ [SEEN_KEY]: JSON.stringify([key(1, "A1")]) });
+    const { port, replies, clock } = reloaded(storage);
+    port.composerSubmit("Q1");
+    port.setPhase("running");
+    port.setHistory(["Q1", "A1"]);
+    port.setPhase("ready");
+    assert.deepEqual(replies, []);
+    clock.advance(LATE_SETTLE_MS * 4);
+    assert.deepEqual(replies, []);
+    assert.deepEqual(storage.writes(), [], "nothing was delivered, so nothing is written");
+  });
+
+  test("an identical canned answer at a different position still counts, also after a reload", () => {
+    const canned = "I can only talk about the ESP design.";
+    const storage = makeFakeStorage();
+    const first = setup({}, { storage });
+    composerCycle(first.port, "off topic", canned);
+    first.bridge.dispose();
+
+    const { port, clock, replies } = reloaded(storage);
+    port.composerSubmit("still off topic");
+    port.setPhase("running");
+    port.setHistory(["off topic", canned]); // the older snapshot: the same canned text, at the old position
+    port.setPhase("ready");
+    clock.advance(LATE_SETTLE_MS * 3);
+    assert.deepEqual(replies, []);
+    port.setHistory(["off topic", canned, "still off topic", canned]); // position 3, not 1
+    clock.advance(LATE_SETTLE_MS);
+    assert.deepEqual(replies, [canned]);
+    composerCycle(port, "and again", canned); // position 5
+    assert.deepEqual(replies, [canned, canned]);
+    assert.deepEqual(storage.seen(), [key(1, canned), key(3, canned), key(5, canned)]);
+  });
+
+  test("the memory is bounded to 200 entries, the oldest dropped", () => {
+    const storage = makeFakeStorage();
+    const { port, replies } = setup({}, { storage });
+    for (let turn = 1; turn <= 250; turn += 1) composerCycle(port, `question ${turn}`, `answer number ${turn}`);
+    assert.equal(replies.length, 250);
+    const stored = storage.seen();
+    assert.equal(stored.length, 200);
+    assert.equal(stored[0], key(2 * 51 - 1, "answer number 51"), "turns 1 to 50 were dropped");
+    assert.equal(stored[199], key(2 * 250 - 1, "answer number 250"));
+    assert.ok(stored.every((entry) => ENTRY.test(entry)));
+  });
+
+  test("a stored list longer than 200 is cut to the newest 200 when it is loaded", () => {
+    const entries = [];
+    for (let position = 1; position <= 250; position += 1) entries.push(key(position, `reply ${position}`));
+    const storage = makeFakeStorage({ [SEEN_KEY]: JSON.stringify(entries) });
+    const { port, replies } = reloaded(storage);
+    // The oldest entry was dropped, so the first reply is new again ...
+    port.composerSubmit("Q");
+    port.setPhase("running");
+    port.setHistory(["Q", "reply 1"]);
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["reply 1"]);
+    assert.ok(storage.seen().length <= 200);
+    // ... and the newest one is still remembered (the list is 250 rows long, the question is row 249).
+    const rows = Array.from({ length: 248 }, (_, i) => `filler ${i}`);
+    port.composerSubmit("Q again");
+    port.setPhase("running");
+    port.setHistory([...rows, "Q again", "reply 249"]);
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["reply 1"], "position 249 is among the newest 200");
+  });
+
+  test("corrupt stored values are ignored and replaced by the next delivery", () => {
+    const cases = [
+      "{not json",
+      "",
+      "null",
+      "42",
+      '"a string"',
+      "{}",
+      '{"0":"1:e40c292c"}',
+      "true",
+      "[",
+    ];
+    for (const raw of cases) {
+      const storage = makeFakeStorage({ [SEEN_KEY]: raw });
+      const { port, replies } = reloaded(storage);
+      assert.doesNotThrow(() => composerCycle(port, "Q", "a"), raw);
+      assert.deepEqual(replies, ["a"], `a bridge started on ${JSON.stringify(raw)} works as if nothing was stored`);
+      assert.deepEqual(storage.seen(), ["1:e40c292c"], `${JSON.stringify(raw)} is replaced`);
+    }
+  });
+
+  test("entries of the wrong type, shape or size are ignored; good ones next to them are kept", () => {
+    const bad = [
+      1,
+      null,
+      true,
+      { a: 1 },
+      ["1:e40c292c"],
+      "",
+      "1:E40C292C", // upper case
+      "1:e40c292", // 7 digits
+      "1:e40c292cc", // 9 digits
+      "x:e40c292c",
+      "-1:e40c292c",
+      "1.5:e40c292c",
+      "1: e40c292c",
+      " 1:e40c292c",
+      "1:e40c292c ",
+      "1:e40c292c\n",
+      "1:g40c292c",
+      "e40c292c",
+      `1:${"e40c292c".repeat(200)}`, // far longer than any entry
+      "9".repeat(200) + ":e40c292c",
+    ];
+    // None of them may hold the reply back ...
+    for (const entry of bad) {
+      const storage = makeFakeStorage({ [SEEN_KEY]: JSON.stringify([entry]) });
+      const { port, replies } = reloaded(storage);
+      composerCycle(port, "Q", "a");
+      assert.deepEqual(replies, ["a"], `${JSON.stringify(entry).slice(0, 60)} is not an entry`);
+      assert.deepEqual(storage.seen(), ["1:e40c292c"]);
+    }
+    // ... and a good entry among them is still respected.
+    const storage = makeFakeStorage({ [SEEN_KEY]: JSON.stringify([...bad, "1:e40c292c", ...bad]) });
+    const { port, replies } = reloaded(storage);
+    composerCycle(port, "Q", "a");
+    assert.deepEqual(replies, [], "the one good entry says position 1 / 'a' was delivered");
+  });
+
+  test("a huge stored value is not trusted", () => {
+    const huge = JSON.stringify(Array.from({ length: 100000 }, () => "1:e40c292c"));
+    assert.ok(huge.length > 1000000);
+    const storage = makeFakeStorage({ [SEEN_KEY]: huge });
+    const { port, replies } = reloaded(storage);
+    composerCycle(port, "Q", "a");
+    assert.deepEqual(replies, ["a"]);
+  });
+
+  test("a storage that throws, or is missing or odd, changes nothing: the bridge keeps its memory", () => {
+    const hostile = [
+      ["getItem and setItem throw", () => makeFakeStorage({}, { fail: ["getItem", "setItem"] })],
+      ["only getItem throws", () => makeFakeStorage({}, { fail: ["getItem"] })],
+      ["only setItem throws (quota)", () => makeFakeStorage({}, { fail: ["setItem"] })],
+      ["null", () => null],
+      ["undefined", () => undefined],
+      ["an empty object", () => ({})],
+      ["a string", () => "sessionStorage"],
+      ["a number", () => 42],
+      ["methods that are not functions", () => ({ getItem: 1, setItem: "x" })],
+      ["getItem returns an object", () => ({ getItem: () => ({ a: 1 }), setItem() {} })],
+      ["getItem returns a number", () => ({ getItem: () => 7, setItem() {} })],
+      ["a getter that throws", () => ({ get getItem() { throw new Error("denied"); }, get setItem() { throw new Error("denied"); } })],
+    ];
+    for (const [label, make] of hostile) {
+      let built;
+      assert.doesNotThrow(() => {
+        built = reloaded(make());
+      }, label);
+      const { port, clock, replies, bridge } = built;
+      assert.doesNotThrow(() => composerCycle(port, "Q", "A1"), label);
+      assert.deepEqual(replies, ["A1"], `${label}: the reply is delivered`);
+      // The in-memory dedupe still works: the very same list read again delivers nothing.
+      port.composerSubmit("Q");
+      port.setPhase("running");
+      port.setHistory(["Q", "A1"]);
+      port.setPhase("ready");
+      clock.advance(LATE_SETTLE_MS * 3);
+      assert.deepEqual(replies, ["A1"], `${label}: the same row of the same list is not delivered twice`);
+      port.setHistory(["Q", "A1", "Q", "A2"]);
+      clock.advance(LATE_SETTLE_MS);
+      assert.deepEqual(replies, ["A1", "A2"], `${label}: a real new answer still counts`);
+      assert.equal(bridge.status().canSend, true, label);
+    }
+  });
+
+  test("no part of the reply, the rows or the question is ever stored", () => {
+    const question = "Which zebra settled the quokka ledger?";
+    const reply = "The quokka ledger is settled by zebras every Tuesday, plainly.";
+    const storage = makeFakeStorage();
+    const { bridge, port, replies } = setup({ list: ["an older zebra question", "an older quokka answer"] }, { storage });
+    assert.equal(bridge.sendTeaser(question).sent, true);
+    port.setPhase("running");
+    port.say(reply);
+    port.setPhase("ready");
+    assert.deepEqual(replies, [reply]);
+    const everything = storage.calls.map((call) => call.slice(1).join(" ")).join("\n");
+    for (const word of `${question} ${reply} an older zebra question quokka answer`.toLowerCase().match(/[a-z]{3,}/g)) {
+      assert.ok(!everything.toLowerCase().includes(word), `"${word}" must not be written to storage`);
+    }
+    const stored = storage.data.get(SEEN_KEY);
+    assert.match(stored, /^\["\d+:[0-9a-f]{8}"(,"\d+:[0-9a-f]{8}")*\]$/, "the value is a list of position:hash entries and nothing else");
+    assert.deepEqual([...storage.data.keys()], [SEEN_KEY], "no other key is touched");
+  });
+
+  test("the bridge never removes or clears what it stored (Clear map and dispose leave it)", () => {
+    const storage = makeFakeStorage();
+    const first = setup({}, { storage });
+    composerCycle(first.port, "Q1", "A1");
+    first.bridge.dispose();
+    const second = reloaded(storage);
+    composerCycle(second.port, "Q2", "A2");
+    second.bridge.dispose();
+    assert.deepEqual(storage.calls.filter((call) => call[0] === "removeItem" || call[0] === "clear"), []);
+    assert.equal(storage.seen().length, 2);
+  });
+
+  test("a bridge created without storage is the memory-only bridge it always was", () => {
+    const { port, clock, replies } = setup();
+    composerCycle(port, "Q", "A1");
+    port.composerSubmit("Q");
+    port.setPhase("running");
+    port.setHistory(["Q", "A1"]);
+    port.setPhase("ready");
+    clock.advance(LATE_SETTLE_MS * 3);
+    assert.deepEqual(replies, ["A1"]);
   });
 });
 
