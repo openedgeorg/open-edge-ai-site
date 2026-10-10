@@ -14,7 +14,11 @@
  *   as a goal or a next step.
  */
 
+import { ARROW_KEYS, ARROW_MIN_COS, createArrowNav, pickNeighbour, rankInDirection } from "./atlas-arrows.js";
 import { buildIndex, edgeKey } from "./atlas-graph.js";
+
+// The arrow-key geometry is plain data and functions: re-exported so a node test can use the real thing.
+export { ARROW_KEYS, ARROW_MIN_COS, createArrowNav, pickNeighbour, rankInDirection };
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -31,8 +35,12 @@ const FLARE_MS = 1800;
 const BAND_TOP = 10;
 const BAND_BOTTOM = 742;
 const CAPTION_Y = { level: 36, name: 54, sub: 70 };
-/** An arrow key only follows a path that lies within about 66 degrees of its direction. */
-const ARROW_MIN_COS = 0.4;
+/**
+ * The strip of open sea above the region bands, in viewBox units. The edge dragon swims in it, so
+ * it is the first thing on screen next to the first lit places, not the last thing below the fold.
+ * Graph coordinates are unchanged: the strip lies at negative y.
+ */
+export const EDGE_STRIP = 46;
 
 /** Dragon glyph for open islands, drawn as dashed strokes around (0, 0). */
 const DRAGON_GLYPH = [
@@ -46,7 +54,12 @@ const DRAGON_GLYPH = [
   "M 14 -12 L 12 -16",
 ];
 
-/** Edge dragon at the far edge of the map (bottom right): a sea serpent in the bottom strip. */
+/**
+ * Edge dragon at the far edge of the map (top right): a sea serpent in the strip above the bands.
+ * The shapes below were drawn for a strip at y 741 to 773; EDGE_DRAGON_SHIFT moves them up into
+ * the strip (y -40 to -8).
+ */
+const EDGE_DRAGON_SHIFT = -781;
 const EDGE_DRAGON = {
   body: "M 876 764 c 13 -12 25 -12 38 0 c 13 12 25 12 38 0 c 13 -12 25 -12 38 0 c 13 12 25 12 38 0 c 13 -12 25 -12 38 0 c 13 12 25 12 38 0 c 13 -12 25 -12 38 0 c 13 12 25 12 38 0 C 1190 764 1192 757 1195 753",
   fins: "M 891 755.5 L 895 747 L 899 755.5 M 967 755.5 L 971 747 L 975 755.5 M 1043 755.5 L 1047 747 L 1051 755.5 M 1119 755.5 L 1123 747 L 1127 755.5",
@@ -120,6 +133,29 @@ function hashKey(text) {
 }
 
 /**
+ * How far to scroll so a place is centred in the map panel (sideways) and, when asked, inside the
+ * window (up or down). All rectangles are in viewport pixels. Pure, so node can test it.
+ * @param {object} options
+ * @param {{left: number, top: number, width: number, height: number}} options.box the place and its label
+ * @param {{left: number, width: number}} options.panel the horizontally scrolling map panel
+ * @param {{height: number}} options.view the window
+ * @param {number} [options.top] height of the sticky header, which covers the top of the window
+ * @param {boolean} [options.vertical] also bring the place into the window
+ * @param {number} [options.margin] breathing room kept inside the window edges
+ * @returns {{dx: number, dy: number}} scroll the panel by dx and the window by dy
+ */
+export function revealDeltas({ box, panel, view, top = 0, vertical = false, margin = 24 }) {
+  const dx = box.left + box.width / 2 - (panel.left + panel.width / 2);
+  let dy = 0;
+  if (vertical) {
+    const low = top + margin;
+    const high = view.height - margin;
+    if (box.top < low || box.top + box.height > high) dy = box.top + box.height / 2 - (low + high) / 2;
+  }
+  return { dx, dy };
+}
+
+/**
  * A gently bent path between two islands, plus its midpoint (for the path label).
  * @param {{x:number,y:number}} a
  * @param {{x:number,y:number}} b
@@ -152,13 +188,6 @@ function hasClass(node, name) {
   return Boolean(node.classList && node.classList.contains(name));
 }
 
-const ARROWS = {
-  ArrowRight: { x: 1, y: 0 },
-  ArrowLeft: { x: -1, y: 0 },
-  ArrowDown: { x: 0, y: 1 },
-  ArrowUp: { x: 0, y: -1 },
-};
-
 /**
  * @param {object} config
  * @param {Document} config.document
@@ -188,7 +217,7 @@ export function createAtlasMap({
   const contestedLabel = graph.CONTESTED_LABEL || "awaits incorporation";
 
   const svg = svgEl(doc, "svg", {
-    viewBox: `0 0 ${VIEWBOX.width} ${VIEWBOX.height}`,
+    viewBox: `0 ${-EDGE_STRIP} ${VIEWBOX.width} ${VIEWBOX.height + EDGE_STRIP}`,
     role: "group",
     "aria-label": "Atlas map of the ESP design",
     "aria-describedby": "atlas-map-desc",
@@ -217,14 +246,17 @@ export function createAtlasMap({
   const statusOf = (id) => current.status[id] || "fogged";
   const revealed = (id) => nodes.has(id) && statusOf(id) !== "fogged";
   const edgeState = (key) => current.edges[key] || "hidden";
+  /** A path an arrow key may follow: both ends can take focus, and at least one is visited (the path is drawn). */
+  const followable = (fromId, otherId) => revealed(fromId) && revealed(otherId) && (statusOf(fromId) === "visited" || statusOf(otherId) === "visited");
+  const arrows = createArrowNav({ index, usable: followable });
 
   // ---- static structure ----
 
   const desc = svgEl(doc, "desc", { id: "atlas-map-desc" });
-  desc.textContent = "Tab reaches the map. Arrow keys follow a path to a neighbouring place. Page Down and Page Up step through every visible place in order. Enter or Space selects a visited place or asks about a place that is next to explore. Escape clears the selection.";
+  desc.textContent = "Tab reaches the map. Arrow keys follow a path to a neighbouring place; if several places lie that way, press the opposite arrow to come back and the same arrow again to try the next one. Page Down and Page Up step through every visible place in order. Enter or Space selects a visited place or asks about a place that is next to explore. Escape clears the selection.";
   svg.appendChild(desc);
 
-  svg.appendChild(svgEl(doc, "rect", { x: 0, y: 0, width: VIEWBOX.width, height: VIEWBOX.height }, "atlas-sea"));
+  svg.appendChild(svgEl(doc, "rect", { x: 0, y: -EDGE_STRIP, width: VIEWBOX.width, height: VIEWBOX.height + EDGE_STRIP }, "atlas-sea"));
 
   // Region bands and captions: always visible, dim.
   const regionLayer = svgEl(doc, "g", {}, "atlas-regions");
@@ -255,7 +287,7 @@ export function createAtlasMap({
   svg.appendChild(regionLayer);
 
   // Edge dragon: the unfinished edge of the map. Inked once the visitor has asked something.
-  const dragonGroup = svgEl(doc, "g", {}, "atlas-edge-dragon");
+  const dragonGroup = svgEl(doc, "g", { transform: `translate(0 ${EDGE_DRAGON_SHIFT})` }, "atlas-edge-dragon");
   dragonGroup.appendChild(svgEl(doc, "path", { d: EDGE_DRAGON.body }, "atlas-ed-body"));
   dragonGroup.appendChild(svgEl(doc, "path", { d: EDGE_DRAGON.fins }, "atlas-ed-fins"));
   dragonGroup.appendChild(svgEl(doc, "path", { d: EDGE_DRAGON.head }, "atlas-ed-head"));
@@ -581,6 +613,42 @@ export function createAtlasMap({
     paintActive();
   }
 
+  /**
+   * Bring a revealed place into view without moving focus: scroll the map panel sideways to it and,
+   * when `vertical` is set, the window up or down to it. Used after a reply on a narrow screen, where
+   * the map is wider than its panel and often below the fold.
+   * @param {string} id
+   * @param {{behavior?: "auto"|"instant"|"smooth", vertical?: boolean}} [options]
+   */
+  function reveal(id, { behavior = "auto", vertical = false } = {}) {
+    const node = nodes.get(id);
+    const panel = svg.parentNode;
+    const view = doc.defaultView;
+    if (!node || !revealed(id) || !panel || !view || typeof panel.getBoundingClientRect !== "function") return false;
+    const panelBox = panel.getBoundingClientRect();
+    const header = parseFloat(view.getComputedStyle(doc.documentElement).scrollPaddingTop) || 0;
+    const { dx, dy } = revealDeltas({
+      box: node.g.getBoundingClientRect(),
+      panel: panelBox,
+      view: { height: view.innerHeight },
+      top: header,
+      vertical,
+    });
+    const scrollTo = (target, options) => {
+      try {
+        target.scrollTo(options);
+      } catch {
+        // An engine without the "instant" behaviour: scroll without it.
+        target.scrollTo({ left: options.left, top: options.top });
+      }
+    };
+    if (Math.abs(dx) >= 1 && panel.scrollWidth > panel.clientWidth) {
+      scrollTo(panel, { left: panel.scrollLeft + dx, behavior });
+    }
+    if (Math.abs(dy) >= 1) scrollTo(view, { top: view.scrollY + dy, behavior });
+    return true;
+  }
+
   // ---- interaction ----
 
   function islandOf(target) {
@@ -604,26 +672,6 @@ export function createAtlasMap({
     dismissed = false;
     notifyShown();
     if (status === "frontier" && !paused) onActivate(id);
-  }
-
-  function neighbourInDirection(id, dir) {
-    const from = index.byId.get(id);
-    if (!from) return null;
-    let best = null;
-    for (const otherId of index.neighbours.get(id) || []) {
-      if (!revealed(otherId)) continue;
-      // Only follow drawn paths: at least one end must be visited.
-      if (statusOf(id) !== "visited" && statusOf(otherId) !== "visited") continue;
-      const other = index.byId.get(otherId);
-      const dx = other.x - from.x;
-      const dy = other.y - from.y;
-      const dist = Math.hypot(dx, dy) || 1;
-      const cos = (dx * dir.x + dy * dir.y) / dist;
-      if (cos < ARROW_MIN_COS) continue;
-      const better = !best || cos > best.cos + 0.02 || (Math.abs(cos - best.cos) <= 0.02 && dist < best.dist);
-      if (better) best = { id: otherId, cos, dist };
-    }
-    return best ? best.id : null;
   }
 
   function stepVisible(id, delta) {
@@ -675,10 +723,9 @@ export function createAtlasMap({
       if (next) focusIsland(next);
       return;
     }
-    const dir = ARROWS[event.key];
-    if (!dir) return;
+    if (!ARROW_KEYS[event.key]) return;
     event.preventDefault();
-    const next = neighbourInDirection(id, dir);
+    const next = arrows.press(id, event.key);
     if (next) focusIsland(next);
   });
 
@@ -687,6 +734,7 @@ export function createAtlasMap({
     if (!id) return;
     focusId = id;
     dismissed = false;
+    arrows.observe(id);
     setRoving(id);
     notifyShown();
   });
@@ -724,5 +772,5 @@ export function createAtlasMap({
   // First paint: everything fogged until the caller renders a view.
   for (const node of nodes.values()) paintIsland(node);
 
-  return { element: svg, render, focusIsland, select, selected: () => selectedId };
+  return { element: svg, render, focusIsland, select, selected: () => selectedId, reveal };
 }

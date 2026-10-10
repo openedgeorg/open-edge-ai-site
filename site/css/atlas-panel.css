@@ -15,6 +15,8 @@
     --ap-open: #ff9f80;
     --ap-focus: #ffffff;
 
+    /* The anchor of the notice below, which lies over the card's top right corner. */
+    position: relative;
     min-width: 0;
     background: var(--ap-bg);
     color: var(--ap-text);
@@ -428,12 +430,13 @@
     font-size: 1.05rem;
 }
 
-/* Notice: the one place a pause is explained. It is always rendered (so its role="status" is a
-   live region from the start) and always two lines high (so a message coming or going moves nothing
-   below it); when empty it is just a blank slot. */
+/* Notice: the one place a pause is explained. It is always rendered (so its role="status" is a live
+   region from the start) but it never holds room of its own: empty, it has no height; speaking, it
+   lies beside the heading of the card (room enough from 900px up), or opens in the flow above the
+   toolbar on a narrower screen. Either way the map below does not move when a pause comes or goes
+   at 900px and wider. */
 
 .atlas .atlas-notice {
-    min-height: calc(2 * 0.9rem * 1.4 + 0.5rem + 4px);
     margin: 0.25rem 0 0.4rem;
     padding: 0.25rem 0.8rem;
     font-size: 0.9rem;
@@ -445,8 +448,22 @@
 }
 
 .atlas .atlas-notice:empty {
-    background: transparent;
-    border-color: transparent;
+    height: 0;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border-width: 0;
+}
+
+@media (min-width: 900px) {
+    .atlas .atlas-notice {
+        position: absolute;
+        top: calc(var(--spacing-unit) * 1.5 + 0.6rem);
+        right: calc(var(--spacing-unit) * 1.5);
+        z-index: 2;
+        max-width: min(34rem, calc(100% - 14rem));
+        margin: 0;
+    }
 }
 
 /* Legend */
@@ -523,6 +540,22 @@
     margin-bottom: 0.3rem;
 }
 
+/* The way back to the conversation, for the stacked layout where the chat card lies far below the map. */
+.atlas .atlas-to-chat {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0.2rem 0.4rem;
+    color: var(--ap-frontier);
+    font-weight: 700;
+}
+
+@media (min-width: 1180px) {
+    .atlas .atlas-to-chat {
+        display: none;
+    }
+}
+
 /* Suggestion chips: in the dark card, directly under the intro, so the first one is on screen next
    to the map at every width. Text 13.7:1 on the chip, border 10:1 on the card. */
 
@@ -594,6 +627,47 @@
     cursor: not-allowed;
 }
 
+/* Wide enough for three columns (1000px and up): the label sits above the chips, the chips share one
+   row, and the row is as high as three lines of chip text from the start. The first question is one
+   short chip; when the reply brings three, the map below does not move. */
+@media (min-width: 1000px) {
+    .atlas-suggest {
+        display: block;
+    }
+
+    .atlas .atlas-suggest .atlas-suggest-label {
+        margin: 0 0 0.3rem;
+        padding-top: 0;
+    }
+
+    .atlas-suggest-list {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        align-items: start;
+        min-height: calc(3 * 1.35 * 0.9375rem + 0.8rem + 4px);
+    }
+
+    .atlas-suggest-item {
+        display: flex;
+    }
+
+    .atlas-chip {
+        width: 100%;
+    }
+}
+
+/* A chip for a place on the designers' open list says so: it is a question, never a next step. */
+.atlas-chip-tag {
+    display: block;
+    font-size: 0.8125rem;
+    font-style: italic;
+    color: var(--ap-open);
+}
+
+.atlas-chip[aria-disabled="true"] .atlas-chip-tag {
+    color: var(--ap-muted);
+}
+
 @media (max-width: 640px) {
     .atlas {
         padding: var(--spacing-unit);
@@ -653,6 +727,15 @@
         border-style: dashed;
         border-color: GrayText;
         color: GrayText;
+    }
+
+    .atlas .atlas-to-chat {
+        color: LinkText;
+    }
+
+    .atlas-chip-tag,
+    .atlas-chip[aria-disabled="true"] .atlas-chip-tag {
+        color: ButtonText;
     }
 
     .atlas-swatch {

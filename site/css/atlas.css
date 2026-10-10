@@ -42,8 +42,10 @@ html {
 
 /* ---- page layout: map left, conversation right ---- */
 
+/* Less air above than below: the map is what the visitor came for, and the first screen after the
+   hero link has to hold the first chip, the start place and the edge dragon together. */
 .atlas-section {
-    padding: calc(var(--spacing-unit, 1rem) * 3) 0;
+    padding: calc(var(--spacing-unit, 1rem) * 1.5) 0 calc(var(--spacing-unit, 1rem) * 3);
 }
 
 /* Wider than the 1200px page container and with slimmer gutters: the map needs the room. */
@@ -757,18 +759,35 @@ html {
 
 /* ---- high contrast: shape and outline carry the status, not colour ---- */
 
+/* Every rule below repeats the state selectors of the palette rules above, at the same specificity
+   and later in the file, so that no state keeps a palette colour: text and strokes are CanvasText,
+   GrayText or Highlight on Canvas, whatever the state of the place. */
 @media (forced-colors: active) {
+    /* Nothing fades from one colour to another in high contrast. */
+    .atlas-svg *,
+    .atlas-svg *::before,
+    .atlas-svg *::after {
+        transition: none;
+    }
+
     .atlas-sea {
         fill: Canvas;
     }
 
+    /* Text: names, sublabels, captions and the edge dragon's line, in every state. */
     .atlas-svg text,
     .atlas-label,
     .atlas-sublabel,
     .atlas-region-level,
     .atlas-region-name,
     .atlas-region-sub,
-    .atlas-ed-caption {
+    .atlas-ed-caption,
+    .atlas-island.is-frontier .atlas-label,
+    .atlas-island.is-active .atlas-label,
+    .atlas-island:focus-visible .atlas-label,
+    .atlas-island.is-open .atlas-sublabel,
+    .atlas-island.is-contested .atlas-sublabel,
+    .atlas-edge-dragon.is-inked .atlas-ed-caption {
         fill: CanvasText;
         stroke: Canvas;
         /* The Canvas-coloured halo goes under the glyphs, never over them. */
@@ -777,7 +796,18 @@ html {
         stroke-linejoin: round;
     }
 
-    .atlas-band {
+    .atlas-edge-tip .atlas-edge-tip-text {
+        fill: CanvasText;
+        stroke: none;
+    }
+
+    .atlas-edge-tip .atlas-edge-tip-bg {
+        fill: Canvas;
+        stroke: CanvasText;
+    }
+
+    .atlas-band,
+    .atlas-band.is-alt {
         fill: none;
         stroke: GrayText;
     }
@@ -786,7 +816,13 @@ html {
         fill: GrayText;
     }
 
-    .atlas-island.is-visited .atlas-disc {
+    /* Visited: a Highlight disc with an outline. */
+    .atlas-island.is-visited .atlas-halo {
+        fill: none;
+    }
+
+    .atlas-island.is-visited .atlas-disc,
+    .atlas-island.is-contested.is-visited .atlas-disc {
         fill: Highlight;
         stroke: CanvasText;
         filter: none;
@@ -796,6 +832,7 @@ html {
         fill: HighlightText;
     }
 
+    /* Next to explore: a hollow ring. */
     .atlas-island.is-frontier .atlas-disc {
         fill: Canvas;
         stroke: CanvasText;
@@ -807,38 +844,68 @@ html {
         fill: CanvasText;
     }
 
-    .atlas-island.is-frontier .atlas-halo {
+    .atlas-island.is-frontier .atlas-halo,
+    .atlas-island.is-open.is-frontier .atlas-halo,
+    .atlas-island.is-open.is-visited .atlas-halo {
         stroke: CanvasText;
         animation: none;
     }
 
+    /* Contested: the dashed outline stays dashed, in CanvasText. */
     .atlas-island.is-contested .atlas-contest-ring,
-    .atlas-island.is-open .atlas-dragon-line,
-    .atlas-ed-body,
-    .atlas-ed-fins,
-    .atlas-ed-head,
-    .atlas-ed-horn,
-    .atlas-edge-line,
-    .atlas-edge.is-lit.is-active .atlas-edge-line {
+    .atlas-island.is-contested.is-visited .atlas-contest-ring,
+    .atlas-island.is-contested.is-frontier .atlas-contest-ring {
         stroke: CanvasText;
-        filter: none;
     }
 
+    /* Open (a dragon): dashed lines, never faded. */
+    .atlas-island.is-open .atlas-dragon-line,
+    .atlas-island.is-open.is-visited .atlas-dragon-line {
+        stroke: CanvasText;
+        filter: none;
+        opacity: 1;
+    }
+
+    /* Paths: lit ones solid, stubs dashed in GrayText, the active one in Highlight. */
     .atlas-edge-glow {
         display: none;
+        stroke: CanvasText;
+    }
+
+    .atlas-edge-line {
+        stroke: CanvasText;
+    }
+
+    .atlas-edge.is-stub .atlas-edge-line {
+        stroke: GrayText;
+    }
+
+    .atlas-edge.is-lit.is-active .atlas-edge-line {
+        stroke: Highlight;
+    }
+
+    .atlas-island.is-flare .atlas-flare-ring {
+        stroke: Highlight;
     }
 
     .atlas-island:focus-visible .atlas-focus-ring {
         stroke: Highlight;
     }
 
-    .atlas-edge-tip-bg {
-        fill: Canvas;
+    /* The edge dragon. */
+    .atlas-ed-body,
+    .atlas-ed-fins,
+    .atlas-ed-head,
+    .atlas-ed-horn {
         stroke: CanvasText;
+        filter: none;
     }
 
-    .atlas-edge-tip-text {
+    .atlas-ed-eye {
         fill: CanvasText;
-        stroke: none;
+    }
+
+    .atlas-edge-dragon.is-inked .atlas-ed-head {
+        fill: Canvas;
     }
 }

@@ -18,6 +18,7 @@ import {
   createSuggestions,
   statusWord,
   suggestionItems,
+  suggestionPlan,
 } from "../../site/js/atlas-panel.js";
 import { deriveView } from "../../site/js/atlas-state.js";
 
@@ -177,16 +178,21 @@ const DRAGONS = graph.ISLANDS.filter((island) => island.status === "open");
 const ORDINARY = graph.ISLANDS.filter((island) => island.status !== "open").map((island) => island.id);
 const FORBIDDEN_FOR_DRAGONS = /next to explore|not reached yet/i;
 
+// The graph is read, never remembered: a place next to the start, one that is not, and one well away.
+const isOrdinary = (id) => index.byId.get(id).status !== "open";
+const NEXT_TO_START = [...index.neighbours.get(graph.START_ID)].find(isOrdinary);
+const NOT_NEXT = graph.ISLANDS.map((island) => island.id).find((id) => id !== graph.START_ID && !index.neighbours.get(graph.START_ID).has(id) && isOrdinary(id));
+
 // ---------------------------------------------------------------------------------------------
 // status words
 // ---------------------------------------------------------------------------------------------
 
 describe("statusWord", () => {
   it("keeps the ordinary words for ordinary places", () => {
-    const pot = index.byId.get("the-pot");
-    assert.equal(statusWord("visited", pot), "visited");
-    assert.equal(statusWord("frontier", pot), "next to explore");
-    assert.equal(statusWord("fogged", pot), "not reached yet");
+    const place = index.byId.get(NEXT_TO_START);
+    assert.equal(statusWord("visited", place), "visited");
+    assert.equal(statusWord("frontier", place), "next to explore");
+    assert.equal(statusWord("fogged", place), "not reached yet");
     assert.equal(statusWord("frontier"), "next to explore");
     assert.equal(statusWord("fogged"), "not reached yet");
     assert.equal(statusWord(undefined), "not reached yet");
@@ -221,7 +227,7 @@ describe("inspector", () => {
   }
 
   it("is not a live region: it carries no aria-live", () => {
-    const { mount } = inspectorFor(["internet-bill"]);
+    const { mount } = inspectorFor([graph.START_ID]);
     assert.equal(mount.hasAttribute("aria-live"), false);
   });
 
@@ -252,10 +258,10 @@ describe("inspector", () => {
   });
 
   it("keeps ordinary wording for ordinary places", () => {
-    const { inspector, mount, view } = inspectorFor(["internet-bill"]);
-    inspector.showIsland("standing-plan", view);
+    const { inspector, mount, view } = inspectorFor([graph.START_ID]);
+    inspector.showIsland(NEXT_TO_START, view);
     assert.match(mount.textContent, /Status: next to explore/);
-    inspector.showIsland("internet-bill", view);
+    inspector.showIsland(graph.START_ID, view);
     assert.match(mount.textContent, /Status: visited/);
   });
 });
@@ -287,7 +293,7 @@ describe("list view", () => {
   };
 
   it("never calls a dragon next to explore or not reached yet, in any state", () => {
-    for (const visited of [["internet-bill"], ORDINARY, [...ORDINARY, DRAGONS[0].id], graph.ISLANDS.map((island) => island.id)]) {
+    for (const visited of [[graph.START_ID], ORDINARY, [...ORDINARY, DRAGONS[0].id], graph.ISLANDS.map((island) => island.id)]) {
       const { list, view } = listFor(visited);
       list.render(view, { paused: false });
       for (const island of DRAGONS) {
@@ -310,21 +316,21 @@ describe("list view", () => {
   });
 
   it("keeps the ordinary words for ordinary places", () => {
-    const { list, view } = listFor(["internet-bill"]);
+    const { list, view } = listFor([graph.START_ID]);
     list.render(view);
-    assert.equal(rowOf(list, "internet-bill").all("atlas-list-status")[0].textContent, "visited");
-    assert.equal(rowOf(list, "standing-plan").all("atlas-list-status")[0].textContent, "next to explore");
-    assert.equal(rowOf(list, "the-pot").all("atlas-list-status")[0].textContent, "not reached yet");
+    assert.equal(rowOf(list, graph.START_ID).all("atlas-list-status")[0].textContent, "visited");
+    assert.equal(rowOf(list, NEXT_TO_START).all("atlas-list-status")[0].textContent, "next to explore");
+    assert.equal(rowOf(list, NOT_NEXT).all("atlas-list-status")[0].textContent, "not reached yet");
   });
 
   it("pauses an Ask button with aria-disabled, never the disabled attribute, and points it at the notice", () => {
-    const { list, view, asked } = listFor(["internet-bill"]);
+    const { list, view, asked } = listFor([graph.START_ID]);
     list.render(view, { paused: false });
-    const button = rowOf(list, "standing-plan").all("atlas-list-ask")[0];
+    const button = rowOf(list, NEXT_TO_START).all("atlas-list-ask")[0];
     assert.equal(button.hidden, false);
     assert.equal(button.getAttribute("aria-disabled"), null);
     button.click();
-    assert.deepEqual(asked, ["standing-plan"]);
+    assert.deepEqual(asked, [NEXT_TO_START]);
 
     list.render(view, { paused: true, pausedMessage: "The chat is busy with a question." });
     assert.equal(button.getAttribute("aria-disabled"), "true");
@@ -333,17 +339,17 @@ describe("list view", () => {
     assert.equal(button.hasAttribute("disabled"), false);
     assert.equal(button.hasAttribute("title"), false, "no tooltip repeats the pause message");
     button.click();
-    assert.deepEqual(asked, ["standing-plan"], "an aria-disabled button does nothing");
+    assert.deepEqual(asked, [NEXT_TO_START], "an aria-disabled button does nothing");
 
     list.render(view, { paused: false });
     assert.equal(button.getAttribute("aria-disabled"), null);
     assert.equal(button.getAttribute("aria-describedby"), null);
     button.click();
-    assert.deepEqual(asked, ["standing-plan", "standing-plan"]);
+    assert.deepEqual(asked, [NEXT_TO_START, NEXT_TO_START]);
   });
 
   it("writes no copy of the pause message anywhere in the list", () => {
-    const { list, view } = listFor(["internet-bill"]);
+    const { list, view } = listFor([graph.START_ID]);
     const message = "The chat is busy with a question.";
     list.render(view, { paused: true, pausedMessage: message });
     assert.equal(list.element.textContent.includes(message), false);
@@ -352,9 +358,9 @@ describe("list view", () => {
   });
 
   it("updates in place: the focused Ask button survives pauses and renders", () => {
-    const { doc, list, view } = listFor(["internet-bill"]);
+    const { doc, list, view } = listFor([graph.START_ID]);
     list.render(view);
-    const button = rowOf(list, "standing-plan").all("atlas-list-ask")[0];
+    const button = rowOf(list, NEXT_TO_START).all("atlas-list-ask")[0];
     button.focus();
     assert.equal(doc.activeElement, button);
     list.render(view, { paused: true, pausedMessage: "x" });
@@ -365,12 +371,12 @@ describe("list view", () => {
   });
 
   it("moves focus to the row, not to the page, when the asked place is visited and its button goes away", () => {
-    const { doc, list, view } = listFor(["internet-bill"]);
+    const { doc, list, view } = listFor([graph.START_ID]);
     list.render(view);
-    const row = rowOf(list, "standing-plan");
+    const row = rowOf(list, NEXT_TO_START);
     const button = row.all("atlas-list-ask")[0];
     button.focus();
-    list.render(deriveView({ visited: ["internet-bill", "standing-plan"], replies: 3 }, index));
+    list.render(deriveView({ visited: [graph.START_ID, NEXT_TO_START], replies: 3 }, index));
     assert.equal(button.hidden, true);
     assert.equal(doc.activeElement, row, "focus lands on the row");
   });
@@ -488,12 +494,150 @@ describe("suggestion chips", () => {
   it("shows what suggestionItems chooses: the first question, then up to three teasers", () => {
     const first = suggestionItems({ replies: 0, frontier: [] });
     assert.deepEqual(first, [graph.FIRST_SUGGESTION]);
-    const view = deriveView({ visited: ["internet-bill", "standing-plan"], replies: 1 }, index);
+    const view = deriveView({ visited: [graph.START_ID, NEXT_TO_START], replies: 1 }, index);
     const items = suggestionItems(view);
     assert.ok(items.length >= 1 && items.length <= 3);
     const { chips, buttons } = chipsFor();
     chips.render(first);
     chips.render(items);
     assert.deepEqual(buttons().map((node) => node.textContent), items);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// which suggestions, in which order (F17)
+// ---------------------------------------------------------------------------------------------
+
+describe("suggestionPlan: the chips follow the latest reply, and the open list stays out of the way", () => {
+  const teaser = (id) => index.byId.get(id).teaser;
+  const viewOf = (visited) => deriveView({ visited, replies: visited.length }, index);
+
+  /**
+   * Two places A and B (not the start), each with a next-to-explore neighbour of its own that is not
+   * next to the other, to the start or to any dragon: so the order of the chips can only come from
+   * which of A and B was reached last.
+   */
+  function twoTrails() {
+    const ids = graph.ISLANDS.map((island) => island.id).filter((id) => id !== graph.START_ID && isOrdinary(id));
+    const own = (a, others) => [...index.neighbours.get(a)].filter(
+      (id) => isOrdinary(id) && id !== graph.START_ID && ![a, ...others].includes(id) && others.every((other) => !index.neighbours.get(other).has(id)),
+    );
+    for (const a of ids) {
+      for (const b of ids) {
+        if (a === b || index.neighbours.get(a).has(b)) continue;
+        const forA = own(a, [b, graph.START_ID]);
+        const forB = own(b, [a, graph.START_ID]);
+        const fresh = (id) => !index.neighbours.get(graph.START_ID).has(id);
+        const fa = forA.find(fresh);
+        const fb = forB.find((id) => fresh(id) && id !== fa);
+        if (fa && fb) return { a, b, fa, fb };
+      }
+    }
+    throw new Error("the graph has no two separate trails to test with");
+  }
+
+  it("is the first question on the first load and nothing else", () => {
+    assert.deepEqual(suggestionPlan({ replies: 0, frontier: [] }), [{ text: graph.FIRST_SUGGESTION, open: false }]);
+    assert.deepEqual(suggestionPlan(null), [{ text: graph.FIRST_SUGGESTION, open: false }]);
+  });
+
+  it("without the order the places were reached in, keeps graph order (as before)", () => {
+    const view = viewOf([graph.START_ID]);
+    const ordinary = graph.ISLANDS.filter((island) => view.frontier.includes(island.id) && island.status !== "open");
+    assert.ok(ordinary.length >= 2);
+    assert.deepEqual(suggestionItems(view, { max: 99 }), ordinary.map((island) => island.teaser));
+  });
+
+  it("puts the neighbours of the newest visited place first, whichever place that is", () => {
+    const { a, b, fa, fb } = twoTrails();
+    const view = viewOf([graph.START_ID, a, b]);
+    const aThenB = suggestionItems(view, { visited: [graph.START_ID, a, b], max: 99 });
+    assert.ok(aThenB.indexOf(teaser(fb)) >= 0 && aThenB.indexOf(teaser(fa)) >= 0, "both trails are offered");
+    assert.ok(aThenB.indexOf(teaser(fb)) < aThenB.indexOf(teaser(fa)), `${b} was reached last, so its neighbour ${fb} comes before ${fa}`);
+    const bThenA = suggestionItems(view, { visited: [graph.START_ID, b, a], max: 99 });
+    assert.ok(bThenA.indexOf(teaser(fa)) < bThenA.indexOf(teaser(fb)), `and the other way round`);
+  });
+
+  it("keeps at most three chips by default, the closest ones", () => {
+    const { a, b } = twoTrails();
+    const visited = [graph.START_ID, a, b];
+    const items = suggestionItems(viewOf(visited), { visited });
+    assert.ok(items.length >= 1 && items.length <= 3);
+    const first = graph.ISLANDS.find((island) => island.teaser === items[0]);
+    assert.ok(index.neighbours.get(b).has(first.id), `the first chip (${first.id}) is next to ${b}, the place reached last`);
+  });
+
+  it("offers no place from the open list while an ordinary place is next to explore", () => {
+    const dragon = DRAGONS[0];
+    const view = { replies: 3, frontier: [NEXT_TO_START, dragon.id] };
+    assert.deepEqual(suggestionPlan(view, { max: 99 }), [{ text: teaser(NEXT_TO_START), open: false }]);
+    assert.deepEqual(suggestionItems(view, { max: 99 }), [teaser(NEXT_TO_START)]);
+  });
+
+  it("offers the open list only when nothing else is left, and then marks every chip as open", () => {
+    const view = { replies: 3, frontier: DRAGONS.slice(0, 4).map((island) => island.id) };
+    const plan = suggestionPlan(view);
+    assert.equal(plan.length, 3, "still at most three");
+    assert.ok(plan.every((item) => item.open === true));
+    assert.deepEqual(plan.map((item) => item.text), DRAGONS.slice(0, 3).map((island) => island.teaser));
+    assert.deepEqual(suggestionPlan({ replies: 3, frontier: [] }), []);
+  });
+
+  it("never offers a place without a teaser", () => {
+    const islands = [{ id: "x", teaser: "", status: undefined }, { id: "y", teaser: "Why y?" }];
+    assert.deepEqual(suggestionItems({ replies: 1, frontier: ["x", "y"] }, { islands }), ["Why y?"]);
+  });
+});
+
+describe("chips for the open list say so, and the label is never part of the question", () => {
+  function chipsFor() {
+    const doc = makeDoc();
+    const mount = mountIn(doc);
+    const picked = [];
+    const chips = createSuggestions({ document: doc, mount, onPick: (text) => picked.push(text) });
+    const buttons = () => mount.find((node) => node.tag === "button");
+    return { doc, mount, chips, picked, buttons };
+  }
+
+  it("shows \"open, not ratified\" inside an open chip and sends only the question", () => {
+    const { chips, picked, buttons } = chipsFor();
+    chips.render([{ text: "What is still open?", open: true }]);
+    const [chip] = buttons();
+    assert.equal(chip.textContent, "What is still open?open, not ratified");
+    const tag = chip.all("atlas-chip-tag")[0];
+    assert.equal(tag.textContent, "open, not ratified");
+    assert.equal(tag.hidden, false);
+    chip.click();
+    assert.deepEqual(picked, ["What is still open?"], "the label is not sent");
+  });
+
+  it("an ordinary chip shows no label and its text is just the question", () => {
+    const { chips, buttons } = chipsFor();
+    chips.render(["Plain question?", { text: "Open question?", open: true }]);
+    const [plain, open] = buttons();
+    assert.equal(plain.textContent, "Plain question?");
+    assert.equal(plain.all("atlas-chip-tag")[0].hidden, true);
+    assert.equal(open.all("atlas-chip-tag")[0].hidden, false);
+  });
+
+  it("the focused chip stays when it turns from open to ordinary", () => {
+    const { doc, chips, buttons } = chipsFor();
+    chips.render([{ text: "What is still open?", open: true }]);
+    const chip = buttons()[0];
+    chip.focus();
+    chips.render(["Something else?"]);
+    assert.equal(buttons()[0], chip);
+    assert.equal(doc.activeElement, chip);
+    assert.equal(chip.textContent, "Something else?");
+    assert.equal(chip.all("atlas-chip-tag")[0].hidden, true);
+  });
+
+  it("an open chip is paused like any other", () => {
+    const { chips, picked, buttons } = chipsFor();
+    chips.render([{ text: "Q?", open: true }], { paused: true });
+    const [chip] = buttons();
+    assert.equal(chip.getAttribute("aria-disabled"), "true");
+    chip.click();
+    assert.deepEqual(picked, []);
   });
 });
