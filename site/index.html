@@ -59,11 +59,13 @@
         <section id="explore" class="section section-alt atlas-section" aria-labelledby="atlas-title">
             <div class="container atlas-layout">
                 <div id="atlas" class="atlas">
-                    <h2 id="atlas-title">The Atlas</h2>
+                    <div class="atlas-head">
+                        <h2 id="atlas-title">The Atlas</h2>
+                        <p id="atlas-notice" class="atlas-notice" role="status" hidden></p>
+                    </div>
                     <p class="atlas-intro" hidden>This is a dark map of the ESP design. Ask in the chat, or tap a suggested question, and watch the places your answers mention light up. Glowing places are next to explore: tap one to ask about it.</p>
                     <p class="atlas-honesty">Figures are illustrative only. The map is built from a draft summary that is not company-approved. &ldquo;Visited&rdquo; means an answer mentioned a place, not that it is understood or verified.</p>
                     <div id="atlas-suggest" class="atlas-suggest"></div>
-                    <p id="atlas-notice" class="atlas-notice" role="status" hidden></p>
                     <p id="atlas-announce" class="atlas-announce" role="status"></p>
                     <div class="atlas-toolbar" id="atlas-toolbar" hidden>
                         <p id="atlas-count" class="atlas-count"></p>
@@ -77,6 +79,7 @@
                         </div>
                     </div>
                     <div id="atlas-map" class="atlas-map-wrap"></div>
+                    <p class="atlas-keyhint" hidden>Arrow keys follow paths, repeat an arrow to try the next place; PageUp and PageDown step through every place.</p>
                     <div id="atlas-list" class="atlas-list-wrap" hidden></div>
                     <div id="atlas-inspector" class="atlas-inspector"></div>
                     <ul class="atlas-legend" hidden>
@@ -120,14 +123,14 @@
                             <li><strong>Consumption Record (ConRec)</strong> · §4 · What proves that I really used an app?</li>
                             <li><strong>Optimistic serving</strong> · §4 · What risk does an app take by serving beyond my current allowance?</li>
                             <li><strong>Off-chain evidence in normal use</strong> · §4, §5 · The exact retention period is deferred · Where do the signed records live, and for how long?</li>
-                            <li><strong>Signed allowance message (HSATM)</strong> · §3 · Who signs my allowance, and what exactly do they sign?</li>
+                            <li><strong>HSATM: signed allowance message</strong> · §3 · Who signs my allowance, and what exactly do they sign?</li>
                             <li><strong>A normal box declines to sign</strong> · §3 · What does my box do when my allowance runs out?</li>
                         </ul>
                         <h3>The Mountains · L4 · Masks</h3>
                         <ul>
                             <li><strong>Fresh key, fresh HEID</strong> · §5 · Does my household's ID stay the same from one month to the next?</li>
                             <li><strong>Opening a household's epoch</strong> · §5, §6 · In what order does an epoch open, and what if a household never activates?</li>
-                            <li><strong>Admission credential (HPC)</strong> · §5 · How does an app check that a household is admitted for the epoch?</li>
+                            <li><strong>HPC: participation credential</strong> · §5 · How does an app check that a household is admitted for the epoch?</li>
                             <li><strong>Three layers of identity</strong> · §5 · Who can see who I am, and who can't?</li>
                             <li><strong>Encrypted HEIDs</strong> · §5 · Why can't two apps tell, from public claims, that they share a customer?</li>
                             <li><strong>The verification tag</strong> · §5, §7 · How can I find my own entry in a public list?</li>
@@ -140,7 +143,7 @@
                             <li><strong>The HCD: the ISP's household roster</strong> · §6, §8 · The roster is trusted, not verified; a revision may reconsider · How does an ISP open a month, and who vouches for its household list?</li>
                             <li><strong>Request to get Paid (RtgP)</strong> · §6 · How does an app get paid for a month of requests?</li>
                             <li><strong>Reconciling all claims together</strong> · §6 · Does the first app to claim get first dibs on my allowance?</li>
-                            <li><strong>Household epoch escrow (HEEA)</strong> · §6 · What caps what can be paid for one household?</li>
+                            <li><strong>HEEA: epoch escrow account</strong> · §6 · What caps what can be paid for one household?</li>
                             <li><strong>The IPtD: proposed payouts</strong> · §6 · What does the ISP publish about who gets paid?</li>
                             <li><strong>Settle clean, freeze flagged</strong> · §6, §7 · What happens when a household's claims exceed its cap?</li>
                             <li><strong>When an ISP fails its epoch</strong> · §6 · Slashing and wind-down are intended; the machinery is deferred · What happens if an ISP does not fund or close its epoch?</li>
@@ -154,7 +157,7 @@
                             <li><strong>Silent padding</strong> · §7, §9 · One collusion form is still undefeated · How could an app invent charges that stay under my cap?</li>
                             <li><strong>Household fraud: the pro-rata split</strong> · §7 · What if a household really consumed more than its closing allowance?</li>
                             <li><strong>Correcting a false closing entry</strong> · §7 · How a household's challenge reaches the protocol is unsealed · What if the closing allowance listed for a household is wrong?</li>
-                            <li><strong>The FUP timing audit</strong> · §3, §9 · Invocation, proofs and result record are deferred · What counts as compliant consumption, and what counts as spend-ahead?</li>
+                            <li><strong>Two timing states</strong> · §3, §9 · Invocation, proofs and result record are deferred · What counts as compliant consumption, and what counts as spend-ahead?</li>
                             <li><strong>Hoarding</strong> · §3, §9 · The audit that would establish it is deferred · Why is asking for a top-up far ahead of need a violation?</li>
                             <li><strong>Detection plus consequences</strong> · §7 · The penalties are intended; their enforcement is deferred · Does ESP stop fraud as it happens, or catch it afterwards?</li>
                         </ul>

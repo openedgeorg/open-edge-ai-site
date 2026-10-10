@@ -315,7 +315,7 @@
     "app-set-prices|price-feedback": "higher prices consume allowance faster",
     "fup-faucet|price-feedback": "when FUP limits further grants, expected app use can be interrupted",
     "app-set-prices|monthly-epochs": "app price increases take effect through a new catalogue and household acceptance in the next epoch",
-    "base-and-topups|retail-contract": "the plan sets the base, top-up entitlements, rate limits, and contractual maximum",
+    "base-and-topups|retail-contract": "it ordinarily begins with a base defined by the ISP-household retail relationship and may grow through top-ups",
     "base-and-topups|fup-faucet": "the request carries no amount and the ISP alone decides how much to grant",
     "base-and-topups|signed-refusal": "a refusal during a hot month is legitimate when it follows the subscribed FUP and the ISP's management of its pot",
     "fup-faucet|hsatm": "epoch opening, grant, or refusal produces a Household Signed Allowance Message",
