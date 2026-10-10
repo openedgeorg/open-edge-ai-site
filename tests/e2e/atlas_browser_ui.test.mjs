@@ -13,7 +13,11 @@
  *    900, 1180, 1280 and 1440px;
  *  - F36: on a phone, a visitor who scrolled away from the map while waiting is not pulled back to it;
  *  - F37: on a 1366x768 laptop the start place's NAME is on the first screen after the hero link, too;
- *  - F38: a short keyboard hint shows under the map while the map has focus, and moves nothing.
+ *  - F40/F41 (round 4): there is no visible keyboard hint and no blank band under the map; the SVG description's
+ *    gesture (the opposite arrow, then the same arrow again) is the one that reaches the next place, Page Up and
+ *    Page Down step through every visible place;
+ *  - F42: from 481px up, where the header wraps to two rows, the Atlas heading still starts below the sticky header;
+ *  - F47: emphasis (hover, focus) never widens a name, so neighbouring names never touch.
  *
  * Island names, teasers and terms are read from js/atlas-graph.js at run time: the only graph facts
  * written out here are the start place and the first suggestion.
@@ -345,26 +349,28 @@ describe("Atlas on screen, with keys and in high contrast (real browser)", { ski
     assert.equal(site.stub.csrfFailures.length, 0);
   });
 
-  it("F6. 1280x800: the start place, the counter, the first chip and the edge dragon are on screen before and after the first reply", async (t) => {
-    const { stub, page, url } = await openSite(t, "f6-laptop", { width: 1280, height: 800 });
-    stub.reply = () => replyLighting(NEAR_START.slice(0, 1).map((island) => island.id)).reply;
-    await boot(page, url);
-    await followHeroLink(page);
-    const parts = [
-      [`#atlas-map [data-id="${START_ID}"] .atlas-disc`, "the start place"],
-      ["#atlas-count", "the counter"],
-      ["#atlas-suggest .atlas-chip", "the first chip"],
-      [".atlas-ed-caption", "the edge dragon's caption"],
-    ];
-    const tops = [];
-    for (const [selector, what] of parts) tops.push((await assertInView(page, selector, what)).top);
-    await page.clickInView("#atlas-suggest .atlas-chip");
-    await waitReply(page, stub, 1);
-    for (const [at, [selector, what]] of parts.entries()) {
-      const box = await assertInView(page, selector, `${what} after the first reply`);
-      assert.ok(Math.abs(box.top - tops[at]) <= 3, `${what} did not move (${Math.round(tops[at])} -> ${Math.round(box.top)})`);
-    }
-  });
+  for (const [width, height] of [[1280, 800], [1920, 1080]]) {
+    it(`F6. ${width}x${height}: the start place, the counter, the first chip and the edge dragon are on screen before and after the first reply`, async (t) => {
+      const { stub, page, url } = await openSite(t, `f6-${width}x${height}`, { width, height });
+      stub.reply = () => replyLighting(NEAR_START.slice(0, 1).map((island) => island.id)).reply;
+      await boot(page, url);
+      await followHeroLink(page);
+      const parts = [
+        [`#atlas-map [data-id="${START_ID}"] .atlas-disc`, "the start place"],
+        ["#atlas-count", "the counter"],
+        ["#atlas-suggest .atlas-chip", "the first chip"],
+        [".atlas-ed-caption", "the edge dragon's caption"],
+      ];
+      const tops = [];
+      for (const [selector, what] of parts) tops.push((await assertInView(page, selector, what)).top);
+      await page.clickInView("#atlas-suggest .atlas-chip");
+      await waitReply(page, stub, 1);
+      for (const [at, [selector, what]] of parts.entries()) {
+        const box = await assertInView(page, selector, `${what} after the first reply`);
+        assert.ok(Math.abs(box.top - tops[at]) <= 3, `${what} did not move (${Math.round(tops[at])} -> ${Math.round(box.top)})`);
+      }
+    });
+  }
 
   it("F6. with every place visited, no name, label or glyph is cut off by the edge of the map", async (t) => {
     const everything = ISLANDS.map((island) => island.id);
@@ -631,6 +637,7 @@ describe("Atlas on screen, with keys and in high contrast (real browser)", { ski
         const sea = getComputedStyle(document.querySelector("#atlas-map .atlas-sea")).fill;
         const fillOf = (selector) => { const el = document.querySelector("#atlas-map " + selector); return el ? getComputedStyle(el).fill : null; };
         const strokeOf = (selector) => { const el = document.querySelector("#atlas-map " + selector); return el ? getComputedStyle(el).stroke : null; };
+        const decorationOf = (selector) => { const el = document.querySelector("#atlas-map " + selector); return el ? getComputedStyle(el).textDecorationLine : null; };
         return {
           sea,
           frontierLabel: fillOf(".atlas-island.is-frontier .atlas-label"),
@@ -639,6 +646,9 @@ describe("Atlas on screen, with keys and in high contrast (real browser)", { ski
           openSublabel: fillOf(".atlas-island.is-open .atlas-sublabel"),
           contestedSublabel: fillOf(".atlas-island.is-contested .atlas-sublabel"),
           caption: fillOf(".atlas-ed-caption"),
+          activeDecoration: decorationOf(".atlas-island.is-active .atlas-label"),
+          focusedDecoration: decorationOf(".atlas-island:focus-visible .atlas-label"),
+          restDecoration: decorationOf(".atlas-island.is-visited:not(.is-active):not(:focus-visible) .atlas-label"),
           stubLine: strokeOf(".atlas-edge.is-stub .atlas-edge-line"),
           litLine: strokeOf(".atlas-edge.is-lit:not(.is-active) .atlas-edge-line"),
           text: getComputedStyle(document.querySelector("#atlas-map .atlas-region-name")).fill,
@@ -650,6 +660,10 @@ describe("Atlas on screen, with keys and in high contrast (real browser)", { ski
       }
       for (const key of ["openSublabel", "contestedSublabel"]) if (kinds[key]) assert.equal(kinds[key], kinds.text, `${key} is CanvasText`);
       assert.notEqual(kinds.stubLine, kinds.litLine, "a path that is only a stub still differs from a lit one (GrayText, dashed)");
+      // In high contrast every name is CanvasText, so the emphasis of a hovered or focused name is its underline (round 4: no heavier weight).
+      assert.equal(kinds.activeDecoration, "underline", "the hovered or focused name is underlined");
+      assert.equal(kinds.focusedDecoration, "underline", "the keyboard-focused name is underlined");
+      assert.equal(kinds.restDecoration, "none", "a name at rest is not");
     } finally {
       await page.send("Emulation.setEmulatedMedia", { features: [{ name: "forced-colors", value: "none" }] });
     }
@@ -896,79 +910,281 @@ describe("Atlas on screen, with keys and in high contrast (real browser)", { ski
     });
   }
 
-  // ---- F38 ----
+  // ---- F40, F41 (round 4: the visible keyboard hint is gone) ----
 
-  it("F38. a short keyboard hint shows under the map while the map has focus, moves nothing, and is not a live region", async (t) => {
-    const HINT = "Arrow keys follow paths, repeat an arrow to try the next place; PageUp and PageDown step through every place.";
-    const { page, url } = await openSite(t, "f38-keyhint", { width: 1440, height: 900 });
+  it("F40/F41. there is no keyboard hint line under the map, and no blank band between the map and the inspector (390px and 1440px, text at 100% and 200%)", async (t) => {
+    // Neither the page nor the style sheets know the hint any more.
+    for (const file of ["../../site/index.html", "../../site/css/atlas.css", "../../site/css/atlas-panel.css", "../../site/js/atlas.js"]) {
+      assert.doesNotMatch(readFileSync(new URL(file, import.meta.url), "utf8"), /keyhint/i, `${file} does not mention the keyboard hint`);
+    }
+    const { page, url } = await openSite(t, "f40-no-hint", { width: 1440, height: 900 });
     await boot(page, url);
-    const read = () => page.eval(`(() => {
-      const hint = document.querySelector(".atlas-keyhint");
-      const r = (el) => { const b = el.getBoundingClientRect(); return [b.left, b.top, b.width, b.height].map((v) => Math.round(v * 10) / 10); };
-      const s = getComputedStyle(hint);
-      return {
-        text: hint.textContent,
-        hiddenAttribute: hint.hidden,
-        visibility: s.visibility,
-        display: s.display,
-        box: r(hint),
-        map: r(document.querySelector("#atlas-map")),
-        toolbar: r(document.querySelector("#atlas-toolbar")),
-        suggest: r(document.querySelector("#atlas-suggest")),
-        live: !!hint.closest("[aria-live], [role=status], [role=alert], [role=log]"),
-        notice: document.querySelector("#atlas-notice").textContent,
-        announce: document.querySelector("#atlas-announce").textContent,
-        focusInMap: !!document.querySelector("#atlas-map").querySelector(":focus"),
-        descLen: document.querySelector("#atlas-map svg desc").textContent.length,
-        desc: document.querySelector("#atlas-map svg desc").textContent,
-      };
-    })()`);
-
-    const idle = await read();
-    assert.equal(idle.text, HINT);
-    assert.equal(idle.hiddenAttribute, false, "the script shows it (without a script it stays hidden)");
-    assert.equal(idle.visibility, "hidden", "invisible while the map has no focus");
-    assert.equal(idle.focusInMap, false);
-    assert.ok(idle.box[3] >= 15, `but its line is kept (${idle.box[3]}px high)`);
-    assert.ok(idle.box[1] >= idle.map[1] + idle.map[3] - 0.5, "it lies under the map, not over it");
-    assert.equal(idle.live, false, "it is plain text, not a live region");
-    assert.ok(/Arrow keys/.test(idle.desc) && /Page Down and Page Up/.test(idle.desc), "the SVG description is kept");
-
-    // Keyboard focus into the map: Tab-like focus on a place the visitor can reach.
+    // The map has keyboard focus (where the hint used to show) while the gap is measured.
     await page.press("Shift");
     await page.eval(`(document.querySelector('#atlas-map [data-id="${START_ID}"]').focus(), true)`);
-    const focused = await read();
-    assert.equal(focused.focusInMap, true);
-    assert.equal(focused.visibility, "visible", "visible while the map has focus");
-    assert.deepEqual(focused.box, idle.box, "the hint did not move");
-    for (const part of ["map", "toolbar", "suggest"]) assert.deepEqual(focused[part], idle[part], `${part} did not move`);
-    assert.equal(focused.notice, idle.notice, "the notice was not touched");
-    assert.equal(focused.announce, idle.announce, "and nothing was said through the spoken summary");
-    assert.equal(focused.live, false);
-
-    // Arrow keys still work, and the hint stays while the focus stays in the map.
-    await page.press("ArrowRight");
-    assert.equal((await read()).visibility, "visible");
-
-    // Focus leaves the map: the hint goes, its line stays.
-    await page.eval(`(document.querySelector("#atlas-suggest .atlas-chip").focus(), true)`);
-    const left = await read();
-    assert.equal(left.focusInMap, false);
-    assert.equal(left.visibility, "hidden");
-    assert.deepEqual(left.box, idle.box);
-
-    // The list view has no map to hint about.
-    await page.click("#atlas-view-list");
-    await page.waitFor(`document.querySelector("#atlas-map").hidden`, { what: "the list view" });
-    assert.equal((await read()).display, "none", "no hint (and no blank line) in the list view");
-    await page.click("#atlas-view-map");
-    assert.notEqual((await read()).display, "none");
+    const problems = [];
+    for (const [zoom, size] of [["100%", ""], ["200%", "32px"]]) {
+      for (const width of [390, 1440]) {
+        await page.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
+        const facts = await page.eval(`(async () => {
+          const root = document.documentElement;
+          if (${JSON.stringify(size)}) root.style.fontSize = ${JSON.stringify(size)}; else root.style.removeProperty("font-size");
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const map = document.querySelector("#atlas-map").getBoundingClientRect();
+          const inspector = document.querySelector("#atlas-inspector").getBoundingClientRect();
+          return {
+            gap: inspector.top - map.bottom,
+            rem: parseFloat(getComputedStyle(root).fontSize),
+            hints: document.querySelectorAll(".atlas-keyhint").length,
+            textAfterMap: (document.querySelector("#atlas-map").nextElementSibling || {}).id || (document.querySelector("#atlas-map").nextElementSibling || {}).className || "",
+            focusInMap: !!document.querySelector("#atlas-map :focus"),
+          };
+        })()`);
+        const at = `${width}px at ${zoom}`;
+        if (facts.hints !== 0) problems.push(`${at}: ${facts.hints} keyboard hint element(s)`);
+        if (!facts.focusInMap) problems.push(`${at}: the map has no focus, so the check proves little`);
+        // One rem, as before round 3 (16px at 100% text, 32px at 200%): the caps below are the review's own numbers.
+        if (!(facts.gap >= 0 && facts.gap <= facts.rem + 0.5)) problems.push(`${at}: the gap between the map and the inspector is ${facts.gap}px (one rem is ${facts.rem}px)`);
+        if (!size && width === 1440 && facts.gap > 24) problems.push(`${at}: the gap is ${facts.gap}px, more than 24px`);
+        if (!size && width === 390 && facts.gap > 40) problems.push(`${at}: the gap is ${facts.gap}px, more than 40px`);
+        if (facts.textAfterMap !== "atlas-list") problems.push(`${at}: what follows the map is "${facts.textAfterMap}", not the (hidden) list`);
+      }
+    }
+    assert.deepEqual(problems, []);
   });
 
-  it("F38. the hint is read from a page without the script as nothing: it is hidden until the script runs", async (t) => {
-    const { page, url } = await openSite(t, "f38-noscript", { width: 1440, height: 900, scriptsDisabled: true });
+  it("F40. a page without the script has no hint element either", async (t) => {
+    const { page, url } = await openSite(t, "f40-noscript", { width: 1440, height: 900, scriptsDisabled: true });
     await page.goto(url);
-    const facts = await page.eval(`(() => { const el = document.querySelector(".atlas-keyhint"); const r = el.getBoundingClientRect(); return { hidden: el.hidden, width: r.width, height: r.height }; })()`);
-    assert.deepEqual(facts, { hidden: true, width: 0, height: 0 });
+    assert.equal(await page.eval(`document.querySelectorAll(".atlas-keyhint").length`), 0);
+  });
+
+  it("F40. the SVG description tells the truth about the keys: the opposite arrow to come back, the same arrow again for the next place, Page Up and Page Down through every visible place", async (t) => {
+    const { page, url } = await openSite(t, "f40-desc", { width: 1440, height: 900 });
+    await boot(page, url);
+    const facts = await page.eval(`(() => {
+      const svg = document.querySelector("#atlas-map svg");
+      const desc = svg.querySelector("desc");
+      return { text: desc.textContent, id: desc.id, describedby: svg.getAttribute("aria-describedby") };
+    })()`);
+    assert.equal(facts.describedby, facts.id, "the map is described by it");
+    for (const phrase of ["opposite arrow", "same arrow again", "every visible place"]) {
+      assert.ok(facts.text.includes(phrase), `the description says "${phrase}": ${facts.text}`);
+    }
+    assert.ok(!/repeat an arrow/i.test(facts.text), "and not the wrong 'repeat an arrow'");
+    assert.ok(!/every place\b/.test(facts.text.replace("every visible place", "")), "it never claims every place without saying 'visible'");
+  });
+
+  it("F40. following the description with real keys from the start place: the opposite arrow and then the same arrow again reach the second place that lies that way; the same arrow twice does not", async (t) => {
+    // From the page's own modules: a direction in which the start place has at least two paths, best first.
+    const nav = createArrowNav({ index: INDEX, usable: () => true });
+    const key = Object.keys(ARROW_KEYS).find((k) => nav.ranked(START_ID, k).length >= 2);
+    assert.ok(key, "the start place has two paths leading the same way");
+    const [first, second] = nav.ranked(START_ID, key);
+    const opposite = { ArrowRight: "ArrowLeft", ArrowLeft: "ArrowRight", ArrowDown: "ArrowUp", ArrowUp: "ArrowDown" }[key];
+    // Where the same arrow, pressed again at `first`, would take a visitor: on, or nowhere. Never to `second`.
+    const walkOn = nav.ranked(first, key)[0] ?? first;
+    assert.notEqual(walkOn, second, "the same arrow twice does not reach the second place (else this scenario proves nothing)");
+
+    // A reply lights both places, as in the review's example (funding-pressure and retail-contract).
+    const { stub, page, url } = await openSite(t, "f40-gesture", { width: 1440, height: 900 });
+    const { reply } = replyLighting([first, second]);
+    stub.reply = () => reply;
+    await boot(page, url);
+    await followHeroLink(page);
+    await page.clickInView("#atlas-suggest .atlas-chip");
+    await waitReply(page, stub, 1);
+    const visited = await page.eval(`Array.from(document.querySelectorAll("#atlas-map .atlas-island.is-visited")).map((g) => g.getAttribute("data-id"))`);
+    assert.ok(visited.includes(first) && visited.includes(second), `the reply lit both places (${visited.join(", ")})`);
+
+    const focused = () => page.eval(`document.activeElement && document.activeElement.closest ? (document.activeElement.closest(".atlas-island")?.getAttribute("data-id") || "") : ""`);
+    const focusStart = async () => {
+      await page.press("Shift");
+      await page.eval(`(document.querySelector('#atlas-map [data-id="${START_ID}"]').focus(), true)`);
+      assert.equal(await focused(), START_ID, "focus is on the start place");
+    };
+
+    // What the visible hint of round 3 taught ("repeat an arrow to try the next place") does not work: the second
+    // press of the same arrow leaves the first neighbour for whatever lies further that way.
+    await focusStart();
+    await page.press(key);
+    assert.equal(await focused(), first, `${key} goes to the best place that way`);
+    await page.press(key);
+    assert.equal(await focused(), walkOn, `${key} again walks on from ${first}`);
+    assert.notEqual(await focused(), second, `${key} twice does not reach ${second}`);
+
+    // What the description teaches does: the opposite arrow comes back, the same arrow again takes the next one.
+    await focusStart();
+    await page.press(key);
+    assert.equal(await focused(), first);
+    await page.press(opposite);
+    assert.equal(await focused(), START_ID, `${opposite} comes back`);
+    await page.press(key);
+    assert.equal(await focused(), second, `and ${key} again tries the next place`);
+  });
+
+  it("F40. Page Down and Page Up step through every visible place, in order, and stop at the ends", async (t) => {
+    const { stub, page, url } = await openSite(t, "f40-pages", { width: 1440, height: 900 });
+    stub.reply = () => replyLighting(NEAR_START.slice(0, 2).map((island) => island.id)).reply;
+    await boot(page, url);
+    await followHeroLink(page);
+    await page.clickInView("#atlas-suggest .atlas-chip");
+    await waitReply(page, stub, 1);
+    // The visible places in graph order, from the page itself (visited and next to explore; fog is not visible).
+    const shown = new Set(await page.eval(`Array.from(document.querySelectorAll("#atlas-map .atlas-island:not(.is-fogged)")).map((g) => g.getAttribute("data-id"))`));
+    const order = ISLANDS.filter((island) => shown.has(island.id)).map((island) => island.id);
+    assert.ok(order.length >= 5, `several places are visible (${order.length})`);
+    const focused = () => page.eval(`document.activeElement && document.activeElement.closest ? (document.activeElement.closest(".atlas-island")?.getAttribute("data-id") || "") : ""`);
+    await page.press("Shift");
+    await page.eval(`(document.querySelector('#atlas-map [data-id="${order[0]}"]').focus(), true)`);
+    const forward = [];
+    for (let at = 1; at < order.length; at += 1) {
+      await page.press("PageDown");
+      forward.push(await focused());
+    }
+    assert.deepEqual(forward, order.slice(1), "Page Down visits every visible place in order");
+    await page.press("PageDown");
+    assert.equal(await focused(), order[order.length - 1], "and stops at the last one");
+    const back = [];
+    for (let at = order.length - 2; at >= 0; at -= 1) {
+      await page.press("PageUp");
+      back.push(await focused());
+    }
+    assert.deepEqual(back, order.slice(0, -1).reverse(), "Page Up walks back through them");
+    await page.press("PageUp");
+    assert.equal(await focused(), order[0], "and stops at the first one");
+  });
+
+  // ---- F42 ----
+
+  for (const width of [481, 495, 498, 500, 520]) {
+    it(`F42. ${width}x700, after the hero link: the Atlas heading starts below the sticky header (also where the header wraps to two rows)`, async (t) => {
+      const { page, url } = await openSite(t, `f42-${width}`, { width, height: 700 });
+      await boot(page, url);
+      await followHeroLink(page);
+      const facts = await page.eval(`(() => {
+        const header = document.querySelector(".site-header").getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(document.querySelector("#atlas-title"));
+        const heading = range.getBoundingClientRect();
+        const card = document.querySelector("#atlas").getBoundingClientRect();
+        return { headerHeight: header.height, header: header.bottom, headingTop: heading.top, headingBottom: heading.bottom, cardTop: card.top, innerHeight };
+      })()`);
+      t.diagnostic(`header ${facts.headerHeight}px, heading text at ${Math.round(facts.headingTop)}px, card at ${Math.round(facts.cardTop)}px`);
+      assert.ok(facts.headingTop >= facts.header + 8, `the heading's text box starts ${Math.round(facts.headingTop - facts.header)}px below the header (header ${Math.round(facts.header)}px, heading ${Math.round(facts.headingTop)}px)`);
+      assert.ok(facts.cardTop >= facts.header, `and so does the card (${Math.round(facts.cardTop)} >= ${Math.round(facts.header)})`);
+      assert.ok(facts.headingBottom <= facts.innerHeight, "the heading is on screen");
+    });
+  }
+
+  // ---- F47 ----
+
+  it("F47. emphasising a place (hover, selection, keyboard focus) never changes the width of its name, so two neighbours emphasised at once never touch", async (t) => {
+    const everything = ISLANDS.map((island) => island.id);
+    const { page, url } = await openSite(t, "f47-labels", { width: 1440, height: 900 });
+    await page.goto(url);
+    await page.eval(`sessionStorage.setItem("esp-atlas", ${JSON.stringify(JSON.stringify({ v: 1, visited: everything, replies: 5 }))})`);
+    await page.reload();
+    await page.waitFor(`document.querySelectorAll("#atlas-map .atlas-island.is-visited").length === ${everything.length}`, { what: "every place visited" });
+    await page.waitFor(`document.querySelectorAll("#atlas-map .is-flare").length === 0`, { what: "the flares to end" });
+
+    // The measurement used on both sides: the box of a place's name and sublabel, in map units.
+    const MEASURE = `(() => {
+      const boxes = {};
+      for (const g of document.querySelectorAll("#atlas-map .atlas-island:not(.is-fogged)")) {
+        const m = /translate\\(([-\\d.]+)[ ,]+([-\\d.]+)\\)/.exec(g.getAttribute("transform"));
+        let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+        for (const text of g.querySelectorAll(".atlas-label, .atlas-sublabel")) {
+          const b = text.getBBox();
+          x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
+        }
+        boxes[g.getAttribute("data-id")] = [+m[1] + x0, +m[2] + y0, +m[1] + x1, +m[2] + y1];
+      }
+      return boxes;
+    })()`;
+    const overlap = (a, b) => Math.min(Math.min(a[2], b[2]) - Math.max(a[0], b[0]), Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+
+    // 1. At rest no two names touch, and the pairs that lie closest are known.
+    const rest = await page.eval(MEASURE);
+    const ids = Object.keys(rest);
+    assert.equal(ids.length, everything.length);
+    const gaps = [];
+    for (const a of ids) {
+      for (const b of ids) {
+        if (a >= b) continue;
+        const gap = -overlap(rest[a], rest[b]);
+        assert.ok(gap > 0, `${a} and ${b} do not touch at rest`);
+        gaps.push({ a, b, gap });
+      }
+    }
+    gaps.sort((p, q) => p.gap - q.gap);
+    const closest = gaps.filter((pair) => pair.gap < 12);
+    assert.ok(closest.length >= 20, `there are crowded pairs to check (${closest.length})`);
+
+    // 2. No name gets wider (or taller) when it is the active one, or the focused one: one weight, one width.
+    await page.press("Shift");
+    for (const id of ids) {
+      const widths = await page.eval(`(() => {
+        const g = document.querySelector('#atlas-map [data-id="${id}"]');
+        const text = g.querySelector(".atlas-label");
+        const read = () => { const b = text.getBBox(); return [Math.round(b.width * 100) / 100, Math.round(b.height * 100) / 100, getComputedStyle(text).fontWeight]; };
+        const base = read();
+        g.classList.add("is-active");
+        const active = read();
+        g.classList.remove("is-active");
+        g.focus();
+        const focus = g.matches(":focus-visible") ? read() : null;
+        g.blur();
+        return { base, active, focus };
+      })()`);
+      assert.deepEqual(widths.active, widths.base, `${id}: the active name keeps its size and weight`);
+      assert.deepEqual(widths.focus, widths.base, `${id}: the focused name keeps its size and weight`);
+    }
+
+    // 3. Every ordered pair of crowded neighbours, one hovered and one focused: still clear of each other.
+    const worst = await page.eval(`(() => {
+      const near = ${JSON.stringify(closest.map((pair) => [pair.a, pair.b]))};
+      const measure = () => (${MEASURE});
+      const overlap = ${overlap.toString()};
+      let worst = -1e9, where = "";
+      for (const [p, q] of near) for (const [hover, focus] of [[p, q], [q, p]]) {
+        const g = document.querySelector('#atlas-map [data-id="' + hover + '"]');
+        const f = document.querySelector('#atlas-map [data-id="' + focus + '"]');
+        f.focus();
+        g.classList.add("is-active");
+        const now = measure();
+        g.classList.remove("is-active");
+        const o = overlap(now[hover], now[focus]);
+        if (o > worst) { worst = o; where = hover + " hovered, " + focus + " focused"; }
+      }
+      document.activeElement.blur();
+      return { worst, where };
+    })()`);
+    assert.ok(worst.worst < 0, `no two emphasised names touch (closest: ${worst.where}, overlap ${worst.worst})`);
+
+    // 4. The same with the real mouse and the real keyboard, for the three pairs that touched in round 3 and the three crowded pairs.
+    const named = [["hsatm", "verification-tag"], ["hpc", "who-does-what"], ["who-does-what", "evidence-round"]].filter(([p, q]) => INDEX.byId.has(p) && INDEX.byId.has(q));
+    const pairs = [...named, ...closest.slice(0, 3).map((pair) => [pair.a, pair.b])];
+    for (const [p, q] of pairs) {
+      for (const [hover, focus] of [[p, q], [q, p]]) {
+        await page.eval(`(() => {
+          const target = document.querySelector('#atlas-map [data-id="${focus}"]');
+          target.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+          target.focus({ preventScroll: true });
+          return true;
+        })()`);
+        const centre = await page.eval(`(() => { const r = document.querySelector('#atlas-map [data-id="${hover}"] .atlas-hit').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+        await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: centre.x, y: centre.y, button: "none", clickCount: 0 });
+        await page.waitFor(`document.querySelector('#atlas-map [data-id="${hover}"]').classList.contains("is-active")`, { what: `${hover} to be hovered` });
+        const state = await page.eval(`({ focusVisible: document.querySelector('#atlas-map [data-id="${focus}"]').matches(":focus-visible"), focusedDeco: getComputedStyle(document.querySelector('#atlas-map [data-id="${focus}"] .atlas-label')).textDecorationLine, hoverDeco: getComputedStyle(document.querySelector('#atlas-map [data-id="${hover}"] .atlas-label')).textDecorationLine, boxes: ${MEASURE} })`);
+        assert.equal(state.focusVisible, true, `${focus} shows its keyboard focus`);
+        assert.equal(state.hoverDeco, "underline", `${hover} (hovered) is underlined, not only brighter`);
+        assert.equal(state.focusedDeco, "underline", `${focus} (focused) is underlined, not only brighter`);
+        assert.ok(overlap(state.boxes[hover], state.boxes[focus]) < 0, `${hover} hovered and ${focus} focused: their names do not touch`);
+        assert.deepEqual(state.boxes[hover], rest[hover], `${hover}: the box of the name did not change`);
+        assert.deepEqual(state.boxes[focus], rest[focus], `${focus}: the box of the name did not change`);
+      }
+    }
+    await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2, button: "none", clickCount: 0 });
   });
 });
