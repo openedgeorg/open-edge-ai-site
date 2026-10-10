@@ -15,8 +15,6 @@
     --ap-open: #ff9f80;
     --ap-focus: #ffffff;
 
-    /* The anchor of the notice below, which lies over the card's top right corner. */
-    position: relative;
     min-width: 0;
     background: var(--ap-bg);
     color: var(--ap-text);
@@ -430,14 +428,32 @@
     font-size: 1.05rem;
 }
 
+/* The heading row: "The Atlas" and, when a pause is explained, the notice. Both stay in the flow, so
+   the notice can never lie over any text: where there is room (a wide window, normal text) it sits
+   beside the heading and the row is no taller than the heading alone; where there is not (a narrow
+   window, enlarged text) it drops onto its own line under the heading and the rest moves down. */
+
+.atlas-head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0 1rem;
+}
+
+.atlas .atlas-head h2 {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
 /* Notice: the one place a pause is explained. It is always rendered (so its role="status" is a live
-   region from the start) but it never holds room of its own: empty, it has no height; speaking, it
-   lies beside the heading of the card (room enough from 900px up), or opens in the flow above the
-   toolbar on a narrower screen. Either way the map below does not move when a pause comes or goes
-   at 900px and wider. */
+   region from the start), but empty it has no height and no box at all. */
 
 .atlas .atlas-notice {
-    margin: 0.25rem 0 0.4rem;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: min(34rem, 100%);
+    margin: 0.6rem 0 0.4rem;
     padding: 0.25rem 0.8rem;
     font-size: 0.9rem;
     line-height: 1.4;
@@ -445,6 +461,7 @@
     background: var(--ap-surface);
     border: 2px dashed var(--ap-lit);
     border-radius: 8px;
+    overflow-wrap: anywhere;
 }
 
 .atlas .atlas-notice:empty {
@@ -455,15 +472,24 @@
     border-width: 0;
 }
 
-@media (min-width: 900px) {
-    .atlas .atlas-notice {
-        position: absolute;
-        top: calc(var(--spacing-unit) * 1.5 + 0.6rem);
-        right: calc(var(--spacing-unit) * 1.5);
-        z-index: 2;
-        max-width: min(34rem, calc(100% - 14rem));
-        margin: 0;
-    }
+/* Keyboard hint under the map. It is plain text, not a live region, and it takes its line from the start
+   (hidden, not removed), so showing it while the map has focus moves nothing. Hidden with the map in the
+   list view. */
+
+.atlas .atlas-keyhint {
+    margin: 0 0 0.6rem;
+    font-size: 0.85rem;
+    line-height: 1.4;
+    color: var(--ap-muted);
+    visibility: hidden;
+}
+
+.atlas .atlas-map-wrap:focus-within + .atlas-keyhint {
+    visibility: visible;
+}
+
+.atlas .atlas-map-wrap[hidden] + .atlas-keyhint {
+    display: none;
 }
 
 /* Legend */

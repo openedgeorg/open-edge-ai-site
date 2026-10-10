@@ -1614,8 +1614,8 @@ describe("Atlas in a real browser", { skip: CHROME.path ? CHAT_SETUP.skip : CHRO
     assert.notEqual(noticeFacts.display, "none");
     assert.equal(noticeFacts.role, "status");
     assert.equal(noticeFacts.text, "");
-    // Round 2 (F6): the notice is an overlay slot. Empty, it reserves no blank band above the map; when it
-    // speaks it takes no room either, which is what the "nothing moves" checks below prove.
+    // Round 2 (F6), kept in the flow by round 3 (F24): empty, the notice reserves no blank band above the map;
+    // beside the heading it takes no extra row at 900px and wider, which is what the "nothing moves" checks below prove.
     assert.ok(noticeFacts.height < noticeFacts.lineHeight, `an empty notice reserves no blank band (${noticeFacts.height}px, line ${noticeFacts.lineHeight}px)`);
 
     // 1. The visitor types: chips pause, nothing is written, nothing moves.
@@ -1633,7 +1633,7 @@ describe("Atlas in a real browser", { skip: CHROME.path ? CHAT_SETUP.skip : CHRO
     const cleared = await page.eval(BOXES);
     assert.deepEqual(cleared, afterClick, "clearing the box moves nothing either");
 
-    // 2. A question runs: the notice speaks into its overlay slot, nothing around it moves.
+    // 2. A question runs: the notice speaks beside the heading, nothing around it moves.
     const release = stub.holdStreams();
     await page.click(".atlas-chip");
     await stub.waitFor(() => stub.posts.length >= 1, { what: "the chip's POST" });

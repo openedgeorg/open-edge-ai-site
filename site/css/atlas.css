@@ -48,6 +48,52 @@ html {
     padding: calc(var(--spacing-unit, 1rem) * 1.5) 0 calc(var(--spacing-unit, 1rem) * 3);
 }
 
+/* A short window (a 1366x768 laptop, a 1280x720 screen): after the hero link the first screen still has
+   to hold the start place WITH its name, the counter, the first chip and the edge dragon. The air above
+   the map is tightened here (the section's top padding, the card's padding, the heading's line height,
+   a few margins, and the gap above the section where a link lands); where the places lie is not
+   touched. The page's scroll padding (5rem, which keeps a focused control clear of the 4rem sticky
+   header) stays as it is: only the section a link lands on is brought up by 0.75rem, so that it
+   begins 4px under the header. A header that wraps to two rows (480px and narrower) is not touched. */
+@media (max-height: 820px) and (min-width: 481px) {
+    #explore {
+        scroll-margin-top: -0.75rem;
+    }
+
+    .atlas-section {
+        padding-top: 0.5rem;
+    }
+
+    .atlas-section .atlas {
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+    }
+
+    .atlas-section .atlas h2 {
+        line-height: 1.25;
+    }
+
+    .atlas-section .atlas .atlas-intro {
+        margin-bottom: 0.5rem;
+    }
+
+    .atlas-section .atlas .atlas-honesty {
+        margin-bottom: 0.6rem;
+    }
+
+    .atlas-section .atlas .atlas-notice {
+        margin-top: 0.3rem;
+    }
+
+    .atlas-section .atlas .atlas-toolbar {
+        margin-bottom: 0.5rem;
+    }
+
+    .atlas-section .atlas .atlas-map-wrap {
+        margin-top: 0.5rem;
+    }
+}
+
 /* Wider than the 1200px page container and with slimmer gutters: the map needs the room. */
 .container.atlas-layout {
     display: grid;
@@ -287,7 +333,7 @@ html {
 .atlas-map-wrap {
     overflow-x: auto;
     overflow-y: hidden;
-    margin: 0.75rem 0 1rem;
+    margin: 0.75rem 0 0.4rem;
     background: var(--atlas-sea);
     border: 1px solid var(--atlas-line);
     border-radius: 10px;
