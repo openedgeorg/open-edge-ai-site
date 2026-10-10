@@ -9,7 +9,7 @@
  *
  * The conversation client in the page is chosen by ATLAS_CHAT (see atlas_browser_support.mjs):
  * "double" (the default) serves tests/fixtures/atlas_chat_double/app.js at /js/app.js, a
- * self-contained stand-in that paints like the live client, so this file passes on a clean
+ * self-contained port of the working-tree client that paints like the live client, so this file passes on a clean
  * checkout whatever state site/js/app.js, api.js and state.js are in; "real" serves the working
  * tree's own client and is skipped, with the reason printed, when that tree cannot follow a
  * stream, fill the history, settle and send the CSRF header; "auto" picks real when it can.
