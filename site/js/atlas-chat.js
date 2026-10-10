@@ -21,8 +21,13 @@
  *   If the question is not in the list (a reload, or the chat showing an older snapshot) there is
  *   nothing to deliver yet and the bridge keeps waiting. A row is never taken merely because it is
  *   the last one.
- * - A delivered reply is remembered as `${position}:${text}`, so an identical canned answer in a
- *   later turn still counts while a second read of the very same list does not.
+ * - A delivered reply is remembered as `${position}:${hash of its text}`, so an identical canned
+ *   answer in a later turn still counts while a second read of the very same list does not.
+ * - That memory also lives in sessionStorage (SEEN_KEY, passed in as `storage`), because a reload
+ *   empties the page's memory while the chat can still show an OLDER list: Clear map, then the same
+ *   first suggestion again, and the chat's /history still says [Q1, A1]. Without the memory the old
+ *   A1 would be taken for the new answer and light its places. Only short hashes are stored, never
+ *   a reply, a row or a question.
  */
 
 import { FIRST_SUGGESTION, ISLANDS } from "./atlas-graph.js";
@@ -50,6 +55,12 @@ export const LATE_SETTLE_MS = 1500;
 const BUSY_PHASES = new Set(["submitting", "running", "reconciling", "recovering"]);
 const DELIVERED_LIMIT = 200;
 const ECHO_LIMIT = 100;
+/** The sessionStorage key of the delivered-reply memory: a JSON array of `${position}:${8 hex digits}`. */
+export const SEEN_KEY = "esp-atlas-seen";
+/** What one stored entry must look like; anything else in the array is ignored. */
+const SEEN_ENTRY = /^\d{1,9}:[0-9a-f]{8}$/;
+/** A stored value longer than this is not even parsed (200 entries need about 3 KB). */
+const SEEN_MAX_CHARS = 65536;
 
 const MESSAGES = {
   starting: "The chat is still starting.",
@@ -81,6 +92,21 @@ function isGraphTeaser(plain) {
     if (island && typeof island.teaser === "string" && squash(island.teaser) === plain) return true;
   }
   return false;
+}
+
+/**
+ * FNV-1a, 32 bit, over the UTF-16 code units of `text`, as 8 lowercase hex digits. A short fingerprint,
+ * not a secret: it is what the bridge keeps of a delivered reply, so no part of the text is stored.
+ * @param {string} text
+ */
+export function fnv1a32(text) {
+  const value = String(text == null ? "" : text);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
 }
 
 function duration(value, fallback) {
@@ -251,6 +277,7 @@ export function createDomPort(doc, options = {}) {
  *   now?: () => number,
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
+ *   storage?: Storage | null,
  *   onReply?: (text: string) => void,
  *   onChange?: (status: ChatStatus) => void,
  *   timings?: {staleSubmitMs?: number, noProgressMs?: number, startGiveUpMs?: number, lateSettleMs?: number},
@@ -262,6 +289,7 @@ export function createChatBridge({
   now = () => Date.now(),
   setTimer = setTimeout,
   clearTimer = clearTimeout,
+  storage = null,
   onReply,
   onChange,
   timings = {},
@@ -298,7 +326,10 @@ export function createChatBridge({
   let lateTimer = null;
   let lateTimerSet = false;
   const sends = []; // submit timestamps inside the rate window, ascending
-  const delivered = new Set(); // `${position}:${squashed text}` of every reply handed to onReply
+  // `${position}:${fnv1a32 of the squashed text}` of every reply handed to onReply, oldest first. Seeded from
+  // storage when the bridge is created and written back after each delivery (see SEEN_KEY). The position
+  // is the row's index among the rows that have text.
+  const delivered = new Set();
   const echoes = new Set(); // squashed text of every submit seen: a row equal to one is the visitor's echo
   const unsubscribers = [];
 
@@ -443,6 +474,42 @@ export function createChatBridge({
     if (delivered.size > DELIVERED_LIMIT) delivered.delete(delivered.values().next().value);
   }
 
+  /**
+   * Seed `delivered` from what an earlier page of this tab stored. Whatever is wrong with the stored
+   * value (no storage, a storage that throws, bad JSON, not an array, entries of the wrong shape or
+   * size) is ignored: the bridge then simply starts with an empty memory.
+   */
+  function loadDelivered() {
+    let raw;
+    try {
+      if (!storage || typeof storage.getItem !== "function") return;
+      raw = storage.getItem(SEEN_KEY);
+    } catch {
+      return;
+    }
+    if (typeof raw !== "string" || raw.length === 0 || raw.length > SEEN_MAX_CHARS) return;
+    let list;
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (!Array.isArray(list)) return;
+    for (const entry of list) {
+      if (typeof entry === "string" && entry.length <= 32 && SEEN_ENTRY.test(entry)) rememberDelivered(entry);
+    }
+  }
+
+  /** Write `delivered` to storage. Only fingerprints go in; a failure (private mode, quota) keeps the memory-only behaviour. */
+  function storeDelivered() {
+    try {
+      if (!storage || typeof storage.setItem !== "function") return;
+      storage.setItem(SEEN_KEY, JSON.stringify([...delivered]));
+    } catch {
+      /* storage disabled or full: the memory of this page still works */
+    }
+  }
+
   function rememberEcho(plain) {
     if (!plain) return;
     echoes.delete(plain);
@@ -471,7 +538,8 @@ export function createChatBridge({
    * - the question is not in the list yet (a reload, or an older snapshot of the list), or it is the
    *   last row (the run is not done), or only blank rows follow it;
    * - that row is an echo of something submitted (the run failed and a question follows the question);
-   * - that row was already handed on (the very same list read again, for a question asked twice).
+   * - that row was already handed on (the very same list read again, for a question asked twice, or an
+   *   older snapshot of the list that a reload left behind: the memory is kept in sessionStorage).
    * A row is never taken merely because it is the last one in the list.
    */
   function pickReply(submitted) {
@@ -494,9 +562,10 @@ export function createChatBridge({
     if (at < 0 || at + 1 >= rows.length) return null;
     const row = rows[at + 1];
     if (echoes.has(row.plain)) return null;
-    const key = `${at + 1}:${row.plain}`;
+    const key = `${at + 1}:${fnv1a32(row.plain)}`;
     if (delivered.has(key)) return null;
     rememberDelivered(key);
+    storeDelivered();
     return row.text;
   }
 
@@ -623,6 +692,7 @@ export function createChatBridge({
     }
   }
 
+  loadDelivered();
   phase = readPhase();
   if (phase === "rejected") rejectUntil = now() + REJECT_PAUSE_MS;
   subscribe((handler) => port.onPhase(handler), onPhaseEvent);
