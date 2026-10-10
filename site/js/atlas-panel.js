@@ -22,7 +22,7 @@ export const STATUS_WORDS = Object.freeze({
 export const OPEN_STATUS_WORD = OPEN_LABEL;
 
 const INSPECTOR_HINT = "Point at or focus a lit place on the map to read about it here.";
-const OPEN_LIST_NOTE = "On the designers' own open list. No answer has been ratified yet.";
+const OPEN_LIST_NOTE = "On the designers' own open list: what is described here is open or undecided.";
 
 /**
  * The status word for a view status ("visited" | "frontier" | "fogged"). For a place on the open
