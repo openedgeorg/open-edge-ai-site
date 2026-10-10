@@ -54,8 +54,10 @@ html {
    a few margins, and the gap above the section where a link lands); where the places lie is not
    touched. The page's scroll padding (5rem, which keeps a focused control clear of the 4rem sticky
    header) stays as it is: only the section a link lands on is brought up by 0.75rem, so that it
-   begins 4px under the header. A header that wraps to two rows (480px and narrower) is not touched. */
-@media (max-height: 820px) and (min-width: 481px) {
+   begins 4px under the header. That is right only while the header is one row (64px). Between 481px
+   and 498px the nav links wrap and the header is 96px high, and at 480px and narrower another header
+   rule applies, so the rule starts at 500px and leaves all of that untouched. */
+@media (max-height: 820px) and (min-width: 500px) {
     #explore {
         scroll-margin-top: -0.75rem;
     }
@@ -333,7 +335,7 @@ html {
 .atlas-map-wrap {
     overflow-x: auto;
     overflow-y: hidden;
-    margin: 0.75rem 0 0.4rem;
+    margin: 0.75rem 0 1rem;
     background: var(--atlas-sea);
     border: 1px solid var(--atlas-line);
     border-radius: 10px;
@@ -637,9 +639,17 @@ html {
     fill: #c9f5ee;
 }
 
-.atlas-island.is-active .atlas-label {
-    font-weight: 700;
+/* Emphasis (a place under the pointer, selected, or reached by keyboard) is the brightest ink AND an
+   underline, never a heavier weight: a bolder name is wider, and two neighbouring names emphasised at
+   once (one hovered, one focused) would then touch. The underline also tells the state apart without
+   colour, which matters in high contrast, where every name is CanvasText. */
+.atlas-island.is-active .atlas-label,
+.atlas-island:focus-visible .atlas-label {
     fill: #fff;
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 3px;
+    text-decoration-skip-ink: none;
 }
 
 .atlas-sublabel {
@@ -671,11 +681,6 @@ html {
     stroke: var(--atlas-focus);
     stroke-width: 3px;
     stroke-dasharray: none;
-}
-
-.atlas-island:focus-visible .atlas-label {
-    fill: #fff;
-    font-weight: 700;
 }
 
 /* Newly visited: a ring expands once. */

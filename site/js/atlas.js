@@ -365,7 +365,7 @@ export function createAtlas({ document: doc = globalThis.document, storage = nul
   // so a visitor without JavaScript sees the honesty note and the plain index only.
   if (mounts.toolbar) mounts.toolbar.hidden = false;
   if (mounts.notice) mounts.notice.hidden = false;
-  for (const el of doc.querySelectorAll(".atlas-intro, .atlas-legend, .atlas-keyhint, .hero-cta-note, .atlas-to-chat")) el.hidden = false;
+  for (const el of doc.querySelectorAll(".atlas-intro, .atlas-legend, .hero-cta-note, .atlas-to-chat")) el.hidden = false;
   showView("map");
   render();
 
