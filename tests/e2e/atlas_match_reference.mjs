@@ -6,12 +6,21 @@
  * correct, which is exactly what a reference is for. It lives ONLY in tests/: the shipped matcher
  * tokenises the reply once and never builds a regex per term.
  *
- * The only differences from the old matcher are the F10 rules and the F35 gap rule, which the
- * shipped matcher also has: a phrase whose first character is uppercase (an acronym expansion
- * written out) is matched case-sensitively; a run of spaces, hyphens, asterisks, underscores and
- * backticks between two words of a phrase is one gap; the en dash and the minus sign read as
- * hyphens; and the single-word allowlist is a parameter (the reviewed list is pinned in the test
- * files, not read from the matcher).
+ * The only differences from the old matcher are the F10 rules, the F35 gap rule and the F43 break
+ * rule, which the shipped matcher also has: a phrase whose first character is uppercase (an acronym
+ * expansion written out) is matched case-sensitively; a run of spaces, hyphens, asterisks,
+ * underscores and backticks between two words of a phrase is one gap; the en dash and the minus sign
+ * read as hyphens; and the single-word allowlist is a parameter (the reviewed list is pinned in the
+ * test files, not read from the matcher).
+ *
+ * The F43 rule is done here a different way from the shipped matcher on purpose, so that the
+ * differential test compares two implementations. The reply is cut into SEGMENTS before anything
+ * else, every term is tested against every segment on its own, and an island is lit when any segment
+ * lights it. A segment ends at a blank line (a line with nothing but whitespace between two
+ * newlines) and before a line that starts a Markdown list item ("- ", "* ", "+ ", "1. ", "1) ") or
+ * a heading (a run of "#" and a space). A single newline anywhere else stays inside its segment,
+ * where it is whitespace like any other. The shipped matcher marks the same places in the text with
+ * one character instead.
  *
  * Not a test file (no .test.mjs suffix): node --test ignores it, other test files import it.
  */
@@ -89,13 +98,43 @@ export function referenceCompile(islands, allowed) {
   return { entries, rejected };
 }
 
+/** A line that starts a Markdown list item or a heading (after any indentation). */
+const STARTS_BLOCK = /^[^\S\n]*(?:[-*+]|\d{1,9}[.)]|#+)[ \t]/;
+
+/**
+ * The segments of a reply (F43), each still raw. Line by line: a whitespace-only line ends the
+ * segment before it, and a line that starts a list item or a heading starts a new one.
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function referenceSegments(text) {
+  const segments = [];
+  let current = [];
+  const close = () => {
+    segments.push(current.join("\n"));
+    current = [];
+  };
+  text.split("\n").forEach((line, index) => {
+    if (/^\s*$/.test(line)) {
+      // A blank line is the break. (A blank first or last line separates nothing, which is harmless:
+      // it only leaves an empty segment.)
+      close();
+    } else {
+      if (index > 0 && STARTS_BLOCK.test(line)) close();
+      current.push(line);
+    }
+  });
+  close();
+  return segments;
+}
+
 export function referenceMatch(text, reference) {
-  const reply = referenceNormalise(text);
-  if (!reply) return [];
+  if (typeof text !== "string") return [];
+  const replies = referenceSegments(text).map(referenceNormalise).filter((reply) => reply !== "");
   const ids = [];
   for (const entry of reference.entries) {
     if (ids.includes(entry.id)) continue;
-    if (entry.res.some((re) => re.test(reply))) ids.push(entry.id);
+    if (replies.some((reply) => entry.res.some((re) => re.test(reply)))) ids.push(entry.id);
   }
   return ids;
 }

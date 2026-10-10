@@ -13,6 +13,10 @@
  *   often Markdown), and an en dash or a minus sign reads as a hyphen ("spend–ahead" is "spend-ahead").
  *   Any other character between the words (a full stop, a comma, a bracket, a quote) breaks the
  *   phrase: a "the" that ends one sentence and a "pot" that starts the next never make "the pot".
+ *   So does a paragraph break and the start of a list item or heading (F43): a blank line, or a line
+ *   that begins with "- ", "* ", "+ ", "1. " or "# ", ends the phrase before it, so two bullets such
+ *   as "- **Monthly epoch**" and "- **Identity layers**" never make "epoch identity". A single newline
+ *   inside a paragraph is only a space (a soft-wrapped line still makes the phrase).
  *   EXCEPT a phrase whose first character is uppercase ("Allowance to Spend", "Consumption
  *   Record"): that is an acronym expansion written out, and it is matched case-sensitively, so a
  *   reply that merely says "allowance to spend" in passing lights nothing;
@@ -75,6 +79,22 @@ const AFTER = "(?![\\p{L}\\p{N}])";
 const SEPARATOR = "[\\s\\-*_`]+";
 /** A run of letters and digits: the unit of tokenisation. */
 const TOKEN_SOURCE = "[\\p{L}\\p{N}]+";
+
+/**
+ * A hard phrase break (F43), found in the reply BEFORE its whitespace is collapsed: (a) a blank line,
+ * that is two or more newlines with nothing but spaces between them, and (b) a newline that is
+ * followed by the start of a Markdown list item ("- ", "* ", "+ ", "1. " or "1) ") or of a heading
+ * (a run of "#" and a space), after any indentation. A single newline anywhere else stays an ordinary
+ * gap. Spaces here means any whitespace except a newline, so "\r\n\r\n" is a blank line too.
+ * Every character the match consumes is newline or indentation, never a letter or a digit.
+ */
+const HARD_BREAK = /\n[^\S\n]*(?:\n[^\S\n]*)+|\n[^\S\n]*(?=(?:[-*+]|\d{1,9}[.)]|#+)[ \t])/g;
+/**
+ * What a hard break becomes. It is not a letter, a digit, whitespace or one of the separator marks,
+ * so (like a full stop) no phrase can span it, and normaliseReply leaves it alone. A reply that has
+ * this character of its own gets the same effect, which is what any punctuation does.
+ */
+const PHRASE_BREAK = "¶";
 
 /**
  * Curly quotes to straight, typographic hyphens, the en dash and the minus sign to "-", NBSP and
@@ -326,7 +346,7 @@ function occursAt(candidate, at, tokens, lowered, gaps) {
  * @returns {string[]}
  */
 export function matchReply(text, glossary) {
-  const reply = normaliseReply(text);
+  const reply = normaliseReply(typeof text === "string" ? text.replace(HARD_BREAK, PHRASE_BREAK) : text);
   if (!reply || !glossary || !Array.isArray(glossary.entries)) return [];
   const lookup = LOOKUPS.get(glossary);
   if (!lookup || !lookup.tokenRe) return [];
