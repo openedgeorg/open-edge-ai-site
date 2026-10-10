@@ -20,6 +20,10 @@ export const CLEAR_CONFIRM_LABEL = "Confirm: clear map";
 export const TWO_COLUMNS_QUERY = "(min-width: 1180px)";
 /** At least this much of the conversation card (px) must be on screen to count as "the visitor is reading it". */
 export const CHAT_IN_VIEW_PX = 120;
+/** At least this much of the Atlas card (px) must be on screen to count as "the visitor is still looking at the map". */
+export const ATLAS_IN_VIEW_PX = 120;
+/** A visitor who has scrolled this fraction of a screen (or more) since asking has gone elsewhere. */
+export const SCROLLED_AWAY_SCREENS = 0.5;
 
 /**
  * Whether the visitor is looking at the conversation card, which means they are reading an answer
@@ -31,6 +35,25 @@ export const CHAT_IN_VIEW_PX = 120;
 export function conversationInView(box, viewHeight, minVisible = CHAT_IN_VIEW_PX) {
   if (!box) return false;
   return Math.min(box.bottom, viewHeight) - Math.max(box.top, 0) >= minVisible;
+}
+
+/**
+ * Whether the page may be scrolled down to the map once a reply has lit it (the one-column layout):
+ * only for a visitor who is still around the map. That is the case while the Atlas card is on screen,
+ * or while the page has not moved half a screen from where it was when the question was sent. A
+ * visitor who scrolled away while waiting (to the top, to the footer, anywhere) is left where they are.
+ * When the position at sending is not known (the question went out before a reload) only the first
+ * test applies.
+ * @param {{top: number, bottom: number}|null} card the Atlas card's rectangle in viewport pixels
+ * @param {number} viewHeight the window's height
+ * @param {number} scrollY the page's scroll position now
+ * @param {number|null|undefined} sentScrollY the page's scroll position when the question was sent
+ * @param {number} [minVisible]
+ */
+export function mapStillWanted(card, viewHeight, scrollY, sentScrollY, minVisible = ATLAS_IN_VIEW_PX) {
+  if (card && Math.min(card.bottom, viewHeight) - Math.max(card.top, 0) >= minVisible) return true;
+  if (!Number.isFinite(sentScrollY) || !Number.isFinite(scrollY) || !(viewHeight > 0)) return false;
+  return Math.abs(scrollY - sentScrollY) < viewHeight * SCROLLED_AWAY_SCREENS;
 }
 
 /**
@@ -108,8 +131,9 @@ export function followHistory(doc) {
  * through the same composer form. The model is never told that the map exists, and nothing in
  * the chat client, the API or the prompt changes.
  *
- * Progress lives in sessionStorage only: island ids and short fingerprints of the replies already read
- * (so an older chat list after a reload is not read twice), never transcripts.
+ * Progress lives in sessionStorage only: island ids, and short fingerprints (hashes) of the replies already
+ * read and of the questions already sent (so an older chat list after a reload is not read twice, and the
+ * visitor's own question is not taken for a reply), never transcripts.
  * @param {{document?: Document, storage?: Storage|null, port?: object, now?: () => number,
  *   setTimer?: (fn: () => void, ms: number) => any, clearTimer?: (handle: any) => void}} options
  */
@@ -146,6 +170,8 @@ export function createAtlas({ document: doc = globalThis.document, storage = nul
   let confirming = false;
   let confirmTimer = null;
   let warmHandle = null;
+  // Where the page was scrolled to when the last question went out (typed or tapped: both submit the form).
+  let sentScrollY = null;
   const history = followHistory(doc);
 
   const inspector = createInspector({ document: doc, graph, index, mount: mounts.inspector });
@@ -210,8 +236,8 @@ export function createAtlas({ document: doc = globalThis.document, storage = nul
     if (mounts.count) renderCount(mounts.count, view);
     if (suggestions) suggestions.render(suggestionPlan(view, { visited: state.visited, index }), { paused });
     inspector.refresh(view);
-    // The only place a pause is explained. The box takes no room of its own at 900px and wider (it lies
-    // beside the card's heading), so a message appearing or going moves nothing.
+    // The only place a pause is explained. It sits in the heading row: beside the heading where there
+    // is room (the row is no taller than the heading, so nothing moves), under it where there is not.
     const text = notice || standingNotice;
     if (mounts.notice && mounts.notice.textContent !== text) mounts.notice.textContent = text;
   }
@@ -239,17 +265,20 @@ export function createAtlas({ document: doc = globalThis.document, storage = nul
   /**
    * After a reply, show where the map lit up: the map panel scrolls sideways to the first place
    * the reply lit (the map is wider than the panel on a phone), and, in the one-column layout, the
-   * page scrolls to it unless the visitor is looking at the conversation card, in which case they are
-   * reading the answer and keep their place. Instant under reduced motion, smooth otherwise. Focus
-   * never moves.
+   * page scrolls to it unless the visitor is looking at the conversation card (they are reading the
+   * answer) or has scrolled away from the map while waiting (see mapStillWanted); either way they
+   * keep their place. Instant under reduced motion, smooth otherwise. Focus never moves.
    * @param {string[]} fresh the places the reply lit for the first time, in graph order
    */
   function showLit(fresh) {
     if (!fresh.length || mounts.map.hidden) return;
     const behavior = matches("(prefers-reduced-motion: reduce)") ? "instant" : "smooth";
+    const viewHeight = win.innerHeight || 0;
     const chat = doc.querySelector("#conversation");
-    const reading = conversationInView(chat ? chat.getBoundingClientRect() : null, win.innerHeight || 0);
-    const vertical = !matches(TWO_COLUMNS_QUERY) && !reading;
+    const reading = conversationInView(chat ? chat.getBoundingClientRect() : null, viewHeight);
+    const atlasCard = doc.querySelector("#atlas");
+    const around = mapStillWanted(atlasCard ? atlasCard.getBoundingClientRect() : null, viewHeight, win.scrollY, sentScrollY);
+    const vertical = !matches(TWO_COLUMNS_QUERY) && !reading && around;
     map.reveal(fresh[0], { behavior, vertical });
   }
 
@@ -318,6 +347,9 @@ export function createAtlas({ document: doc = globalThis.document, storage = nul
     if (confirming) setConfirming(false);
   });
   doc.querySelector("#draft")?.addEventListener("input", () => render());
+  doc.querySelector("#composer")?.addEventListener("submit", () => {
+    sentScrollY = Number.isFinite(win.scrollY) ? win.scrollY : null;
+  });
 
   bridge = createChatBridge({
     port: port || createDomPort(doc),
@@ -333,7 +365,7 @@ export function createAtlas({ document: doc = globalThis.document, storage = nul
   // so a visitor without JavaScript sees the honesty note and the plain index only.
   if (mounts.toolbar) mounts.toolbar.hidden = false;
   if (mounts.notice) mounts.notice.hidden = false;
-  for (const el of doc.querySelectorAll(".atlas-intro, .atlas-legend, .hero-cta-note, .atlas-to-chat")) el.hidden = false;
+  for (const el of doc.querySelectorAll(".atlas-intro, .atlas-legend, .atlas-keyhint, .hero-cta-note, .atlas-to-chat")) el.hidden = false;
   showView("map");
   render();
 

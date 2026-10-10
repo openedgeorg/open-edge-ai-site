@@ -9,14 +9,17 @@ import { describe, it } from "node:test";
 
 import {
   ANNOUNCE_NAMES,
+  ATLAS_IN_VIEW_PX,
   CHAT_IN_VIEW_PX,
   CLEAR_CONFIRM_LABEL,
   CLEAR_CONFIRM_MS,
   CLEAR_LABEL,
   NO_GLOSSARY_NOTICE,
+  SCROLLED_AWAY_SCREENS,
   TWO_COLUMNS_QUERY,
   conversationInView,
   describeLit,
+  mapStillWanted,
 } from "../../site/js/atlas.js";
 import { SEEN_KEY } from "../../site/js/atlas-chat.js";
 import { buildIndex } from "../../site/js/atlas-graph.js";
@@ -85,6 +88,55 @@ describe("conversationInView: is the visitor reading the answer?", () => {
     assert.equal(TWO_COLUMNS_QUERY, "(min-width: 1180px)");
     const css = readFileSync(new URL("../../site/css/atlas.css", import.meta.url), "utf8");
     assert.ok(css.includes(`@media ${TWO_COLUMNS_QUERY} {`), "atlas.css switches to two columns at the same width");
+  });
+});
+
+describe("mapStillWanted: has the visitor gone away from the map while waiting? (F36)", () => {
+  const VIEW = 844;
+  const IN_VIEW = { top: 200, bottom: 1600 };
+  const FAR_BELOW = { top: 2100, bottom: 3500 };
+  const FAR_ABOVE = { top: -3000, bottom: -1000 };
+
+  it("is true while the Atlas card is on screen, wherever the page was when the question went out", () => {
+    assert.equal(ATLAS_IN_VIEW_PX, 120);
+    assert.equal(mapStillWanted(IN_VIEW, VIEW, 2000, 0), true);
+    assert.equal(mapStillWanted({ top: VIEW - 120, bottom: VIEW + 900 }, VIEW, 5000, 0), true, "exactly the threshold");
+    assert.equal(mapStillWanted({ top: VIEW - 119, bottom: VIEW + 900 }, VIEW, 5000, 0), false, "a sliver of the card is not looking at it");
+    assert.equal(mapStillWanted({ top: -1400, bottom: 130 }, VIEW, 5000, 0), true, "scrolled past most of it, enough still shows");
+  });
+
+  it("is true while the page has moved less than half a screen since the question was sent", () => {
+    assert.equal(SCROLLED_AWAY_SCREENS, 0.5);
+    assert.equal(mapStillWanted(FAR_BELOW, VIEW, 2000, 2000), true, "has not moved");
+    assert.equal(mapStillWanted(FAR_BELOW, VIEW, 2000 - 400, 2000), true, "400px up of 844");
+    assert.equal(mapStillWanted(FAR_BELOW, VIEW, 2000 + 400, 2000), true, "400px down of 844");
+    assert.equal(mapStillWanted(FAR_ABOVE, VIEW, 100, 450), true, "and the card may even lie above");
+  });
+
+  it("is false for a visitor who scrolled half a screen or more away and has left the card", () => {
+    assert.equal(mapStillWanted(FAR_BELOW, VIEW, 0, 2187), false, "the review's case: to the top of the page while waiting");
+    assert.equal(mapStillWanted(FAR_BELOW, VIEW, 2000 - 422, 2000), false, "exactly half a screen");
+    assert.equal(mapStillWanted(FAR_BELOW, VIEW, 2000 + 422, 2000), false);
+    assert.equal(mapStillWanted(FAR_ABOVE, VIEW, 5200, 100), false, "down to the footer");
+  });
+
+  it("falls back to the card alone when the position at sending is unknown, and says no when nothing is known", () => {
+    assert.equal(mapStillWanted(IN_VIEW, VIEW, 100, null), true);
+    assert.equal(mapStillWanted(IN_VIEW, VIEW, 100, undefined), true);
+    assert.equal(mapStillWanted(FAR_BELOW, VIEW, 100, null), false, "a stranger to this page's history is not pulled");
+    assert.equal(mapStillWanted(FAR_BELOW, VIEW, 100, undefined), false);
+    assert.equal(mapStillWanted(FAR_BELOW, VIEW, undefined, 100), false);
+    assert.equal(mapStillWanted(null, VIEW, 100, 100), true, "no card to measure, but the page has not moved");
+    assert.equal(mapStillWanted(null, VIEW, 100, null), false);
+    assert.equal(mapStillWanted(FAR_BELOW, 0, 100, 100), false, "a window with no height tells nothing");
+  });
+
+  it("the controller records the position when the form is submitted and asks this function before it scrolls the page", () => {
+    const source = readFileSync(new URL("../../site/js/atlas.js", import.meta.url), "utf8");
+    assert.match(source, /querySelector\("#composer"\)\?\.addEventListener\("submit"/);
+    assert.match(source, /sentScrollY = Number\.isFinite\(win\.scrollY\)/);
+    assert.match(source, /const vertical = !matches\(TWO_COLUMNS_QUERY\) && !reading && around;/);
+    assert.match(source, /mapStillWanted\(atlasCard \? atlasCard\.getBoundingClientRect\(\) : null, viewHeight, win\.scrollY, sentScrollY\)/);
   });
 });
 

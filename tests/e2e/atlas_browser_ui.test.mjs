@@ -7,7 +7,13 @@
  *  - F7: on a phone (390x844) a reply scrolls the map to the first place it lit and the page to the map
  *    (unless the visitor is reading the conversation), without moving focus; the answer stays one tap away;
  *  - F8: in forced-colors mode every fill and stroke of the map is a system colour and its text is readable;
- *  - F5: the arrow keys follow paths in the real page, near places first.
+ *  - F5: the arrow keys follow paths in the real page, near places first;
+ *  - F24: the pause notice stays in the flow, beside the heading or under it, and never covers the intro, the
+ *    honesty note, the heading or the chips, also with text enlarged to 150% and 200% (root font size) at
+ *    900, 1180, 1280 and 1440px;
+ *  - F36: on a phone, a visitor who scrolled away from the map while waiting is not pulled back to it;
+ *  - F37: on a 1366x768 laptop the start place's NAME is on the first screen after the hero link, too;
+ *  - F38: a short keyboard hint shows under the map while the map has focus, and moves nothing.
  *
  * Island names, teasers and terms are read from js/atlas-graph.js at run time: the only graph facts
  * written out here are the start place and the first suggestion.
@@ -19,9 +25,11 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { after, before, describe, it } from "node:test";
 
 import { ISLANDS, START_ID, FIRST_SUGGESTION, buildIndex } from "../../site/js/atlas-graph.js";
+import { NO_GLOSSARY_NOTICE } from "../../site/js/atlas.js";
 import { ARROW_KEYS, EDGE_STRIP, createArrowNav } from "../../site/js/atlas-map.js";
 import { classifyTerm, compileGlossary, matchReply } from "../../site/js/atlas-match.js";
 import * as support from "./atlas_browser_support.mjs";
@@ -135,6 +143,107 @@ async function assertInView(page, selector, what) {
 
 const R = (selector) => `(() => { const b = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return [b.left + scrollX, b.top + scrollY, b.width, b.height].map((v) => Math.round(v * 10) / 10); })()`;
 
+/** The pause messages of the chat bridge, read from its source (MESSAGES is not exported), plus the standing one. */
+function noticeMessages() {
+  const source = readFileSync(new URL("../../site/js/atlas-chat.js", import.meta.url), "utf8");
+  const block = /const MESSAGES = \{([\s\S]*?)\n\};/.exec(source);
+  assert.ok(block, "atlas-chat.js has a MESSAGES table");
+  const found = {};
+  for (const line of block[1].matchAll(/^\s*(\w+):\s*"([^"]+)",?\s*$/gm)) found[line[1]] = line[2];
+  for (const key of ["starting", "busy", "draft", "rejected", "rate", "unavailable", "noprogress"]) {
+    assert.equal(typeof found[key], "string", `the message "${key}" is in the table`);
+  }
+  return { ...found, noGlossary: NO_GLOSSARY_NOTICE };
+}
+
+/** Root font sizes a visitor may use (text-only zoom, a larger default size) and the widths F24 was seen at. */
+const TEXT_SIZES = [["100%", ""], ["150%", "24px"], ["200%", "32px"]];
+const NOTICE_WIDTHS = [900, 1180, 1280, 1440];
+
+/**
+ * Put the page at each width and text size and look at where the pause notice lies: it must meet
+ * none of the text around it, lie inside the card, be shown whole, be in the flow, and add no sideways
+ * scrolling to the page. Returns the problems found (empty when all is well) and how often the notice
+ * sat beside the heading and under it.
+ */
+async function noticeProblems(page, label) {
+  const problems = [];
+  const layouts = { beside: 0, below: 0 };
+  for (const [zoom, size] of TEXT_SIZES) {
+    for (const width of NOTICE_WIDTHS) {
+      await page.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      const at = `${label} at ${zoom}, ${width}px`;
+      const facts = await page.eval(`(async () => {
+        const root = document.documentElement;
+        if (${JSON.stringify(size)}) root.style.fontSize = ${JSON.stringify(size)}; else root.style.removeProperty("font-size");
+        const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        await frames();
+        const notice = document.querySelector("#atlas-notice");
+        const text = notice.textContent;
+        // The page's width with and without the message: a notice must not add sideways scrolling.
+        notice.textContent = "";
+        await frames();
+        const without = root.scrollWidth;
+        const introTopWithout = document.querySelector(".atlas-intro").getBoundingClientRect().top + scrollY;
+        notice.textContent = text;
+        await frames();
+        const introTop = document.querySelector(".atlas-intro").getBoundingClientRect().top + scrollY;
+        const box = (el) => { const b = el.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom }; };
+        const heading = document.createRange();
+        heading.selectNodeContents(document.querySelector("#atlas-title"));
+        const h = heading.getBoundingClientRect();
+        const positioned = [];
+        for (let el = notice; el && el.id !== "atlas"; el = el.parentElement) {
+          const s = getComputedStyle(el);
+          if (s.position !== "static") positioned.push(el.tagName.toLowerCase() + "#" + el.id + "." + el.className + " " + s.position);
+        }
+        const s = getComputedStyle(notice);
+        return {
+          text,
+          notice: box(notice),
+          card: box(document.querySelector("#atlas")),
+          around: {
+            intro: box(document.querySelector(".atlas-intro")),
+            honesty: box(document.querySelector(".atlas-honesty")),
+            heading: { l: h.left, t: h.top, r: h.right, b: h.bottom },
+            chips: box(document.querySelector("#atlas-suggest")),
+            toolbar: box(document.querySelector("#atlas-toolbar")),
+            map: box(document.querySelector("#atlas-map")),
+          },
+          positioned,
+          shown: s.display !== "none" && s.visibility === "visible" && Number(s.opacity) === 1,
+          clipped: notice.scrollWidth > notice.clientWidth + 1 || notice.scrollHeight > notice.clientHeight + 1,
+          introClipped: document.querySelector(".atlas-intro").scrollHeight > document.querySelector(".atlas-intro").clientHeight + 1,
+          rootSize: getComputedStyle(root).fontSize,
+          scrollWidth: root.scrollWidth,
+          scrollWidthWithout: without,
+          introShift: introTop - introTopWithout,
+        };
+      })()`);
+      const meets = (p, q) => p.l < q.r - 0.5 && q.l < p.r - 0.5 && p.t < q.b - 0.5 && q.t < p.b - 0.5;
+      const expectedSize = size || "16px";
+      if (facts.rootSize !== expectedSize) problems.push(`${at}: the root font size is ${facts.rootSize}, not ${expectedSize}`);
+      if (!facts.text) problems.push(`${at}: the notice is empty`);
+      if (!(facts.notice.r - facts.notice.l > 20 && facts.notice.b - facts.notice.t > 10)) problems.push(`${at}: the notice has no box ${JSON.stringify(facts.notice)}`);
+      for (const [name, other] of Object.entries(facts.around)) {
+        if (meets(facts.notice, other)) problems.push(`${at}: the notice (${JSON.stringify(facts.notice)}) lies over the ${name} (${JSON.stringify(other)})`);
+      }
+      const inside = facts.notice.l >= facts.card.l - 0.5 && facts.notice.r <= facts.card.r + 0.5 && facts.notice.t >= facts.card.t - 0.5 && facts.notice.b <= facts.card.b + 0.5;
+      if (!inside) problems.push(`${at}: the notice leaves the card`);
+      if (facts.positioned.length) problems.push(`${at}: the notice or a parent is out of the flow (${facts.positioned.join("; ")})`);
+      if (!facts.shown) problems.push(`${at}: the notice is not shown`);
+      if (facts.clipped) problems.push(`${at}: the text of the notice is cut off`);
+      if (facts.introClipped) problems.push(`${at}: the intro is cut off`);
+      if (facts.scrollWidth > facts.scrollWidthWithout) problems.push(`${at}: the notice adds sideways scrolling (${facts.scrollWidthWithout} -> ${facts.scrollWidth})`);
+      // At normal text size and from 900px up the notice has the room beside the heading: nothing moves when it speaks.
+      if (!size && Math.abs(facts.introShift) > 0.5) problems.push(`${at}: the text below moved ${facts.introShift}px when the notice appeared`);
+      if (facts.notice.t < facts.around.heading.b - 0.5) layouts.beside += 1;
+      else layouts.below += 1;
+    }
+  }
+  return { problems, layouts };
+}
+
 // ---------------------------------------------------------------------------------------------
 // suite
 // ---------------------------------------------------------------------------------------------
@@ -198,6 +307,9 @@ describe("Atlas on screen, with keys and in high contrast (real browser)", { ski
         inCard: notice.l >= card.l && notice.r <= card.r && notice.t >= card.t && notice.b <= card.b,
         position: getComputedStyle(document.querySelector("#atlas-notice")).position,
         height: notice.b - notice.t,
+        beside: notice.l >= text.right && notice.t < text.bottom && notice.b > text.top,
+        noticeBox: notice,
+        headingBox: { l: text.left, t: text.top, r: text.right, b: text.bottom },
       };
     })()`);
     assert.deepEqual(
@@ -205,7 +317,10 @@ describe("Atlas on screen, with keys and in high contrast (real browser)", { ski
       { withChip: false, withToolbar: false, withMap: false, withHeading: false, inCard: true },
       "the notice lies in the empty corner beside the heading, on nothing else",
     );
-    assert.equal(overlap.position, "absolute", "it takes no room of its own");
+    // Round 3 (F24): it is in the flow, in the heading row. At this size the row is no taller than the heading
+    // alone, which is why nothing above moved.
+    assert.equal(overlap.position, "static", "it is part of the page flow (never absolute: it must not be able to cover text)");
+    assert.ok(overlap.beside, `it sits beside the heading, in the same row (notice ${JSON.stringify(overlap.noticeBox)}, heading text ${JSON.stringify(overlap.headingBox)})`);
     release();
     await waitReply(page, stub, 1);
     await page.waitFor(`document.querySelector("#atlas-notice").textContent === ""`, { what: "the notice to clear" });
@@ -584,5 +699,276 @@ describe("Atlas on screen, with keys and in high contrast (real browser)", { ski
         assert.equal(await focused(), expected ?? island.id, `${key} from ${island.id}`);
       }
     }
+  });
+
+  // ---- F24 ----
+
+  it("F24. with text enlarged to 150% and 200% the pause notice covers neither the intro, the honesty note, the heading nor the chips (every message, 900-1440px)", async (t) => {
+    const messages = noticeMessages();
+    const { page, url } = await openSite(t, "f24-all-messages", { width: 1440, height: 900 });
+    await boot(page, url);
+    // The messages the chat bridge can speak and the standing one, as the controller writes them: textContent of the live region.
+    const problems = [];
+    const layouts = { beside: 0, below: 0 };
+    for (const [name, message] of Object.entries(messages)) {
+      await page.eval(`(document.querySelector("#atlas-notice").textContent = ${JSON.stringify(message)}, true)`);
+      const found = await noticeProblems(page, `"${name}"`);
+      problems.push(...found.problems);
+      layouts.beside += found.layouts.beside;
+      layouts.below += found.layouts.below;
+    }
+    assert.equal(problems.length, 0, `the notice lies in the flow and meets no text, in every combination (${problems.length} problems, the first ones):\n${problems.slice(0, 8).join("\n")}`);
+    // Not a vacuous pass: both layouts really occur (beside the heading where there is room, under it where there is not).
+    assert.ok(layouts.beside > 0, `the notice sits beside the heading somewhere (${JSON.stringify(layouts)})`);
+    assert.ok(layouts.below > 0, `and drops under the heading when text is enlarged (${JSON.stringify(layouts)})`);
+    // The longest ones are among those checked.
+    const longest = Object.values(messages).sort((p, q) => q.length - p.length).slice(0, 3);
+    assert.ok(longest.includes("The chat asked for a pause. Suggestions will be back shortly.") || longest.includes(NO_GLOSSARY_NOTICE));
+  });
+
+  it("F24. the notice the chat really speaks (a question running, a pause after a refusal) keeps clear of the text as well, and appears and goes without a trace", async (t) => {
+    const { stub, page, url } = await openSite(t, "f24-real-states", { width: 1440, height: 900 });
+    stub.reply = () => replyLighting(NEAR_START.slice(0, 1).map((island) => island.id)).reply;
+    await boot(page, url);
+
+    // A question runs.
+    const release = stub.holdStreams();
+    await followHeroLink(page);
+    await page.clickInView("#atlas-suggest .atlas-chip");
+    await stub.waitFor(() => stub.posts.length >= 1, { what: "the chip's POST" });
+    await page.waitFor(`/busy/.test(document.querySelector("#atlas-notice").textContent)`, { what: "the busy notice" });
+    const busy = await noticeProblems(page, "busy");
+    assert.equal(busy.problems.length, 0, busy.problems.slice(0, 8).join("\n"));
+    await page.eval(`(document.documentElement.style.removeProperty("font-size"), true)`);
+    await page.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    release();
+    await waitReply(page, stub, 1);
+    await page.waitFor(`document.querySelector("#atlas-notice").textContent === ""`, { what: "the notice to clear" });
+    const gone = await page.eval(`(() => { const b = document.querySelector("#atlas-notice").getBoundingClientRect(); return { height: b.height, width: b.width }; })()`);
+    assert.deepEqual(gone, { height: 0, width: 0 }, "an empty notice has no box at all");
+
+    // A refusal: the chat asks for a pause (409 from the server), and the notice says so for a while.
+    stub.outcome = () => 409;
+    await page.click("#atlas-suggest .atlas-chip");
+    await stub.waitFor(() => stub.posts.length >= 2, { what: "the second POST" });
+    await page.waitFor(`/pause/.test(document.querySelector("#atlas-notice").textContent)`, { what: "the pause notice", timeout: 15000 });
+    const rejected = await noticeProblems(page, "rejected");
+    assert.equal(rejected.problems.length, 0, rejected.problems.slice(0, 8).join("\n"));
+  });
+
+  it("F24. a phone puts the notice under the heading, in the flow, and the text below makes room for as long as it speaks", async (t) => {
+    const { stub, page, url } = await openSite(t, "f24-phone", { width: 390, height: 844 });
+    stub.reply = () => replyLighting(NEAR_START.slice(0, 1).map((island) => island.id)).reply;
+    await boot(page, url);
+    const introTop = () => page.eval(`document.querySelector(".atlas-intro").getBoundingClientRect().top + scrollY`);
+    const idle = await introTop();
+    const release = stub.holdStreams();
+    await page.click("#atlas-suggest .atlas-chip");
+    await stub.waitFor(() => stub.posts.length >= 1, { what: "the chip's POST" });
+    await page.waitFor(`document.querySelector("#atlas-notice").textContent.trim().length > 0`, { what: "the pause notice" });
+    const facts = await page.eval(`(() => {
+      const n = document.querySelector("#atlas-notice").getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(document.querySelector("#atlas-title"));
+      const h = range.getBoundingClientRect();
+      const intro = document.querySelector(".atlas-intro").getBoundingClientRect();
+      return { position: getComputedStyle(document.querySelector("#atlas-notice")).position, noticeTop: n.top, noticeBottom: n.bottom, headingBottom: h.bottom, introTop: intro.top };
+    })()`);
+    assert.equal(facts.position, "static");
+    assert.ok(facts.noticeTop >= facts.headingBottom - 0.5, "under the heading");
+    assert.ok(facts.noticeBottom <= facts.introTop + 0.5, "and above the intro, covering neither");
+    assert.ok((await introTop()) > idle + 20, "the text below makes room for it");
+    release();
+    await waitReply(page, stub, 1);
+    await page.waitFor(`document.querySelector("#atlas-notice").textContent === ""`, { what: "the notice to clear" });
+    assert.ok(Math.abs((await introTop()) - idle) <= 1, "and takes it back when the notice goes");
+  });
+
+  // ---- F36 ----
+
+  it("F36. 390x844: a visitor who scrolls to the top while waiting is not pulled down to the map when the reply lands (the panel still turns to the lit place)", async (t) => {
+    const far = [...ISLANDS].filter(ordinary).sort((p, q) => q.x - p.x)[0];
+    const { reply, lit } = replyLighting([far.id]);
+    const first = lit.find((id) => id !== START_ID);
+    const { stub, page, url } = await openSite(t, "f36-scrolled-away", { width: 390, height: 844 });
+    stub.reply = () => reply;
+    await boot(page, url);
+    await followHeroLink(page);
+    const atMap = await page.eval("scrollY");
+    assert.ok(atMap > 1000, `the map lies far down the page in one column (${atMap}px)`);
+
+    const release = stub.holdStreams();
+    await page.clickInView("#atlas-suggest .atlas-chip");
+    await stub.waitFor(() => stub.posts.length >= 1, { what: "the chip's POST" });
+    // The visitor loses patience and goes back to the top of the page.
+    await page.eval(`(window.scrollTo({ top: 0, left: 0, behavior: "instant" }), true)`);
+    await settle(page);
+    assert.equal(await page.eval("scrollY"), 0);
+    assert.equal(await page.eval(`document.querySelector("#atlas").getBoundingClientRect().top > innerHeight`), true, "the Atlas card is out of view");
+    release();
+    await waitReply(page, stub, 1);
+    await page.waitFor(`document.querySelector("#atlas-map").scrollLeft > 0`, { what: "the map panel to turn to the lit place", timeout: 8000 });
+    await sleep(1200); // a smooth scroll to the map would be under way, or done, by now
+    const after = await page.eval(`({ scrollY, litPlace: document.querySelector('#atlas-map [data-id="${first}"]').classList.contains("is-visited") })`);
+    assert.equal(after.litPlace, true, "the reply did light its place");
+    assert.equal(after.scrollY, 0, "and the visitor is left at the top of the page");
+  });
+
+  it("F36. 390x844: a visitor who stays where they asked is still taken to the lit place", async (t) => {
+    const far = [...ISLANDS].filter(ordinary).sort((p, q) => q.x - p.x)[0];
+    const { reply, lit } = replyLighting([far.id]);
+    const first = lit.find((id) => id !== START_ID);
+    const { stub, page, url } = await openSite(t, "f36-stays", { width: 390, height: 844 });
+    stub.reply = () => reply;
+    await boot(page, url);
+    await followHeroLink(page);
+    const release = stub.holdStreams();
+    await page.clickInView("#atlas-suggest .atlas-chip");
+    await stub.waitFor(() => stub.posts.length >= 1, { what: "the chip's POST" });
+    // A small scroll while waiting (less than half a screen) changes nothing.
+    await page.eval(`(window.scrollBy({ top: -150, left: 0, behavior: "instant" }), true)`);
+    await settle(page);
+    release();
+    await waitReply(page, stub, 1);
+    await page.waitFor(
+      `(() => {
+        const header = document.querySelector(".site-header").getBoundingClientRect().bottom;
+        const r = document.querySelector('#atlas-map [data-id="${first}"] .atlas-disc').getBoundingClientRect();
+        const panel = document.querySelector("#atlas-map").getBoundingClientRect();
+        return r.top >= header && r.bottom <= innerHeight && r.left >= panel.left && r.right <= panel.right;
+      })()`,
+      { what: `${first} to be in view`, timeout: 8000 },
+    );
+  });
+
+  // ---- F37 ----
+
+  it("F37. 1366x768, after the hero link: the start place's NAME is on screen with its disc, the counter, the first chip and the edge dragon's caption, before and after the first reply", async (t) => {
+    const { stub, page, url } = await openSite(t, "f37-laptop", { width: 1366, height: 768 });
+    stub.reply = () => replyLighting(NEAR_START.slice(0, 1).map((island) => island.id)).reply;
+    await boot(page, url);
+    await followHeroLink(page);
+    const parts = [
+      [`#atlas-map [data-id="${START_ID}"] .atlas-disc`, "the start place"],
+      [`#atlas-map [data-id="${START_ID}"] .atlas-label`, "the start place's name"],
+      ["#atlas-count", "the counter"],
+      ["#atlas-suggest .atlas-chip", "the first chip"],
+      [".atlas-ed-caption", "the edge dragon's caption"],
+      [".atlas-ed-body", "the edge dragon"],
+    ];
+    const tops = [];
+    for (const [selector, what] of parts) tops.push((await assertInView(page, selector, what)).top);
+    const label = await page.eval(BOX(`#atlas-map [data-id="${START_ID}"] .atlas-label`));
+    assert.ok(label.bottom <= 768, `the name ends above the bottom of the window (${Math.round(label.bottom)} <= 768)`);
+    assert.equal(await page.eval(`document.querySelector("#atlas-map [data-id='${START_ID}'] .atlas-label").textContent`), INDEX.byId.get(START_ID).name);
+
+    // The tighter spacing of a short window keeps the heading row as tall as the notice needs: a question running moves nothing.
+    const release = stub.holdStreams();
+    await page.clickInView("#atlas-suggest .atlas-chip");
+    await stub.waitFor(() => stub.posts.length >= 1, { what: "the chip's POST" });
+    await page.waitFor(`document.querySelector("#atlas-notice").textContent.trim().length > 0`, { what: "the pause notice" });
+    for (const [at, [selector, what]] of parts.entries()) {
+      const box = await assertInView(page, selector, `${what} while the notice speaks`);
+      assert.ok(Math.abs(box.top - tops[at]) <= 0.5, `${what} did not move when the notice appeared (${Math.round(tops[at])} -> ${Math.round(box.top)})`);
+    }
+    release();
+    await waitReply(page, stub, 1);
+    for (const [at, [selector, what]] of parts.entries()) {
+      const box = await assertInView(page, selector, `${what} after the first reply`);
+      assert.ok(Math.abs(box.top - tops[at]) <= 3, `${what} did not move (${Math.round(tops[at])} -> ${Math.round(box.top)})`);
+    }
+  });
+
+  for (const [width, height] of [[1280, 720], [1536, 864], [1024, 768]]) {
+    it(`F37. ${width}x${height}, after the hero link: the start place's name is on screen as well`, async (t) => {
+      const { page, url } = await openSite(t, `f37-${width}x${height}`, { width, height });
+      await boot(page, url);
+      await followHeroLink(page);
+      for (const [selector, what] of [
+        [`#atlas-map [data-id="${START_ID}"] .atlas-disc`, "the start place"],
+        [`#atlas-map [data-id="${START_ID}"] .atlas-label`, "its name"],
+        ["#atlas-count", "the counter"],
+        ["#atlas-suggest .atlas-chip", "the first chip"],
+        [".atlas-ed-caption", "the edge dragon's caption"],
+      ]) {
+        await assertInView(page, selector, what);
+      }
+    });
+  }
+
+  // ---- F38 ----
+
+  it("F38. a short keyboard hint shows under the map while the map has focus, moves nothing, and is not a live region", async (t) => {
+    const HINT = "Arrow keys follow paths, repeat an arrow to try the next place; PageUp and PageDown step through every place.";
+    const { page, url } = await openSite(t, "f38-keyhint", { width: 1440, height: 900 });
+    await boot(page, url);
+    const read = () => page.eval(`(() => {
+      const hint = document.querySelector(".atlas-keyhint");
+      const r = (el) => { const b = el.getBoundingClientRect(); return [b.left, b.top, b.width, b.height].map((v) => Math.round(v * 10) / 10); };
+      const s = getComputedStyle(hint);
+      return {
+        text: hint.textContent,
+        hiddenAttribute: hint.hidden,
+        visibility: s.visibility,
+        display: s.display,
+        box: r(hint),
+        map: r(document.querySelector("#atlas-map")),
+        toolbar: r(document.querySelector("#atlas-toolbar")),
+        suggest: r(document.querySelector("#atlas-suggest")),
+        live: !!hint.closest("[aria-live], [role=status], [role=alert], [role=log]"),
+        notice: document.querySelector("#atlas-notice").textContent,
+        announce: document.querySelector("#atlas-announce").textContent,
+        focusInMap: !!document.querySelector("#atlas-map").querySelector(":focus"),
+        descLen: document.querySelector("#atlas-map svg desc").textContent.length,
+        desc: document.querySelector("#atlas-map svg desc").textContent,
+      };
+    })()`);
+
+    const idle = await read();
+    assert.equal(idle.text, HINT);
+    assert.equal(idle.hiddenAttribute, false, "the script shows it (without a script it stays hidden)");
+    assert.equal(idle.visibility, "hidden", "invisible while the map has no focus");
+    assert.equal(idle.focusInMap, false);
+    assert.ok(idle.box[3] >= 15, `but its line is kept (${idle.box[3]}px high)`);
+    assert.ok(idle.box[1] >= idle.map[1] + idle.map[3] - 0.5, "it lies under the map, not over it");
+    assert.equal(idle.live, false, "it is plain text, not a live region");
+    assert.ok(/Arrow keys/.test(idle.desc) && /Page Down and Page Up/.test(idle.desc), "the SVG description is kept");
+
+    // Keyboard focus into the map: Tab-like focus on a place the visitor can reach.
+    await page.press("Shift");
+    await page.eval(`(document.querySelector('#atlas-map [data-id="${START_ID}"]').focus(), true)`);
+    const focused = await read();
+    assert.equal(focused.focusInMap, true);
+    assert.equal(focused.visibility, "visible", "visible while the map has focus");
+    assert.deepEqual(focused.box, idle.box, "the hint did not move");
+    for (const part of ["map", "toolbar", "suggest"]) assert.deepEqual(focused[part], idle[part], `${part} did not move`);
+    assert.equal(focused.notice, idle.notice, "the notice was not touched");
+    assert.equal(focused.announce, idle.announce, "and nothing was said through the spoken summary");
+    assert.equal(focused.live, false);
+
+    // Arrow keys still work, and the hint stays while the focus stays in the map.
+    await page.press("ArrowRight");
+    assert.equal((await read()).visibility, "visible");
+
+    // Focus leaves the map: the hint goes, its line stays.
+    await page.eval(`(document.querySelector("#atlas-suggest .atlas-chip").focus(), true)`);
+    const left = await read();
+    assert.equal(left.focusInMap, false);
+    assert.equal(left.visibility, "hidden");
+    assert.deepEqual(left.box, idle.box);
+
+    // The list view has no map to hint about.
+    await page.click("#atlas-view-list");
+    await page.waitFor(`document.querySelector("#atlas-map").hidden`, { what: "the list view" });
+    assert.equal((await read()).display, "none", "no hint (and no blank line) in the list view");
+    await page.click("#atlas-view-map");
+    assert.notEqual((await read()).display, "none");
+  });
+
+  it("F38. the hint is read from a page without the script as nothing: it is hidden until the script runs", async (t) => {
+    const { page, url } = await openSite(t, "f38-noscript", { width: 1440, height: 900, scriptsDisabled: true });
+    await page.goto(url);
+    const facts = await page.eval(`(() => { const el = document.querySelector(".atlas-keyhint"); const r = el.getBoundingClientRect(); return { hidden: el.hidden, width: r.width, height: r.height }; })()`);
+    assert.deepEqual(facts, { hidden: true, width: 0, height: 0 });
   });
 });
