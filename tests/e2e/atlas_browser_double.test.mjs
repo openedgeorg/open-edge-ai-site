@@ -8,11 +8,15 @@
  * #phase texts, the sequence of #history lists, the message box, the Send and provider controls,
  * what is kept in sessionStorage, and every request the page made.
  *
- * One scenario plays TWO turns: turn 1 over the event stream, turn 2 with /events answering 404
- * and /history lagging (it still lists the older turns and the new question, but not the new reply,
- * for a while). That is where the working tree's acceptance of /history shows: a client that waits
- * for the NEW reply and one that takes any earlier assistant row paint different lists and reach
- * "ready" at different times. A double that is wrong there fails this file (see the scenario).
+ * Two scenarios play TWO turns: turn 1 over the event stream, turn 2 with /events answering 404
+ * and /history lagging for a while. They differ in what the lagging /history lists:
+ *  - [Q1, A1, Q2]: the older turns and the new question, but not the new reply;
+ *  - [Q1, A1]: the older turns only, not even the new question (stub.historyHidesNewQuestion).
+ * That is where the working tree's acceptance of /history shows: a client that waits for the NEW
+ * reply, one that waits for the new QUESTION to be listed, and one that takes any earlier assistant
+ * row paint different lists and reach "ready" at different times. A double that is wrong there
+ * fails this file (see the scenarios): one that waits for the sent question passes the first shape
+ * and only the second one catches it.
  *
  * It exists so that the browser suites can run on the double (and pass on a clean checkout)
  * without the double being allowed to drift away from the client it stands in for. Needs a Chrome
@@ -98,7 +102,7 @@ function comparableRequests(stub, norm) {
     }));
 }
 
-/** Play one scenario against one client and return everything observable. */
+/** Play one scenario against one client: everything observable, and what the stub's /history answered, in order. */
 async function play(chat, label, scenario) {
   const site = await startSite({ chat });
   const page = await browser.openPage({ label: `${label} (${chat})`, diagnostics });
@@ -113,7 +117,8 @@ async function play(chat, label, scenario) {
     };
     await scenario({ page, stub: site.stub, url: `${site.origin}/`, take });
     observed.requests = comparableRequests(site.stub, norm);
-    return observed;
+    // What /history answered is only used to prove the scenario played the shape it claims; it is not compared.
+    return { observed, historyReads: site.stub.historyReads.map((read) => read.slice()) };
   } finally {
     await page.close();
     await site.close();
@@ -123,6 +128,77 @@ async function play(chat, label, scenario) {
 async function ready(page, url) {
   await page.goto(url);
   await page.waitFor(`document.querySelector("#phase").textContent.trim() === "ready"`, { what: "the chat to boot" });
+}
+
+const FIRST_TURN_READ = ["user: first question", "assistant: First answer, streamed."];
+
+/**
+ * Two turns, the second with no event stream while /history lags. Turn 2's lag lists either the older
+ * turns and the new question ([Q1, A1, Q2]) or the older turns only ([Q1, A1]); both are played.
+ * @param {{hideNewQuestion: boolean}} shape
+ */
+function twoTurns({ hideNewQuestion }) {
+  const listing = hideNewQuestion ? "does not list the new question yet" : "already lists the new question";
+  return [
+    `a second question with no event stream while /history lags and ${listing}: the lists, the phases and the requests agree`,
+    async ({ page, stub, url, take }) => {
+      stub.reply = (message, n) => (n === 1 ? "First answer, streamed." : "Second answer, late in the history.");
+      await ready(page, url);
+      await page.click("#draft");
+      await page.type("first question");
+      await page.click("#send");
+      await page.waitFor(`document.querySelector("#phase").textContent === "ready" && document.querySelectorAll("#history li").length === 2`, {
+        timeout: 15000,
+        what: "turn 1 answered over the stream and the chat ready",
+      });
+      await take("turn 1");
+      // Turn 2: no stream at all, and /history keeps listing the older turns (with or without the new question,
+      // never the new reply) for 2.6 s. The history is polled every 2 s.
+      stub.eventsMode = "404";
+      stub.historyDelayMs = 2600;
+      stub.historyHidesNewQuestion = hideNewQuestion;
+      await page.click("#draft");
+      await page.type("second question");
+      await page.click("#send");
+      await stub.waitFor(() => stub.posts.length === 2, { what: "the second question to be posted" });
+      await page.waitFor(
+        `document.querySelector("#phase").textContent === "ready" && window.__trace.phase.filter((text) => text === "running").length >= 2`,
+        { timeout: 20000, what: "the second turn to run and the chat to be ready again" },
+      );
+      await take("turn 2 settled");
+      // Past the lag: a client that took the older list does not refresh it; one that waited has the late reply by now.
+      await sleep(stub.historyDelayMs + 800);
+      await take("turn 2 later");
+    },
+    (real, historyReads) => {
+      // The scenario really played two turns (two identical but wrong runs would prove nothing).
+      const messages = real.requests.filter((request) => request.method === "POST" && request.url.endsWith("/messages"));
+      assert.deepEqual(
+        messages.map((request) => request.body.message),
+        ["first question", "second question"],
+      );
+      assert.equal(real.requests.filter((request) => request.url.endsWith("/events")).length, 2, "one stream request per turn");
+      assert.ok(real.requests.filter((request) => request.url.endsWith("/history")).length >= 2, "the history was read after each turn");
+      assert.deepEqual(real["turn 1"].rows, ["first question", "First answer, streamed."]);
+      assert.equal(real["turn 2 settled"].phase, "ready");
+      assert.equal(real["turn 2 settled"].saved.requestId, null, "nothing is pending at the end");
+      // ... and /history really lagged in the shape this scenario names.
+      const lagging = historyReads.filter((read) => read.length >= 2 && !read.includes("assistant: Second answer, late in the history."));
+      if (hideNewQuestion) {
+        assert.ok(
+          historyReads.filter((read) => JSON.stringify(read) === JSON.stringify(FIRST_TURN_READ)).length >= 2,
+          "after turn 1, /history was read again and still listed the older turns only",
+        );
+        assert.ok(!lagging.some((read) => read.includes("user: second question")), "the lag never lists the new question");
+      } else {
+        assert.ok(
+          lagging.some((read) => JSON.stringify(read) === JSON.stringify([...FIRST_TURN_READ, "user: second question"])),
+          "the lag lists the older turns and the new question, but not the new reply",
+        );
+        assert.ok(real["turn 2 settled"].rows.includes("second question"), "the second question is in the list");
+      }
+    },
+  ];
 }
 
 const SCENARIOS = [
@@ -228,51 +304,8 @@ const SCENARIOS = [
       await take("caught up");
     },
   ],
-  [
-    "a second question with no event stream while /history lags: the lists, the phases and the requests agree",
-    async ({ page, stub, url, take }) => {
-      stub.reply = (message, n) => (n === 1 ? "First answer, streamed." : "Second answer, late in the history.");
-      await ready(page, url);
-      await page.click("#draft");
-      await page.type("first question");
-      await page.click("#send");
-      await page.waitFor(`document.querySelector("#phase").textContent === "ready" && document.querySelectorAll("#history li").length === 2`, {
-        timeout: 15000,
-        what: "turn 1 answered over the stream and the chat ready",
-      });
-      await take("turn 1");
-      // Turn 2: no stream at all, and /history keeps listing the older turns and the new question
-      // (but not the new reply) for 2.6 s. The history is polled every 2 s.
-      stub.eventsMode = "404";
-      stub.historyDelayMs = 2600;
-      await page.click("#draft");
-      await page.type("second question");
-      await page.click("#send");
-      await stub.waitFor(() => stub.posts.length === 2, { what: "the second question to be posted" });
-      await page.waitFor(
-        `document.querySelector("#phase").textContent === "ready" && window.__trace.phase.filter((text) => text === "running").length >= 2`,
-        { timeout: 20000, what: "the second turn to run and the chat to be ready again" },
-      );
-      await take("turn 2 settled");
-      // Past the lag: a client that took the older list does not refresh it; one that waited has the late reply by now.
-      await sleep(stub.historyDelayMs + 800);
-      await take("turn 2 later");
-    },
-    (real) => {
-      // The scenario really played two turns (two identical but wrong runs would prove nothing).
-      const messages = real.requests.filter((request) => request.method === "POST" && request.url.endsWith("/messages"));
-      assert.deepEqual(
-        messages.map((request) => request.body.message),
-        ["first question", "second question"],
-      );
-      assert.equal(real.requests.filter((request) => request.url.endsWith("/events")).length, 2, "one stream request per turn");
-      assert.ok(real.requests.filter((request) => request.url.endsWith("/history")).length >= 2, "the history was read after each turn");
-      assert.deepEqual(real["turn 1"].rows, ["first question", "First answer, streamed."]);
-      assert.equal(real["turn 2 settled"].phase, "ready");
-      assert.ok(real["turn 2 settled"].rows.includes("second question"), "the second question is in the list");
-      assert.equal(real["turn 2 settled"].saved.requestId, null, "nothing is pending at the end");
-    },
-  ],
+  twoTurns({ hideNewQuestion: false }),
+  twoTurns({ hideNewQuestion: true }),
 ];
 
 describe("the chat double paints like the working tree's chat client (browser level)", { skip: SKIP, timeout: 240000 }, () => {
@@ -286,12 +319,12 @@ describe("the chat double paints like the working tree's chat client (browser le
 
   for (const [name, scenario, verify] of SCENARIOS) {
     it(name, async () => {
-      const real = await play("real", name, scenario);
-      const double = await play("double", name, scenario);
+      const { observed: real, historyReads } = await play("real", name, scenario);
+      const { observed: double } = await play("double", name, scenario);
       // Sanity: the scenario really happened (a comparison of two empty runs proves nothing).
       assert.ok(Object.keys(real).length >= 2, "the scenario took at least one snapshot");
       assert.ok(real.requests.length >= 1, "the page talked to the stub");
-      if (verify) verify(real);
+      if (verify) verify(real, historyReads);
       assert.deepEqual(double, real);
     });
   }
