@@ -54,6 +54,8 @@ const index = buildIndex();
 const dragons = ISLANDS.filter((island) => island.region === "dragons");
 const openIslands = ISLANDS.filter((island) => island.status === "open");
 const contestedIslands = ISLANDS.filter((island) => island.status === "contested");
+/** True when an end of the path is a contested or an open island. */
+const flaggedEnds = (edge) => [edge.a, edge.b].some((id) => ["open", "contested"].includes(byId.get(id).status));
 
 /** @param {unknown} value */
 function isNonEmptyString(value) {
@@ -95,7 +97,34 @@ function embeddedSource(brain) {
   return brain.subarray(start, ends[0].index);
 }
 
-/** The squashed preamble and sections 1..10 of the summary, and the squashed bullets of section 10. */
+/** The squashed text of every `- **` bullet of one section's raw text: a bullet runs to the next one or to the section's end. */
+function bulletsOf(raw) {
+  const starts = [...raw.matchAll(/^- \*\*/gm)].map((match) => match.index);
+  return starts.map((start, position) =>
+    squash(raw.slice(start, position + 1 < starts.length ? starts[position + 1] : raw.length)),
+  );
+}
+
+/**
+ * The passages of the summary that make up the mechanism its preamble says awaits incorporation (F45).
+ * The preamble names it in one sentence ("The <epoch price-catalogue> mechanism in section <N> awaits
+ * incorporation ..."): the section is N, and the mechanism is the bullets of that section that talk
+ * about the thing the sentence names (its last word, here the catalogue). Read from the brain, never
+ * from a list in this file. `passages` is the sentence plus those bullets.
+ */
+function mechanismOf(preambleRaw, sections) {
+  const preamble = squash(preambleRaw);
+  const found = preamble.match(/\bThe ([\w -]+?) mechanism in section (\d+) awaits incorporation\b[^.]*\./);
+  assert.ok(found, "the preamble no longer has the sentence 'The ... mechanism in section N awaits incorporation ...'");
+  const section = Number(found[2]);
+  const noun = found[1].split(/[\s-]+/).pop();
+  const bullets = bulletsOf(sections.get(section));
+  const word = new RegExp(`\\b${noun}\\b`, "i");
+  const indexes = bullets.flatMap((bullet, position) => (word.test(bullet) ? [position] : []));
+  return { section, noun, sentence: found[0], bullets, indexes, passages: [found[0], ...indexes.map((i) => bullets[i])] };
+}
+
+/** The squashed preamble and sections 1..10 of the summary, the squashed bullets of section 10 and the awaiting mechanism. */
 function loadNotes() {
   const { release, file } = brainPath();
   const source = embeddedSource(readFileSync(file));
@@ -110,24 +139,50 @@ function loadNotes() {
     const stop = position + 1 < headings.length ? headings[position + 1].index : text.length;
     sections.set(Number(heading[1]), text.slice(heading.index, stop));
   });
-  const tail = sections.get(10);
-  const starts = [...tail.matchAll(/^- \*\*/gm)].map((match) => match.index);
-  const bullets = starts.map((start, position) =>
-    squash(tail.slice(start, position + 1 < starts.length ? starts[position + 1] : tail.length)),
-  );
+  const preambleRaw = text.slice(0, headings[0].index);
   return {
     release,
     sha256: createHash("sha256").update(source).digest("hex"),
     bytes: source.length,
-    preamble: squash(text.slice(0, headings[0].index)),
+    preamble: squash(preambleRaw),
     sections: new Map([...sections].map(([number, body]) => [number, squash(body)])),
-    bullets,
+    bullets: bulletsOf(sections.get(10)),
+    mechanism: mechanismOf(preambleRaw, sections),
     awaitsIncorporation: (text.match(/awaits incorporation/g) ?? []).length,
   };
 }
 
 const notes = loadNotes();
 const fixture = JSON.parse(readFileSync(repo("tests", "fixtures", "atlas-trace.json"), "utf8"));
+
+/**
+ * Which paths rest on the mechanism that the preamble says awaits incorporation, and which of them fail to say so (F31, F45).
+ * A path rests on it when its quotation lies inside the preamble sentence or inside one of the section's bullets that talk
+ * about it, whatever words the quotation uses. A path that ends at a dragon is exempt from carrying "awaits incorporation"
+ * itself, because the dragon's own qualifier is required of it by the open-island rule.
+ * @param {typeof EDGES} edges
+ * @param {(edge: {a: string, b: string}) => string} anchorOf the squashed quotation behind a path
+ */
+function mechanismFindings(edges, anchorOf) {
+  const { mechanism } = notes;
+  const inside = (anchor, passage) => anchor !== "" && passage.includes(anchor);
+  const section = notes.sections.get(mechanism.section);
+  const open = new Set(openIslands.map((island) => island.id));
+  const resting = edges.filter((edge) => mechanism.passages.some((passage) => inside(anchorOf(edge), passage)));
+  const touchesDragon = (edge) => open.has(edge.a) || open.has(edge.b);
+  return {
+    resting,
+    // A quotation in the section that lies in no single bullet would slip between two of them.
+    straddling: edges.filter(
+      (edge) => inside(anchorOf(edge), section) && !mechanism.bullets.some((bullet) => inside(anchorOf(edge), bullet)),
+    ),
+    unqualified: resting.filter((edge) => !touchesDragon(edge) && !edge.label.includes(CONTESTED_LABEL)),
+    dragonEndsWithoutQualifier: resting.filter((edge) => touchesDragon(edge) && !QUALIFIER.test(edge.label)),
+  };
+}
+
+/** The squashed quotation behind a path, from the trace fixture. */
+const fixtureAnchorOf = (edge) => squash(fixture.edges[edgeKey(edge.a, edge.b)] ?? "");
 
 /** Every string a visitor could see or that feeds the matcher, with a label for failure messages. */
 function textFields() {
@@ -307,22 +362,41 @@ describe("edges", () => {
     );
   });
 
-  it("makes every path whose quotation is about the price catalogue say it awaits incorporation (F31)", () => {
-    const open = new Set(openIslands.map((island) => island.id));
-    const aboutCatalogue = EDGES.filter((edge) => /catalogue/i.test(fixture.edges[edgeKey(edge.a, edge.b)] ?? ""));
-    assert.ok(aboutCatalogue.length >= 1, "no path quotes the price catalogue");
-    // A path that ends at a dragon already carries that dragon's own qualifier (checked above): it is exempt here.
-    const bad = aboutCatalogue.filter(
-      (edge) => !open.has(edge.a) && !open.has(edge.b) && !edge.label.includes(CONTESTED_LABEL),
+  it("makes every path that rests on the awaiting price-catalogue mechanism say so, by the bullet its quotation sits in (F31, F45)", () => {
+    const { mechanism } = notes;
+    // The preamble sentence names the mechanism and the bullets that talk about it are read from the brain. Pinned: they
+    // are the first three bullets of section 4 (the signed catalogue, the prices fixed for the epoch, the charges
+    // traceable to the accepted catalogue). If the notes change that, this fails and the rule must be re-read.
+    assert.equal(mechanism.section, 4, "the preamble no longer says that section 4 holds the mechanism");
+    assert.deepEqual(mechanism.indexes, [0, 1, 2], "the mechanism is no longer the first three bullets of section 4");
+    const found = mechanismFindings(EDGES, fixtureAnchorOf);
+    const names = (list) => list.map((edge) => `${edge.a}|${edge.b}: ${edge.label}`);
+    assert.deepEqual(names(found.straddling), [], "a quotation in section 4 must lie inside one bullet");
+    assert.ok(found.resting.length >= 3, `only ${found.resting.length} paths rest on the price-catalogue mechanism`);
+    assert.deepEqual(names(found.unqualified), [], "a path that rests on the price-catalogue mechanism must say it awaits incorporation");
+    assert.deepEqual(names(found.dragonEndsWithoutQualifier), [], "the dragon end of such a path needs its own qualifier");
+  });
+
+  it("catches a path that loses its qualifier, or is re-anchored on a mechanism bullet without one (F45 regression cases)", () => {
+    const { mechanism } = notes;
+    const names = (list) => list.map((edge) => `${edge.a}|${edge.b}`);
+    const clean = mechanismFindings(EDGES, fixtureAnchorOf);
+    const settledResting = clean.resting.filter((edge) => edge.label.includes(CONTESTED_LABEL) && !flaggedEnds(edge));
+    assert.ok(settledResting.length >= 1, "no settled path rests on the mechanism");
+    // M1: one such path loses its qualifier.
+    const victim = settledResting[0];
+    const stripped = EDGES.map((edge) => (edge === victim ? { ...edge, label: edge.label.split(CONTESTED_LABEL).join("") } : edge));
+    assert.deepEqual(names(mechanismFindings(stripped, fixtureAnchorOf).unqualified), names([victim]));
+    // M3: a settled path with no qualifier is re-anchored on the lead-in of the second bullet (no word "catalogue" in it).
+    const lead = mechanism.bullets[1].match(/^- \*\*(.+?):\*\*/);
+    assert.ok(lead, "the second bullet has no bold lead-in");
+    assert.ok(!/catalogue/i.test(lead[1]), "the lead-in used for the regression case must not name the catalogue");
+    const settled = EDGES.find(
+      (edge) => !flaggedEnds(edge) && !clean.resting.includes(edge) && !edge.label.includes(CONTESTED_LABEL),
     );
-    assert.deepEqual(
-      bad.map((edge) => `${edge.a}|${edge.b}: ${edge.label}`),
-      [],
-      "a path that rests on the price catalogue must say it awaits incorporation",
-    );
-    for (const edge of aboutCatalogue.filter((candidate) => open.has(candidate.a) || open.has(candidate.b))) {
-      assert.match(edge.label, QUALIFIER, `${edge.a}|${edge.b}: the dragon end needs its own qualifier`);
-    }
+    assert.ok(settled, "no settled path outside the mechanism");
+    const reanchored = (edge) => (edge === settled ? squash(lead[1]) : fixtureAnchorOf(edge));
+    assert.deepEqual(names(mechanismFindings(EDGES, reanchored).unqualified), names([settled]));
   });
 });
 

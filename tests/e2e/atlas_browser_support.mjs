@@ -835,6 +835,14 @@ export function createStub() {
     eventsMode: "sse",
     /** With eventsMode "404": how long after the POST the reply shows up in /history (a lagging history), in ms. */
     historyDelayMs: 0,
+    /**
+     * During that lag, /history does not list the new turn at all, user row included (a history that is
+     * behind the write path: it still answers with the older turns only). Off by default, so /history then
+     * lists the new question as soon as it is accepted and only the reply lags.
+     */
+    historyHidesNewQuestion: false,
+    /** What each GET /history answered, in order: a list of "role: text" strings per read. */
+    historyReads: [],
     async waitFor(predicate, { timeout = 10000, what = "stub condition" } = {}) {
       const deadline = Date.now() + timeout;
       while (!predicate()) {
@@ -999,9 +1007,11 @@ async function handle(req, res, stub, mode) {
   if (method === "GET" && pathname === "/conversations/conv-1/history") {
     const items = [];
     for (const turn of stub.turns) {
+      if (stub.historyHidesNewQuestion && Date.now() < turn.visibleAt) continue;
       items.push({ role: "user", text: turn.user });
       if (turn.assistant !== null && Date.now() >= turn.visibleAt) items.push({ role: "assistant", text: turn.assistant });
     }
+    stub.historyReads.push(items.map((item) => `${item.role}: ${item.text}`));
     json(res, 200, { items });
     return;
   }

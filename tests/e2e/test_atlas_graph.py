@@ -12,6 +12,9 @@ the preamble and sections 1..10, and checks the fixture and the graph against th
   list in this file) is covered by a dragon that cites it;
 * every open island rests on a passage that the summary itself calls open, and every path to a
   contested or open island says so in its label;
+* every path whose quotation lies in a bullet of the mechanism that the preamble says awaits
+  incorporation (found from the preamble sentence, not from the word "catalogue" in the quotation)
+  says "awaits incorporation" in its label;
 * the brain still equals the live notes file. This fails on drift. Skip it only when the file is
   absent or ESP_ALLOW_NOTES_DRIFT=1 (the same opt-out as tests/unit/test_local_draft_brain.py).
 
@@ -27,8 +30,8 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -64,6 +67,8 @@ END_SOURCE = re.compile(rb"^----- END SOURCE [^\n]* -----\n", re.MULTILINE)
 HEADING = re.compile(r"^## (\d+)\. ", re.MULTILINE)
 BULLET_START = re.compile(r"^- \*\*", re.MULTILINE)
 BLANK_LINE = re.compile(r"\n[ \t]*\n")
+# The preamble sentence that names the mechanism awaiting incorporation, and the section that holds it.
+MECHANISM_SENTENCE = re.compile(r"\bThe ([\w -]+?) mechanism in section (\d+) awaits incorporation\b[^.]*\.")
 # What an edge that touches a contested or an open island must say.
 QUALIFIER = re.compile(r"\b(?:awaits incorporation|still open|open|not ratified|undefined|deferred|unsealed)\b", re.I)
 # Words with which the summary itself marks a passage as not settled.
@@ -242,6 +247,20 @@ def split_sections(source: str) -> tuple[str, dict[int, str]]:
 
 
 @dataclass(frozen=True)
+class Mechanism:
+    """What the preamble says awaits incorporation: its sentence and the bullets of its section that are about it."""
+
+    section: int
+    sentence: str
+    bullets: tuple[str, ...]  # every bullet of the section, normalised
+    indexes: tuple[int, ...]  # which of those bullets talk about the mechanism
+
+    @property
+    def passages(self) -> tuple[str, ...]:
+        return (self.sentence, *(self.bullets[index] for index in self.indexes))
+
+
+@dataclass(frozen=True)
 class Notes:
     """The normalised text of the preamble and of each numbered section, and its paragraphs."""
 
@@ -250,6 +269,7 @@ class Notes:
     paragraphs: Mapping[SectionKey, tuple[str, ...]]
     section_ten_bullets: tuple[str, ...]
     awaits_incorporation: int
+    mechanism: Mechanism
 
     def text_for(self, section: SectionKey) -> str:
         if section == PREAMBLE:
@@ -258,15 +278,35 @@ class Notes:
         return self.sections[section]
 
 
+def bullets_of(section: str) -> tuple[str, ...]:
+    """The normalised text of every `- **` bullet of one section (a bullet runs to the next one or the section end)."""
+    starts = [match.start() for match in BULLET_START.finditer(section)]
+    return tuple(
+        normalise(section[start : starts[position + 1] if position + 1 < len(starts) else len(section)])
+        for position, start in enumerate(starts)
+    )
+
+
+def find_mechanism(preamble: str, sections: Mapping[int, str]) -> Mechanism:
+    """The mechanism the preamble says awaits incorporation, read from the preamble sentence.
+
+    The sentence reads "The <epoch price-catalogue> mechanism in section <N> awaits incorporation ...". The
+    mechanism is the bullets of section N that talk about the thing it names (its last word: the catalogue).
+    """
+    found = MECHANISM_SENTENCE.search(normalise(preamble))
+    assert found is not None, "the preamble no longer has 'The ... mechanism in section N awaits incorporation'"
+    section = int(found.group(2))
+    noun = re.split(r"[\s-]+", found.group(1))[-1]
+    bullets = bullets_of(sections[section])
+    word = re.compile(rf"\b{re.escape(noun)}\b", re.IGNORECASE)
+    indexes = tuple(position for position, bullet in enumerate(bullets) if word.search(bullet))
+    return Mechanism(section=section, sentence=found.group(0), bullets=bullets, indexes=indexes)
+
+
 def build_notes(brain: bytes) -> Notes:
     source = embedded_source(brain).decode("utf-8")
     preamble, sections = split_sections(source)
-    tail = sections[10]
-    starts = [match.start() for match in BULLET_START.finditer(tail)]
-    bullets = tuple(
-        normalise(tail[start : starts[position + 1] if position + 1 < len(starts) else len(tail)])
-        for position, start in enumerate(starts)
-    )
+    bullets = bullets_of(sections[10])
     raw: dict[SectionKey, str] = {PREAMBLE: preamble, **sections}
     return Notes(
         preamble=normalise(preamble),
@@ -276,6 +316,7 @@ def build_notes(brain: bytes) -> Notes:
         },
         section_ten_bullets=bullets,
         awaits_incorporation=len(re.findall(r"awaits incorporation", source)),
+        mechanism=find_mechanism(preamble, sections),
     )
 
 
@@ -530,23 +571,110 @@ def test_only_a_path_that_touches_an_open_island_cites_section_ten(graph: Graph)
     assert [edge.name for edge in citing if edge.a not in open_ids and edge.b not in open_ids] == []
 
 
-def test_every_path_quoting_the_price_catalogue_says_it_awaits_incorporation(graph: Graph, fixture: Fixture) -> None:
-    """F31: the catalogue mechanism awaits incorporation, so a path resting on it must say so itself.
+@dataclass(frozen=True)
+class MechanismFindings:
+    resting: tuple[Edge, ...]
+    straddling: tuple[Edge, ...]
+    unqualified: tuple[Edge, ...]
+    dragon_ends_without_qualifier: tuple[Edge, ...]
 
-    A path that ends at a dragon is exempt, because the dragon's own qualifier is already required
-    of it by the open-island rule above.
+
+def mechanism_findings(
+    edges: tuple[Edge, ...], anchor_of: Callable[[Edge], str], graph: Graph, notes: Notes
+) -> MechanismFindings:
+    """Which paths rest on the mechanism that the preamble says awaits incorporation, and which fail to say so.
+
+    A path rests on it when its quotation lies inside the preamble sentence or inside one of the section's
+    bullets that talk about it, whatever words the quotation uses. A path that ends at a dragon is exempt from
+    carrying "awaits incorporation" itself, because the dragon's own qualifier is required of it by the
+    open-island rule.
     """
+    mechanism = notes.mechanism
     open_ids = {island.id for island in graph.islands if island.status == "open"}
-    about = [edge for edge in graph.edges if re.search(r"catalogue", fixture.edges.get(edge.key, ""), re.IGNORECASE)]
-    assert about, "no path quotes the price catalogue"
-    unqualified = [
-        f"{edge.name}: {edge.label}"
-        for edge in about
-        if edge.a not in open_ids and edge.b not in open_ids and CONTESTED_LABEL not in edge.label
+
+    def inside(anchor: str, passage: str) -> bool:
+        return anchor != "" and anchor in passage
+
+    def touches_dragon(edge: Edge) -> bool:
+        return edge.a in open_ids or edge.b in open_ids
+
+    resting = tuple(edge for edge in edges if any(inside(anchor_of(edge), passage) for passage in mechanism.passages))
+    return MechanismFindings(
+        resting=resting,
+        # A quotation in the section that lies in no single bullet would slip between two of them.
+        straddling=tuple(
+            edge
+            for edge in edges
+            if inside(anchor_of(edge), notes.sections[mechanism.section])
+            and not any(inside(anchor_of(edge), bullet) for bullet in mechanism.bullets)
+        ),
+        unqualified=tuple(edge for edge in resting if not touches_dragon(edge) and CONTESTED_LABEL not in edge.label),
+        dragon_ends_without_qualifier=tuple(
+            edge for edge in resting if touches_dragon(edge) and not QUALIFIER.search(edge.label)
+        ),
+    )
+
+
+def _names(edges: tuple[Edge, ...]) -> list[str]:
+    return [f"{edge.name}: {edge.label}" for edge in edges]
+
+
+def test_every_path_resting_on_the_awaiting_mechanism_says_so_by_the_bullet_it_sits_in(
+    graph: Graph, fixture: Fixture, notes: Notes
+) -> None:
+    """F31, F45: the mechanism the preamble says awaits incorporation is the bullets 1-3 of section 4.
+
+    The bullets are found from the preamble sentence, and an edge counts as resting on the mechanism
+    when its quotation lies inside one of them (or in the sentence), whatever words the quotation uses.
+    """
+    mechanism = notes.mechanism
+    # Pinned: the signed catalogue, the prices fixed for the epoch, the charges traceable to the accepted
+    # catalogue. If the notes change that, this fails and the rule must be re-read.
+    assert mechanism.section == 4, "the preamble no longer says that section 4 holds the mechanism"
+    assert mechanism.indexes == (0, 1, 2), "the mechanism is no longer the first three bullets of section 4"
+    found = mechanism_findings(graph.edges, lambda edge: normalise(fixture.edges.get(edge.key, "")), graph, notes)
+    assert _names(found.straddling) == [], "a quotation in section 4 must lie inside one bullet"
+    assert len(found.resting) >= 3, f"only {len(found.resting)} paths rest on the price-catalogue mechanism"
+    assert _names(found.unqualified) == [], "a path resting on the mechanism must say it awaits incorporation"
+    assert _names(found.dragon_ends_without_qualifier) == [], "the dragon end of such a path needs its own qualifier"
+
+
+def test_the_mechanism_rule_catches_a_lost_qualifier_and_a_re_anchored_path(
+    graph: Graph, fixture: Fixture, notes: Notes
+) -> None:
+    """F45 regression cases: a path that loses its qualifier, and a settled one re-anchored on a bullet without one."""
+    statuses = {island.id: island.status for island in graph.islands}
+
+    def flagged(edge: Edge) -> bool:
+        return any(statuses[end] in {"open", "contested"} for end in (edge.a, edge.b))
+
+    def anchor_of(edge: Edge) -> str:
+        return normalise(fixture.edges.get(edge.key, ""))
+
+    clean = mechanism_findings(graph.edges, anchor_of, graph, notes)
+    settled_resting = [edge for edge in clean.resting if CONTESTED_LABEL in edge.label and not flagged(edge)]
+    assert settled_resting, "no settled path rests on the mechanism"
+    # M1: one such path loses its qualifier.
+    victim = settled_resting[0]
+    stripped = tuple(
+        replace(edge, label=edge.label.replace(CONTESTED_LABEL, "")) if edge is victim else edge for edge in graph.edges
+    )
+    assert _names(mechanism_findings(stripped, anchor_of, graph, notes).unqualified) == [
+        f"{victim.name}: {victim.label.replace(CONTESTED_LABEL, '')}"
     ]
-    assert unqualified == []
-    dragon_ends = [edge for edge in about if edge.a in open_ids or edge.b in open_ids]
-    assert [f"{edge.name}: {edge.label}" for edge in dragon_ends if not QUALIFIER.search(edge.label)] == []
+    # M3: a settled path with no qualifier is re-anchored on the lead-in of the second bullet (no "catalogue" in it).
+    lead = re.match(r"- \*\*(.+?):\*\*", notes.mechanism.bullets[1])
+    assert lead is not None, "the second bullet has no bold lead-in"
+    assert not re.search(r"catalogue", lead.group(1), re.IGNORECASE), "the lead-in must not name the catalogue"
+    settled = next(
+        edge
+        for edge in graph.edges
+        if not flagged(edge) and edge not in clean.resting and CONTESTED_LABEL not in edge.label
+    )
+    moved = mechanism_findings(
+        graph.edges, lambda edge: normalise(lead.group(1)) if edge is settled else anchor_of(edge), graph, notes
+    )
+    assert _names(moved.unqualified) == [f"{settled.name}: {settled.label}"]
 
 
 def test_path_labels_are_short_and_do_not_open_with_a_pronoun(graph: Graph) -> None:
