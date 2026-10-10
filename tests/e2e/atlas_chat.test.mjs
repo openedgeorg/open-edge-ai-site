@@ -12,6 +12,7 @@ import {
   createChatBridge,
   createDomPort,
 } from "../../site/js/atlas-chat.js";
+import { FIRST_SUGGESTION, ISLANDS } from "../../site/js/atlas-graph.js";
 
 /* ---------- helpers: manual clock, fake port ---------- */
 
@@ -46,24 +47,33 @@ function makeClock(start = 1_000_000) {
   };
 }
 
-/** A port that behaves like the real form: submit() reports itself through onSubmit. */
-function makeFakePort({ phase = "ready", draft = "", reply = "", rows = 0, reportsSubmit = true } = {}) {
+/**
+ * A port that behaves like the real form and the real list.
+ *
+ * `port.list` is the chat's `#history` (one string per `li > p` row). Like app.js, a composer submit
+ * appends the visitor's own text as a row AFTER the capture-phase listeners (the bridge's) have seen
+ * the draft. The assistant's reply is appended with `say()`, and `setHistory()` replaces the whole
+ * list (the chat's showHistory) and wakes the history listeners.
+ */
+function makeFakePort({ phase = "ready", draft = "", list = [], reportsSubmit = true } = {}) {
   const phaseListeners = new Set();
   const submitListeners = new Set();
   const historyListeners = new Set();
   const port = {
     phase,
     draft,
-    reply,
-    rows,
+    list: [...list],
     submitted: [],
     readPhase: () => port.phase,
     readDraft: () => port.draft,
-    lastReply: () => port.reply,
-    rowCount: () => port.rows,
+    rows: () => [...port.list],
+    // Kept for the DOM port's compatibility; the bridge reads rows() only.
+    lastReply: () => [...port.list].reverse().find((text) => text.trim() !== "") ?? "",
+    rowCount: () => port.list.filter((text) => text.trim() !== "").length,
     submit(text) {
       port.submitted.push(text);
       if (reportsSubmit) port.composerSubmit(text);
+      else port.list.push(String(text ?? ""));
     },
     onPhase(callback) {
       phaseListeners.add(callback);
@@ -83,11 +93,15 @@ function makeFakePort({ phase = "ready", draft = "", reply = "", rows = 0, repor
     },
     composerSubmit(text) {
       for (const callback of [...submitListeners]) callback(text);
+      port.list.push(String(text ?? "")); // the chat's own handler appends the visitor's row
     },
-    /** The chat rewrote or extended #history: the last row and the row count are now these. */
-    setHistory(reply, rows) {
-      port.reply = reply;
-      if (rows !== undefined) port.rows = rows;
+    /** The chat appended an assistant row (a stream, or showHistory) without a list rewrite. */
+    say(text) {
+      port.list.push(text);
+    },
+    /** The chat rewrote the whole list (showHistory) and #history observers fire. */
+    setHistory(list) {
+      port.list = [...list];
       for (const callback of [...historyListeners]) callback();
     },
     listenerCount: () => phaseListeners.size + submitListeners.size + historyListeners.size,
@@ -112,11 +126,11 @@ function setup(portOptions = {}, bridgeOptions = {}) {
   return { clock, port, bridge, replies, changes };
 }
 
-/** One full chat cycle as the real page paints it: ready -> running -> ready with a new last row. */
+/** One full chat cycle as the real page paints it: ready -> running -> ready with the question and a new reply row. */
 function composerCycle(port, question, answer) {
   port.composerSubmit(question);
   port.setPhase("running");
-  port.reply = answer;
+  port.say(answer);
   port.setPhase("ready");
 }
 
@@ -229,7 +243,7 @@ describe("double taps and in-flight submits", () => {
     assert.deepEqual(bridge.sendTeaser("Question"), { sent: false, reason: "busy" });
     assert.deepEqual(port.submitted, ["Question"]);
     port.setPhase("running");
-    port.reply = "Answer";
+    port.say("Answer");
     port.setPhase("ready");
     assert.equal(bridge.status().canSend, true);
   });
@@ -261,7 +275,7 @@ describe("double taps and in-flight submits", () => {
     port.setPhase("running");
     clock.advance(STALE_SUBMIT_MS * 3);
     assert.equal(bridge.status().reason, "busy");
-    port.reply = "A long answer";
+    port.say("A long answer");
     port.setPhase("ready");
     assert.deepEqual(replies, ["A long answer"]);
   });
@@ -273,7 +287,7 @@ describe("reply delivery", () => {
     bridge.sendTeaser("What is a pot?");
     port.setPhase("running");
     assert.deepEqual(replies, []);
-    port.reply = "A pot is a shared account.";
+    port.say("A pot is a shared account.");
     port.setPhase("ready");
     assert.deepEqual(replies, ["A pot is a shared account."]);
     // Further paints of the same phase never deliver again.
@@ -300,29 +314,35 @@ describe("reply delivery", () => {
     port.composerSubmit("q");
     port.setPhase("reconciling");
     port.setPhase("running");
-    port.reply = "recovered answer";
+    port.say("recovered answer");
     port.setPhase("ready");
     assert.deepEqual(replies, ["recovered answer"]);
   });
 
   test("a failed run whose last row is still the question delivers nothing", () => {
     const { bridge, port, replies } = setup();
-    port.reply = "";
     bridge.sendTeaser("Why is the sky blue?");
     port.setPhase("running");
-    port.reply = "Why is the sky blue?";
     port.setPhase("ready");
+    assert.deepEqual(port.rows(), ["Why is the sky blue?"]);
     assert.deepEqual(replies, []);
     assert.equal(bridge.status().canSend, true);
   });
 
-  test("the failed-run comparison ignores whitespace differences", () => {
+  test("the question row is found whatever its whitespace, so the row before it is never a reply", () => {
     const { port, replies } = setup();
     port.composerSubmit("Why   is the sky blue?\n");
     port.setPhase("running");
-    port.reply = "Why is the sky blue?";
+    port.setHistory(["Why is the sky blue?"]);
     port.setPhase("ready");
     assert.deepEqual(replies, []);
+    // the same question, reflowed, followed by the reply: that reply is the one
+    const second = setup();
+    second.port.composerSubmit("Why   is the sky blue?\n");
+    second.port.setPhase("running");
+    second.port.setHistory(["Why is the sky blue?", "Because of Rayleigh scattering."]);
+    second.port.setPhase("ready");
+    assert.deepEqual(second.replies, ["Because of Rayleigh scattering."]);
   });
 
   test("an empty last row delivers nothing", () => {
@@ -331,10 +351,14 @@ describe("reply delivery", () => {
     assert.deepEqual(replies, []);
   });
 
-  test("the same reply text is not delivered twice", () => {
+  test("the same reply row is not delivered twice, but a new row with the same text is", () => {
     const { port, replies } = setup();
     composerCycle(port, "first", "Same answer");
-    composerCycle(port, "second", "Same answer");
+    // the question is asked again while the chat shows the list of before (no new question row yet)
+    port.composerSubmit("first");
+    port.setHistory(["first", "Same answer"]);
+    port.setPhase("running");
+    port.setPhase("ready");
     assert.deepEqual(replies, ["Same answer"]);
     composerCycle(port, "third", "Different answer");
     assert.deepEqual(replies, ["Same answer", "Different answer"]);
@@ -346,13 +370,13 @@ describe("reply delivery", () => {
     port.composerSubmit("second");
     port.setPhase("running");
     // history reloaded without the failed question: the old answer is the last row again
+    port.setHistory(["first", "Old answer"]);
     port.setPhase("ready");
     assert.deepEqual(replies, ["Old answer"]);
   });
 
   test("a transition into ready without a submit delivers nothing", () => {
-    const { port, replies } = setup({ phase: "" });
-    port.reply = "stale text from before";
+    const { port, replies } = setup({ phase: "", list: ["an old question", "stale text from before"] });
     port.setPhase("ready");
     port.setPhase("running");
     port.setPhase("ready");
@@ -365,7 +389,7 @@ describe("reply delivery", () => {
     port.setPhase("ready"); // e.g. the draft box got focus and the chat repainted
     assert.equal(bridge.status().reason, "busy");
     port.setPhase("running");
-    port.reply = "Answer";
+    port.say("Answer");
     port.setPhase("ready");
     assert.deepEqual(replies, ["Answer"]);
   });
@@ -397,13 +421,11 @@ describe("reply delivery", () => {
 describe("late replies", () => {
   /**
    * The chat painted ready while the run was still going (the message box got focus, or /history
-   * returned an older list): the list still ends with the visitor's own question.
+   * returned an older list): the list still ends with the visitor's own question (its local echo).
    */
-  function prematureReady(port, question, rows = 3) {
+  function prematureReady(port, question) {
     port.composerSubmit(question);
     port.setPhase("running");
-    port.rows = rows;
-    port.reply = question; // the local echo is the last row
     port.setPhase("ready");
   }
 
@@ -413,14 +435,14 @@ describe("late replies", () => {
     assert.deepEqual(replies, []);
     assert.equal(bridge.status().canSend, true, "the late watch blocks nothing");
     // the chat finally rewrites the list with the real reply
-    port.setHistory("Because.", 4);
+    port.setHistory(["Why?", "Because."]);
     assert.deepEqual(replies, [], "not at the first change: a stream may still be growing");
     clock.advance(LATE_SETTLE_MS - 1);
     assert.deepEqual(replies, []);
     clock.advance(1);
     assert.deepEqual(replies, ["Because."]);
     // once only, however much the list keeps changing afterwards
-    port.setHistory("Because, and more.", 4);
+    port.setHistory(["Why?", "Because, and more."]);
     clock.advance(LATE_SETTLE_MS * 4);
     assert.deepEqual(replies, ["Because."]);
   });
@@ -428,11 +450,11 @@ describe("late replies", () => {
   test("the reply is looked up again when the quiet period ends, so a growing stream is not taken as final", () => {
     const { port, clock, replies } = setup();
     prematureReady(port, "Why?");
-    port.setHistory("Because the", 4);
+    port.setHistory(["Why?", "Because the"]);
     clock.advance(1000);
-    port.setHistory("Because the pot is shared", 4);
+    port.setHistory(["Why?", "Because the pot is shared"]);
     clock.advance(1000);
-    port.setHistory("Because the pot is shared by the household.", 4);
+    port.setHistory(["Why?", "Because the pot is shared by the household."]);
     clock.advance(LATE_SETTLE_MS - 1);
     assert.deepEqual(replies, []);
     clock.advance(1);
@@ -442,51 +464,50 @@ describe("late replies", () => {
   test("the visitor's own echo is never delivered, however often the list changes", () => {
     const { port, clock, replies } = setup();
     prematureReady(port, "Why   is it so?");
-    port.setHistory("Why is it so?", 3); // the same question, whitespace aside
+    port.setHistory(["Why is it so?"]); // the same question, whitespace aside
     clock.advance(LATE_SETTLE_MS * 2);
-    port.setHistory("  \n ", 3); // a blank row
+    port.setHistory(["Why is it so?", "  \n "]); // a blank row after it
     clock.advance(LATE_SETTLE_MS * 2);
     assert.deepEqual(replies, []);
-    port.setHistory("Because.", 4);
+    port.setHistory(["Why is it so?", "Because."]);
     clock.advance(LATE_SETTLE_MS);
     assert.deepEqual(replies, ["Because."]);
   });
 
   test("an earlier question of the visitor is an echo too, not a reply", () => {
     const { port, clock, replies } = setup();
-    port.rows = 2;
     composerCycle(port, "first question", "first answer");
-    prematureReady(port, "second question", 3);
-    port.setHistory("first question", 3); // an older snapshot ending with the first question
+    prematureReady(port, "second question");
+    // an older snapshot that ends with the first question, and one where it follows the second
+    port.setHistory(["first question"]);
+    clock.advance(LATE_SETTLE_MS * 2);
+    port.setHistory(["second question", "first question"]);
     clock.advance(LATE_SETTLE_MS * 2);
     assert.deepEqual(replies, ["first answer"]);
   });
 
   test("a reply delivered before is not delivered again from a stale list", () => {
     const { port, clock, replies } = setup();
-    port.rows = 2;
     composerCycle(port, "first", "Answer one"); // delivered on a list of 2 rows
     assert.deepEqual(replies, ["Answer one"]);
     // turn 2: the chat repaints ready and shows the old list (2 rows, ending with the old answer)
     port.composerSubmit("second");
     port.setPhase("running");
-    port.reply = "Answer one";
+    port.setHistory(["first", "Answer one"]);
     port.setPhase("ready");
-    port.setHistory("Answer one", 2);
     clock.advance(LATE_SETTLE_MS * 3);
     assert.deepEqual(replies, ["Answer one"]);
     // /history catches up: two more rows
-    port.setHistory("Answer two", 4);
+    port.setHistory(["first", "Answer one", "second", "Answer two"]);
     clock.advance(LATE_SETTLE_MS);
     assert.deepEqual(replies, ["Answer one", "Answer two"]);
   });
 
   test("a late reply that equals an older canned answer still counts on the longer list", () => {
     const { port, clock, replies } = setup();
-    port.rows = 2;
     composerCycle(port, "first", "I can only talk about the ESP design.");
-    prematureReady(port, "second", 3);
-    port.setHistory("I can only talk about the ESP design.", 4);
+    prematureReady(port, "second");
+    port.setHistory(["first", "I can only talk about the ESP design.", "second", "I can only talk about the ESP design."]);
     clock.advance(LATE_SETTLE_MS);
     assert.deepEqual(replies, ["I can only talk about the ESP design.", "I can only talk about the ESP design."]);
   });
@@ -495,12 +516,11 @@ describe("late replies", () => {
     const { port, clock, replies } = setup();
     prematureReady(port, "first");
     port.composerSubmit("second");
-    port.setHistory("Answer to the first", 4);
+    port.setHistory(["first", "Answer to the first", "second"]);
     clock.advance(LATE_SETTLE_MS * 3);
     assert.deepEqual(replies, [], "an old late record must not answer a newer question");
     port.setPhase("running");
-    port.rows = 6;
-    port.reply = "Answer to the second";
+    port.say("Answer to the second");
     port.setPhase("ready");
     assert.deepEqual(replies, ["Answer to the second"]);
   });
@@ -508,7 +528,7 @@ describe("late replies", () => {
   test("a submit during the quiet period cancels the wait", () => {
     const { port, clock, replies } = setup();
     prematureReady(port, "first");
-    port.setHistory("Answer to the first", 4);
+    port.setHistory(["first", "Answer to the first"]);
     clock.advance(LATE_SETTLE_MS - 100);
     port.composerSubmit("second");
     clock.advance(1000);
@@ -519,7 +539,7 @@ describe("late replies", () => {
     const { port, clock, replies } = setup();
     prematureReady(port, "Why?");
     clock.advance(STALE_SUBMIT_MS + 1);
-    port.setHistory("Because.", 4);
+    port.setHistory(["Why?", "Because."]);
     clock.advance(LATE_SETTLE_MS * 2);
     assert.deepEqual(replies, []);
   });
@@ -529,11 +549,9 @@ describe("late replies", () => {
     port.composerSubmit("Why?");
     port.setPhase("running");
     clock.advance(STALE_SUBMIT_MS - 1000); // a long run
-    port.reply = "Why?";
-    port.rows = 3;
     port.setPhase("ready");
     clock.advance(30000);
-    port.setHistory("Because.", 4);
+    port.setHistory(["Why?", "Because."]);
     clock.advance(LATE_SETTLE_MS);
     assert.deepEqual(replies, ["Because."]);
   });
@@ -542,7 +560,7 @@ describe("late replies", () => {
     const { port, clock, replies } = setup();
     prematureReady(port, "Why?");
     port.setPhase("recovering");
-    port.setHistory("Because.", 4);
+    port.setHistory(["Why?", "Because."]);
     clock.advance(LATE_SETTLE_MS * 2);
     assert.deepEqual(replies, []);
     port.setPhase("ready");
@@ -553,7 +571,7 @@ describe("late replies", () => {
   test("a phase that leaves ready during the quiet period delivers nothing", () => {
     const { port, clock, replies } = setup();
     prematureReady(port, "Why?");
-    port.setHistory("Because.", 4);
+    port.setHistory(["Why?", "Because."]);
     clock.advance(LATE_SETTLE_MS - 1);
     port.setPhase("unavailable");
     clock.advance(10);
@@ -563,7 +581,7 @@ describe("late replies", () => {
   test("a normal reply needs no watch: later changes to the list deliver nothing", () => {
     const { port, clock, replies } = setup();
     composerCycle(port, "q", "answer");
-    port.setHistory("answer, edited", 2);
+    port.setHistory(["q", "answer, edited"]);
     clock.advance(LATE_SETTLE_MS * 3);
     assert.deepEqual(replies, ["answer"]);
     assert.equal(clock.pending(), 0, "no timer is left running");
@@ -585,26 +603,26 @@ describe("late replies", () => {
     });
     prematureReady(port, "Why?");
     order.length = 0;
-    port.setHistory("Because.", 4);
+    port.setHistory(["Why?", "Because."]);
     clock.advance(LATE_SETTLE_MS);
     assert.deepEqual(order, ["reply", "free"]);
   });
 
-  test("a throwing lastReply or onReply during the late path never breaks the bridge", () => {
+  test("a throwing rows() or onReply during the late path never breaks the bridge", () => {
     const { bridge, port, clock } = setup({}, {
       onReply: () => {
         throw new Error("boom");
       },
     });
     prematureReady(port, "Why?");
-    const lookup = port.lastReply;
-    port.lastReply = () => {
+    const lookup = port.rows;
+    port.rows = () => {
       throw new Error("boom");
     };
-    port.setHistory("x", 4);
+    port.setHistory(["x"]);
     assert.doesNotThrow(() => clock.advance(LATE_SETTLE_MS));
-    port.lastReply = lookup;
-    port.setHistory("Because.", 4);
+    port.rows = lookup;
+    port.setHistory(["Why?", "Because."]);
     assert.doesNotThrow(() => clock.advance(LATE_SETTLE_MS));
     assert.equal(bridge.status().canSend, true);
   });
@@ -612,7 +630,7 @@ describe("late replies", () => {
   test("the quiet period is injectable through timings and the timer", () => {
     const { port, clock, replies } = setup({}, { timings: { lateSettleMs: 200 } });
     prematureReady(port, "Why?");
-    port.setHistory("Because.", 4);
+    port.setHistory(["Why?", "Because."]);
     clock.advance(199);
     assert.deepEqual(replies, []);
     clock.advance(1);
@@ -661,12 +679,12 @@ describe("late replies", () => {
   test("dispose cancels a pending quiet period and unsubscribes from the history", () => {
     const { bridge, port, clock, replies } = setup();
     prematureReady(port, "Why?");
-    port.setHistory("Because.", 4);
+    port.setHistory(["Why?", "Because."]);
     assert.ok(clock.pending() > 0);
     bridge.dispose();
     assert.equal(clock.pending(), 0);
     assert.equal(port.listenerCount(), 0);
-    port.setHistory("Because, again.", 4);
+    port.setHistory(["Why?", "Because, again."]);
     clock.advance(STALE_SUBMIT_MS);
     assert.deepEqual(replies, []);
   });
@@ -676,61 +694,226 @@ describe("late replies", () => {
       throw new Error("boom");
     } });
     prematureReady(port, "Why?");
-    assert.doesNotThrow(() => port.setHistory("Because.", 4));
+    assert.doesNotThrow(() => port.setHistory(["Why?", "Because."]));
   });
 });
 
-/* ---------- reply de-duplication by row count ---------- */
+/* ---------- a reply belongs to the question that was asked ---------- */
 
-describe("replies are remembered by row count and text", () => {
+describe("a reply is tied to its question", () => {
+  /** A page that was just reloaded: a fresh bridge (empty memory) on a list the chat restored. */
+  function reloaded(list, bridgeOptions = {}) {
+    return setup({ list }, bridgeOptions);
+  }
+
+  test("the normal list [.., question, reply] delivers the row after the question", () => {
+    const { port, replies } = setup({ list: ["Q1", "A1"] });
+    port.composerSubmit("Q2");
+    port.setPhase("running");
+    port.say("A2");
+    port.setPhase("ready");
+    assert.deepEqual(port.rows(), ["Q1", "A1", "Q2", "A2"]);
+    assert.deepEqual(replies, ["A2"]);
+  });
+
+  test("a row is not a reply merely because it is the last one", () => {
+    const { port, replies } = setup({ list: ["something unrelated", "the last row"] });
+    port.composerSubmit("a question that is in the list nowhere");
+    port.setPhase("running");
+    port.setHistory(["something unrelated", "the last row"]); // the chat shows a list without the question
+    port.setPhase("ready");
+    assert.deepEqual(replies, []);
+  });
+
+  test("reload + stale snapshot [Q1, A1] while Q2 was asked lights nothing, then the real reply does", () => {
+    const { port, clock, replies } = reloaded(["Q1", "A1"]);
+    port.composerSubmit("Q2");
+    port.setPhase("running");
+    port.setHistory(["Q1", "A1"]); // the chat swaps in the snapshot from before Q2
+    port.setPhase("ready");
+    clock.advance(LATE_SETTLE_MS * 3);
+    assert.deepEqual(replies, [], "the old reply is not the reply to Q2");
+    port.setHistory(["Q1", "A1", "Q2", "A2"]);
+    clock.advance(LATE_SETTLE_MS);
+    assert.deepEqual(replies, ["A2"]);
+  });
+
+  test("a stale list that ends with the visitor's own earlier teaser lights nothing", () => {
+    // After a reload the bridge has no memory of what was submitted, so that teaser is not a known echo.
+    const { port, clock, replies } = reloaded(["Q1", "A1", "Who actually pays the apps I use?"]);
+    port.composerSubmit("Q2");
+    port.setPhase("running");
+    port.setHistory(["Q1", "A1", "Who actually pays the apps I use?"]);
+    port.setPhase("ready");
+    clock.advance(LATE_SETTLE_MS * 3);
+    assert.deepEqual(replies, []);
+  });
+
+  test("the same question asked twice: the reply is the row after the LAST copy", () => {
+    const { port, clock, replies } = setup();
+    composerCycle(port, "Q", "A1");
+    assert.deepEqual(replies, ["A1"]);
+    port.composerSubmit("Q"); // [Q, A1, Q]: the new copy has no reply yet
+    port.setPhase("running");
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["A1"], "the reply to the first copy is not the reply to the second");
+    port.setHistory(["Q", "A1", "Q", "A2"]);
+    clock.advance(LATE_SETTLE_MS);
+    assert.deepEqual(replies, ["A1", "A2"]);
+  });
+
+  test("the same question asked twice, with the chat still showing the list of before", () => {
+    const { port, clock, replies } = setup();
+    composerCycle(port, "Q", "A1");
+    port.composerSubmit("Q");
+    port.setPhase("running");
+    port.setHistory(["Q", "A1"]); // the reply row that was delivered already
+    port.setPhase("ready");
+    clock.advance(LATE_SETTLE_MS * 3);
+    assert.deepEqual(replies, ["A1"], "the same row of the same list is not delivered twice");
+    port.setHistory(["Q", "A1", "Q", "A2"]);
+    clock.advance(LATE_SETTLE_MS);
+    assert.deepEqual(replies, ["A1", "A2"]);
+  });
+
+  test("blank rows around the reply are skipped", () => {
+    const { port, replies } = setup();
+    port.composerSubmit("Q");
+    port.setPhase("running");
+    port.setHistory(["Q", "", "  \n ", "A", "  "]);
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["A"]);
+  });
+
+  test("only blank rows after the question: nothing yet, and the reply is found when it shows", () => {
+    const { port, clock, replies } = setup();
+    port.composerSubmit("Q");
+    port.setPhase("running");
+    port.setHistory(["Q", ""]);
+    port.setPhase("ready");
+    assert.deepEqual(replies, []);
+    port.setHistory(["Q", "", "A"]);
+    clock.advance(LATE_SETTLE_MS);
+    assert.deepEqual(replies, ["A"]);
+  });
+
+  test("the first row with text after the question is the reply, not a later row", () => {
+    const { port, replies } = setup();
+    port.composerSubmit("Q");
+    port.setPhase("running");
+    port.setHistory(["Q", "A", "something added later"]);
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["A"]);
+  });
+
+  test("a row after the question that is another question of the visitor is not a reply", () => {
+    const { port, clock, replies } = setup();
+    composerCycle(port, "first", "first answer");
+    port.composerSubmit("second");
+    port.setPhase("running");
+    port.setHistory(["second", "first"]); // 'first' is a known echo
+    port.setPhase("ready");
+    clock.advance(LATE_SETTLE_MS * 3);
+    assert.deepEqual(replies, ["first answer"]);
+  });
+
+  test("the reply text is passed on exactly as the page shows it", () => {
+    const { port, replies } = setup();
+    port.composerSubmit("Q");
+    port.setPhase("running");
+    port.setHistory(["Q", "  Line one\n\nLine two  "]);
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["  Line one\n\nLine two  "]);
+  });
+
+  test("a blank or missing submitted text can never be matched to a reply", () => {
+    const { port, replies } = setup({ list: ["", "Q", "A"] });
+    port.composerSubmit("   ");
+    port.setPhase("running");
+    port.setPhase("ready");
+    port.composerSubmit(undefined);
+    port.setPhase("running");
+    port.setPhase("ready");
+    assert.deepEqual(replies, []);
+  });
+
+  test("a teaser sent through the bridge is found by its squashed text", () => {
+    const { bridge, port, replies } = setup({ list: ["old question", "old answer"] });
+    assert.equal(bridge.sendTeaser("  Who pays\n the apps?  ").sent, true);
+    port.setPhase("running");
+    port.setHistory(["old question", "old answer", "Who pays the apps?", "The ISP's bill does."]);
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["The ISP's bill does."]);
+  });
+});
+
+/* ---------- reply de-duplication by position and text ---------- */
+
+describe("replies are remembered by position and text", () => {
   test("an identical canned answer in a later turn counts again", () => {
     const { port, replies } = setup();
-    port.rows = 2;
     composerCycle(port, "off topic", "I can only talk about the ESP design.");
-    port.rows = 4;
     composerCycle(port, "still off topic", "I can only talk about the ESP design.");
     assert.deepEqual(replies, ["I can only talk about the ESP design.", "I can only talk about the ESP design."]);
   });
 
   test("a re-read of the same list stays deduped", () => {
     const { port, replies } = setup();
-    port.rows = 2;
     composerCycle(port, "first", "Same answer");
-    // a failed second run: the chat repaints ready on the same two-row list
-    port.composerSubmit("second");
+    // the same question again; the chat repaints ready on the same two-row list
+    port.composerSubmit("first");
     port.setPhase("running");
+    port.setHistory(["first", "Same answer"]);
     port.setPhase("ready");
     assert.deepEqual(replies, ["Same answer"]);
   });
 
   test("clearing the map does not need to forget anything: a repeated question on a longer list counts", () => {
     const { port, replies } = setup();
-    port.rows = 2;
     composerCycle(port, "q", "Deterministic answer");
     // the visitor clears the map (the bridge is not told) and asks again
-    port.rows = 4;
     composerCycle(port, "q", "Deterministic answer");
+    assert.deepEqual(port.rows(), ["q", "Deterministic answer", "q", "Deterministic answer"]);
     assert.equal(replies.length, 2);
   });
 
-  test("a throwing or odd rowCount counts as zero rows", () => {
+  test("a throwing, odd or missing rows() delivers nothing and breaks nothing", () => {
+    const { bridge, port, replies } = setup();
+    port.rows = () => {
+      throw new Error("boom");
+    };
+    assert.doesNotThrow(() => composerCycle(port, "a", "Same"));
+    port.rows = () => "many";
+    assert.doesNotThrow(() => composerCycle(port, "b", "Same"));
+    port.rows = () => null;
+    assert.doesNotThrow(() => composerCycle(port, "c", "Same"));
+    assert.deepEqual(replies, []);
+    assert.equal(bridge.status().canSend, true);
+    // rows that are not strings read as blank rows
+    port.rows = () => ["d", 42, null, { text: "x" }, "Fine"];
+    composerCycle(port, "d", "ignored");
+    assert.deepEqual(replies, ["Fine"]);
+  });
+
+  test("a port without rows() cannot tie a reply to its question: nothing is delivered, nothing breaks", () => {
+    const { bridge, port, replies } = setup();
+    port.rows = undefined;
+    composerCycle(port, "a", "Same");
+    composerCycle(port, "b", "Other");
+    assert.deepEqual(replies, []);
+    assert.equal(bridge.status().canSend, true);
+  });
+
+  test("lastReply and rowCount are no longer what the bridge reads", () => {
     const { port, replies } = setup();
+    port.lastReply = () => {
+      throw new Error("boom");
+    };
     port.rowCount = () => {
       throw new Error("boom");
     };
-    composerCycle(port, "a", "Same");
-    composerCycle(port, "b", "Same");
-    port.rowCount = () => "many";
-    composerCycle(port, "c", "Same");
-    assert.deepEqual(replies, ["Same"], "all three read as the same list");
-  });
-
-  test("a port without rowCount keeps the old behaviour: the same text counts once", () => {
-    const { port, replies } = setup();
-    port.rowCount = undefined;
-    composerCycle(port, "a", "Same");
-    composerCycle(port, "b", "Same");
-    assert.deepEqual(replies, ["Same"]);
+    composerCycle(port, "q", "answer");
+    assert.deepEqual(replies, ["answer"]);
   });
 });
 
@@ -757,7 +940,7 @@ describe("a submit that never shows a busy phase", () => {
     assert.deepEqual(port.submitted, ["Question", "Another question"]);
     assert.equal(bridge.status().reason, "busy");
     port.setPhase("running");
-    port.reply = "Answer";
+    port.say("Answer");
     port.setPhase("ready");
     assert.deepEqual(bridge.status(), { canSend: true, reason: "", message: "", resumeAt: null });
   });
@@ -789,7 +972,7 @@ describe("a submit that never shows a busy phase", () => {
     assert.equal(bridge.status().reason, "noprogress");
     port.setPhase("running");
     assert.equal(bridge.status().reason, "busy");
-    port.reply = "A real answer";
+    port.say("A real answer");
     port.setPhase("ready");
     assert.deepEqual(replies, ["A real answer"]);
     assert.equal(bridge.status().canSend, true);
@@ -1031,10 +1214,10 @@ describe("the draft box and the bridge's own text", () => {
     assert.equal(bridge.status().canSend, true);
   });
 
-  test("text that merely equals a teaser the bridge never sent still blocks", () => {
-    const { bridge, port } = setup({ draft: "Who actually pays the apps I use?" });
+  test("text that is not one of the Atlas's own suggestions blocks, whether or not the bridge sent anything", () => {
+    const { bridge, port } = setup({ draft: "my own half-written question" });
     assert.equal(bridge.status().reason, "draft");
-    assert.deepEqual(bridge.sendTeaser("Who actually pays the apps I use?"), { sent: false, reason: "draft" });
+    assert.deepEqual(bridge.sendTeaser("Teaser?"), { sent: false, reason: "draft" });
     assert.deepEqual(port.submitted, []);
   });
 
@@ -1042,7 +1225,7 @@ describe("the draft box and the bridge's own text", () => {
     const { bridge, port, clock } = setup();
     assert.equal(bridge.sendTeaser("Teaser one?").sent, true);
     port.setPhase("running");
-    port.reply = "an answer";
+    port.say("an answer");
     port.setPhase("ready");
     assert.equal(bridge.sendTeaser("Teaser two?").sent, true);
     rejectTeaser(port, "Teaser two?");
@@ -1058,13 +1241,13 @@ describe("the draft box and the bridge's own text", () => {
     const { bridge, port } = setup();
     assert.equal(bridge.sendTeaser("Teaser one?").sent, true);
     port.setPhase("running");
-    port.reply = "answer one";
+    port.say("answer one");
     port.setPhase("ready");
     assert.equal(bridge.status().canSend, true);
 
     port.composerSubmit("my own question");
     port.setPhase("running");
-    port.reply = "answer two";
+    port.say("answer two");
     port.setPhase("ready");
     port.draft = "Teaser one?"; // the visitor happens to type the same words
     assert.equal(bridge.status().reason, "draft");
@@ -1075,7 +1258,7 @@ describe("the draft box and the bridge's own text", () => {
     bridge.sendTeaser("Teaser one?");
     port.draft = ""; // the chat clears the box once the send is accepted
     port.setPhase("running");
-    port.reply = "answer";
+    port.say("answer");
     port.setPhase("ready");
     assert.equal(bridge.status().canSend, true);
     port.draft = "typed after";
@@ -1090,6 +1273,98 @@ describe("the draft box and the bridge's own text", () => {
     assert.deepEqual(bridge.sendTeaser("Never sent?"), { sent: false, reason: "unavailable" });
     port.draft = "Never sent?";
     assert.equal(bridge.status().reason, "draft");
+  });
+});
+
+describe("a refused suggestion restored into the box after a reload (F16)", () => {
+  const graphTeasers = () => ISLANDS.map((island) => island.teaser).filter((teaser) => typeof teaser === "string" && teaser.trim() !== "");
+
+  test("the graph really has suggestions to test with", () => {
+    assert.ok(typeof FIRST_SUGGESTION === "string" && FIRST_SUGGESTION.trim() !== "");
+    assert.ok(graphTeasers().length >= 40);
+  });
+
+  test("a fresh bridge (a reload) does not block on the first-load suggestion left in the box", () => {
+    // 409/429 + reload: the chat restored the refused text into the box, the bridge remembers nothing.
+    const { bridge, port } = setup({ draft: FIRST_SUGGESTION });
+    assert.deepEqual(bridge.status(), { canSend: true, reason: "", message: "", resumeAt: null });
+    assert.deepEqual(bridge.sendTeaser("Another suggestion?"), { sent: true, reason: "" });
+    assert.deepEqual(port.submitted, ["Another suggestion?"]);
+  });
+
+  test("every teaser of the graph counts as the bridge's own text, whitespace aside", () => {
+    for (const teaser of graphTeasers()) {
+      const { bridge } = setup({ draft: `  ${teaser.replace(/ /g, "  ")}\n` });
+      assert.equal(bridge.status().canSend, true, teaser);
+    }
+  });
+
+  test("the same suggestion tapped again after a reload is sent, over the restored text", () => {
+    const teaser = graphTeasers()[1];
+    const { bridge, port } = setup({ draft: teaser });
+    assert.deepEqual(bridge.sendTeaser(teaser), { sent: true, reason: "" });
+    assert.deepEqual(port.submitted, [teaser]);
+  });
+
+  test("typed text still blocks: a suggestion with a word added or removed, another case, or anything else", () => {
+    const teaser = graphTeasers()[2];
+    const typed = [
+      `${teaser} And what else?`,
+      `Hey, ${teaser}`,
+      teaser.slice(0, -1),
+      teaser.slice(1),
+      teaser.toUpperCase() === teaser ? teaser.toLowerCase() : teaser.toUpperCase(),
+      "my own question",
+      "x",
+    ];
+    for (const draft of typed) {
+      const { bridge, port } = setup({ draft });
+      const status = bridge.status();
+      assert.equal(status.canSend, false, draft);
+      assert.equal(status.reason, "draft", draft);
+      assert.deepEqual(bridge.sendTeaser("Another suggestion?"), { sent: false, reason: "draft" }, draft);
+      assert.deepEqual(port.submitted, [], draft);
+    }
+  });
+
+  test("the suggestions are read from the graph when asked, not copied once", (t) => {
+    if (Object.isFrozen(ISLANDS)) {
+      t.skip("ISLANDS is frozen, so a suggestion cannot be added for this check");
+      return;
+    }
+    const added = { id: "test-only-island", teaser: "A suggestion added after the bridge was made?" };
+    const { bridge, port } = setup({ draft: added.teaser });
+    assert.equal(bridge.status().reason, "draft", "not a suggestion yet");
+    ISLANDS.push(added);
+    try {
+      assert.equal(bridge.status().canSend, true, "now it is");
+      port.draft = "A suggestion added after the bridge was made?";
+      assert.deepEqual(bridge.sendTeaser("Next?"), { sent: true, reason: "" });
+    } finally {
+      ISLANDS.splice(ISLANDS.indexOf(added), 1);
+    }
+    const again = setup({ draft: added.teaser });
+    assert.equal(again.bridge.status().reason, "draft", "gone again");
+  });
+
+  test("a suggestion in the box is the bridge's own text only in the box, never a reason to skip the pauses", () => {
+    const { bridge } = setup({ phase: "rejected", draft: FIRST_SUGGESTION });
+    assert.equal(bridge.status().reason, "rejected");
+    const busy = setup({ phase: "running", draft: FIRST_SUGGESTION });
+    assert.equal(busy.bridge.status().reason, "busy");
+  });
+
+  test("on a fake page: the refused suggestion restored by the chat after a reload does not block the next one", () => {
+    // Everything but the bridge survives the reload (the box, the list); the bridge starts empty.
+    const fake = makeFakeDocument();
+    fake.phase.textContent = "ready";
+    fake.draft.value = FIRST_SUGGESTION;
+    const port = createDomPort(fake.doc, { MutationObserver: FakeMutationObserver });
+    const bridge = createChatBridge({ port });
+    assert.equal(bridge.status().canSend, true);
+    assert.equal(bridge.sendTeaser("Another suggestion?").sent, true);
+    assert.equal(fake.draft.value, "Another suggestion?");
+    bridge.dispose();
   });
 });
 
@@ -1140,7 +1415,7 @@ describe("rate limit", () => {
       if (i > 0) clock.advance(1000);
       assert.deepEqual(bridge.sendTeaser(`teaser ${i}`), { sent: true, reason: "" }, `teaser ${i}`);
       port.setPhase("running");
-      port.reply = `answer ${i}`;
+      port.say(`answer ${i}`);
       port.setPhase("ready");
     }
     assert.equal(port.submitted.length, MAX_SENDS_PER_WINDOW);
@@ -1158,7 +1433,7 @@ describe("rate limit", () => {
       clock.advance(10);
       assert.equal(bridge.sendTeaser(`teaser ${i}`).sent, true);
       port.setPhase("running");
-      port.reply = `teaser answer ${i}`;
+      port.say(`teaser answer ${i}`);
       port.setPhase("ready");
     }
     assert.equal(bridge.status().reason, "rate");
@@ -1203,7 +1478,7 @@ describe("dispose", () => {
 
     port.composerSubmit("q");
     port.setPhase("running");
-    port.reply = "answer";
+    port.say("answer");
     port.setPhase("ready");
     clock.advance(SEND_WINDOW_MS * 2);
     assert.deepEqual(replies, []);
@@ -1270,9 +1545,9 @@ describe("hostile ports and listeners", () => {
     assert.equal(bridge.status().reason, "busy");
   });
 
-  test("throwing lastReply delivers nothing and keeps the bridge usable", () => {
+  test("throwing rows() delivers nothing and keeps the bridge usable", () => {
     const { bridge, port, replies } = setup();
-    port.lastReply = boom;
+    port.rows = boom;
     assert.doesNotThrow(() => composerCycle(port, "q", "ignored"));
     assert.deepEqual(replies, []);
     assert.equal(bridge.status().canSend, true);
@@ -1305,7 +1580,7 @@ describe("hostile ports and listeners", () => {
     assert.doesNotThrow(() => bridge.sendTeaser("q"));
     assert.doesNotThrow(() => {
       port.setPhase("running");
-      port.reply = "answer";
+      port.say("answer");
       port.setPhase("ready");
     });
     assert.equal(bridge.status().canSend, true);
@@ -1323,7 +1598,7 @@ describe("hostile ports and listeners", () => {
     const bridge = createChatBridge({ port });
     assert.equal(bridge.sendTeaser("q").sent, true);
     port.setPhase("running");
-    port.reply = "answer";
+    port.say("answer");
     assert.doesNotThrow(() => port.setPhase("ready"));
     port.setPhase("rejected");
     bridge.dispose(); // clears the real timeout so the test process can exit
@@ -1443,6 +1718,7 @@ describe("createDomPort", () => {
     const port = createDomPort(fake.doc, { MutationObserver: FakeMutationObserver });
     port.readPhase();
     port.readDraft();
+    port.rows();
     port.lastReply();
     port.rowCount();
     port.onPhase(() => {});
@@ -1512,6 +1788,43 @@ describe("createDomPort", () => {
     const bare = makeFakeDocument();
     delete bare.history.querySelectorAll;
     assert.equal(createDomPort(bare.doc).rowCount(), 0);
+  });
+
+  test("rows() lists every li > p row in order, blank ones included, as text and nothing else", () => {
+    const fake = makeFakeDocument();
+    const port = createDomPort(fake.doc);
+    assert.deepEqual(port.rows(), []);
+    fake.history.setRows(["the question", "", "the answer <b>not html</b>", "  \n "]);
+    assert.deepEqual(port.rows(), ["the question", "", "the answer <b>not html</b>", "  \n "]);
+    fake.history.setRows(["only"]);
+    assert.deepEqual(port.rows(), ["only"]);
+    const first = port.rows();
+    first.push("changing the copy changes nothing");
+    assert.deepEqual(port.rows(), ["only"]);
+  });
+
+  test("rows() copes with a missing, unqueryable or throwing history element", () => {
+    const missing = makeFakeDocument();
+    delete missing.elements["#history"];
+    assert.deepEqual(createDomPort(missing.doc).rows(), []);
+    const bare = makeFakeDocument();
+    delete bare.history.querySelectorAll;
+    assert.deepEqual(createDomPort(bare.doc).rows(), []);
+    const hostile = makeFakeDocument();
+    hostile.history.querySelectorAll = () => {
+      throw new Error("boom");
+    };
+    assert.deepEqual(createDomPort(hostile.doc).rows(), []);
+    assert.deepEqual(createDomPort(null).rows(), []);
+  });
+
+  test("rows(), lastReply() and rowCount() agree on the same list", () => {
+    const fake = makeFakeDocument();
+    const port = createDomPort(fake.doc);
+    fake.history.setRows(["q", "", "a", " "]);
+    const texts = port.rows().filter((text) => text.trim() !== "");
+    assert.equal(port.rowCount(), texts.length);
+    assert.equal(port.lastReply(), texts.at(-1));
   });
 
   test("onHistory observes #history with a MutationObserver and passes no data", () => {
@@ -1739,6 +2052,7 @@ describe("createDomPort", () => {
     assert.equal(port.readDraft(), "");
     assert.equal(port.lastReply(), "");
     assert.equal(port.rowCount(), 0);
+    assert.deepEqual(port.rows(), []);
     assert.equal(typeof port.onPhase(() => {}), "function");
     assert.equal(typeof port.onHistory(() => {}), "function");
     assert.equal(typeof port.onSubmit(() => {}), "function");
@@ -1897,6 +2211,45 @@ describe("bridge on a fake page", () => {
     rewrite(["question one", "answer one", "question two", "answer two"]);
     clock.advance(LATE_SETTLE_MS);
     assert.deepEqual(replies, ["answer one", "answer two"]);
+  });
+
+  test("after a reload the chat shows the list of before Q2: nothing is lit until the list holds Q2 and its reply", () => {
+    const { fake, clock, replies, paint, rewrite } = startPage();
+    // The reload: the page restores the earlier turn into the list; the bridge starts with no memory.
+    fake.history.setRows(["Who actually pays the apps I use?", "Your bill pays the carriers."]);
+    paint("ready");
+    fake.draft.value = "How does the pot work?";
+    fake.form.requestSubmit(); // the chat appends the visitor's row
+    paint("running", "");
+    assert.equal(fake.history.rows.length, 3);
+    // the late /history snapshot is the one from before the question
+    rewrite(["Who actually pays the apps I use?", "Your bill pays the carriers."]);
+    paint("ready");
+    clock.advance(LATE_SETTLE_MS * 4);
+    assert.deepEqual(replies, [], "the old reply is not the reply to the new question");
+    rewrite([
+      "Who actually pays the apps I use?",
+      "Your bill pays the carriers.",
+      "How does the pot work?",
+      "The pot is shared.",
+    ]);
+    clock.advance(LATE_SETTLE_MS);
+    assert.deepEqual(replies, ["The pot is shared."]);
+    clock.advance(STALE_SUBMIT_MS);
+    assert.deepEqual(replies, ["The pot is shared."], "once only");
+  });
+
+  test("after a reload a list that ends with the visitor's own earlier teaser lights nothing", () => {
+    const { fake, clock, replies, paint, rewrite } = startPage();
+    fake.history.setRows(["Who actually pays the apps I use?", "Your bill pays the carriers.", "What is the pot?"]);
+    paint("ready");
+    fake.draft.value = "Something new";
+    fake.form.requestSubmit();
+    paint("running", "");
+    rewrite(["Who actually pays the apps I use?", "Your bill pays the carriers.", "What is the pot?"]);
+    paint("ready");
+    clock.advance(LATE_SETTLE_MS * 4);
+    assert.deepEqual(replies, []);
   });
 
   test("a reply that streams into the list is taken only when it has stopped growing", () => {

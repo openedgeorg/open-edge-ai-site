@@ -16,9 +16,16 @@
  *   /history, or /history returned an older snapshot). When that transition yields nothing new
  *   the bridge keeps a `late` record and watches #history; once the list has been quiet for a
  *   moment it looks again and delivers the reply, once.
- * - A reply is remembered as `${rows}:${text}`, so an identical canned answer in a later turn
- *   still counts while a second read of the very same list does not.
+ * - A reply is tied to its question. The bridge remembers the text that was submitted and, whenever
+ *   it looks for the reply, takes the first non-blank row AFTER the last row that equals that text.
+ *   If the question is not in the list (a reload, or the chat showing an older snapshot) there is
+ *   nothing to deliver yet and the bridge keeps waiting. A row is never taken merely because it is
+ *   the last one.
+ * - A delivered reply is remembered as `${position}:${text}`, so an identical canned answer in a
+ *   later turn still counts while a second read of the very same list does not.
  */
+
+import { FIRST_SUGGESTION, ISLANDS } from "./atlas-graph.js";
 
 export const SEND_WINDOW_MS = 60000;
 export const MAX_SENDS_PER_WINDOW = 20;
@@ -62,6 +69,20 @@ function squash(value) {
   return String(value == null ? "" : value).replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Whether `plain` (already squashed) is the text of one of the Atlas's own suggestions: any island's
+ * teaser or the first-load suggestion. Read from the graph on every call, never cached.
+ */
+function isGraphTeaser(plain) {
+  if (plain === "") return false;
+  if (typeof FIRST_SUGGESTION === "string" && squash(FIRST_SUGGESTION) === plain) return true;
+  if (!Array.isArray(ISLANDS)) return false;
+  for (const island of ISLANDS) {
+    if (island && typeof island.teaser === "string" && squash(island.teaser) === plain) return true;
+  }
+  return false;
+}
+
 function duration(value, fallback) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
 }
@@ -102,7 +123,7 @@ export function createDomPort(doc, options = {}) {
     return element && typeof element.value === "string" ? element.value : "";
   }
 
-  /** The text of every `#history li > p` row, in order (text only, never markup). */
+  /** The text of every `#history li > p` row, in order, blank rows included (text only, never markup). */
   function rowTexts() {
     const history = find("#history");
     if (!history) return [];
@@ -116,11 +137,16 @@ export function createDomPort(doc, options = {}) {
     }
   }
 
+  /** Every row's text, in order. The bridge ties the reply to the question with this. */
+  function rows() {
+    return rowTexts();
+  }
+
   /** The last row that has any text. Blank rows are skipped; an echo of the visitor's text is not. */
   function lastReply() {
-    const rows = rowTexts();
-    for (let i = rows.length - 1; i >= 0; i -= 1) {
-      if (squash(rows[i]) !== "") return rows[i];
+    const texts = rowTexts();
+    for (let i = texts.length - 1; i >= 0; i -= 1) {
+      if (squash(texts[i]) !== "") return texts[i];
     }
     return "";
   }
@@ -203,7 +229,7 @@ export function createDomPort(doc, options = {}) {
     };
   }
 
-  return { readPhase, readDraft, submit, lastReply, rowCount, onPhase, onHistory, onSubmit };
+  return { readPhase, readDraft, submit, rows, lastReply, rowCount, onPhase, onHistory, onSubmit };
 }
 
 /**
@@ -217,8 +243,9 @@ export function createDomPort(doc, options = {}) {
 
 /**
  * @param {{
- *   port: {readPhase(): string, readDraft(): string, submit(text: string): void, lastReply(): string,
- *          rowCount?(): number,
+ *   port: {readPhase(): string, readDraft(): string, submit(text: string): void,
+ *          rows(): string[],
+ *          lastReply?(): string, rowCount?(): number,
  *          onPhase(cb: (phase: string) => void): () => void, onSubmit(cb: (text: string) => void): () => void,
  *          onHistory?(cb: () => void): () => void},
  *   now?: () => number,
@@ -261,6 +288,9 @@ export function createChatBridge({
   // The last teaser this bridge submitted (whitespace squashed), so its own text coming back is not
   // mistaken for something the visitor typed: after a 409/429 the chat puts the refused text back
   // into the message box, and without this the teasers would stay blocked until it was cleared.
+  // This is memory only. After a reload the chat can restore that refused text into the box while this
+  // is empty again, so a draft equal to ANY suggestion of the graph (isGraphTeaser) counts as the
+  // bridge's own text too. Text the visitor typed is neither, and still blocks.
   let ownText = "";
   let sendingTeaser = false;
   let timer = null;
@@ -268,7 +298,7 @@ export function createChatBridge({
   let lateTimer = null;
   let lateTimerSet = false;
   const sends = []; // submit timestamps inside the rate window, ascending
-  const delivered = new Set(); // `${rows}:${squashed text}` of every reply handed to onReply
+  const delivered = new Set(); // `${position}:${squashed text}` of every reply handed to onReply
   const echoes = new Set(); // squashed text of every submit seen: a row equal to one is the visitor's echo
   const unsubscribers = [];
 
@@ -327,7 +357,7 @@ export function createChatBridge({
     }
     if (typeof draft === "string") {
       const typed = squash(draft);
-      if (typed !== "" && typed !== ownText) return block("draft");
+      if (typed !== "" && typed !== ownText && !isGraphTeaser(typed)) return block("draft");
     }
     if (lost) return { canSend: true, reason: "noprogress", message: MESSAGES.noprogress, resumeAt: null };
     return { canSend: true, reason: "", message: "", resumeAt: null };
@@ -420,36 +450,54 @@ export function createChatBridge({
     if (echoes.size > ECHO_LIMIT) echoes.delete(echoes.values().next().value);
   }
 
-  function rowCount() {
-    if (typeof port.rowCount !== "function") return 0;
+  /**
+   * The text of every row of the chat's list, in order, or null when the port cannot show the list
+   * (then no reply can be tied to its question and nothing is delivered).
+   */
+  function readRows() {
+    if (typeof port.rows !== "function") return null;
     try {
-      const count = port.rowCount();
-      return typeof count === "number" && Number.isFinite(count) ? count : 0;
+      const list = port.rows();
+      if (!Array.isArray(list)) return null;
+      return list.map((row) => (typeof row === "string" ? row : ""));
     } catch {
-      return 0;
+      return null;
     }
   }
 
   /**
-   * The text of the last row, if it is a reply that has not been delivered: never blank, never an
-   * echo of something submitted (the run failed and the list still ends with the question), never
-   * a reply already handed on for this very list (the same text on a list of the same length).
+   * The reply to `submitted`: the first row with text AFTER the last row that equals the submitted
+   * text (whitespace squashed). Nothing is returned when
+   * - the question is not in the list yet (a reload, or an older snapshot of the list), or it is the
+   *   last row (the run is not done), or only blank rows follow it;
+   * - that row is an echo of something submitted (the run failed and a question follows the question);
+   * - that row was already handed on (the very same list read again, for a question asked twice).
+   * A row is never taken merely because it is the last one in the list.
    */
   function pickReply(submitted) {
-    let text;
-    try {
-      text = port.lastReply();
-    } catch {
-      return null;
+    const question = squash(submitted);
+    if (!question) return null;
+    const list = readRows();
+    if (list === null) return null;
+    const rows = [];
+    for (const text of list) {
+      const plain = squash(text);
+      if (plain !== "") rows.push({ text, plain });
     }
-    if (typeof text !== "string") return null;
-    const plain = squash(text);
-    if (!plain) return null;
-    if (plain === squash(submitted) || echoes.has(plain)) return null;
-    const key = `${rowCount()}:${plain}`;
+    let at = -1;
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      if (rows[i].plain === question) {
+        at = i;
+        break;
+      }
+    }
+    if (at < 0 || at + 1 >= rows.length) return null;
+    const row = rows[at + 1];
+    if (echoes.has(row.plain)) return null;
+    const key = `${at + 1}:${row.plain}`;
     if (delivered.has(key)) return null;
     rememberDelivered(key);
-    return text;
+    return row.text;
   }
 
   function deliver(reply) {
