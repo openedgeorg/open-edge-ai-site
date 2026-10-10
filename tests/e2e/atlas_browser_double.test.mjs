@@ -8,6 +8,12 @@
  * #phase texts, the sequence of #history lists, the message box, the Send and provider controls,
  * what is kept in sessionStorage, and every request the page made.
  *
+ * One scenario plays TWO turns: turn 1 over the event stream, turn 2 with /events answering 404
+ * and /history lagging (it still lists the older turns and the new question, but not the new reply,
+ * for a while). That is where the working tree's acceptance of /history shows: a client that waits
+ * for the NEW reply and one that takes any earlier assistant row paint different lists and reach
+ * "ready" at different times. A double that is wrong there fails this file (see the scenario).
+ *
  * It exists so that the browser suites can run on the double (and pass on a clean checkout)
  * without the double being allowed to drift away from the client it stands in for. Needs a Chrome
  * and a working tree whose own chat client can follow a stream, fill the history, settle and send
@@ -64,6 +70,7 @@ const READ = `(() => {
     providerDisabled: q("#provider").disabled,
     providerValue: q("#provider").value,
     saved,
+    storageKeys: Object.keys(sessionStorage).filter((key) => !key.startsWith("esp-atlas")).sort(),
     trace: { phase: window.__trace.phase.slice(), rows: window.__trace.rows.slice() },
   };
 })()`;
@@ -221,6 +228,51 @@ const SCENARIOS = [
       await take("caught up");
     },
   ],
+  [
+    "a second question with no event stream while /history lags: the lists, the phases and the requests agree",
+    async ({ page, stub, url, take }) => {
+      stub.reply = (message, n) => (n === 1 ? "First answer, streamed." : "Second answer, late in the history.");
+      await ready(page, url);
+      await page.click("#draft");
+      await page.type("first question");
+      await page.click("#send");
+      await page.waitFor(`document.querySelector("#phase").textContent === "ready" && document.querySelectorAll("#history li").length === 2`, {
+        timeout: 15000,
+        what: "turn 1 answered over the stream and the chat ready",
+      });
+      await take("turn 1");
+      // Turn 2: no stream at all, and /history keeps listing the older turns and the new question
+      // (but not the new reply) for 2.6 s. The history is polled every 2 s.
+      stub.eventsMode = "404";
+      stub.historyDelayMs = 2600;
+      await page.click("#draft");
+      await page.type("second question");
+      await page.click("#send");
+      await stub.waitFor(() => stub.posts.length === 2, { what: "the second question to be posted" });
+      await page.waitFor(
+        `document.querySelector("#phase").textContent === "ready" && window.__trace.phase.filter((text) => text === "running").length >= 2`,
+        { timeout: 20000, what: "the second turn to run and the chat to be ready again" },
+      );
+      await take("turn 2 settled");
+      // Past the lag: a client that took the older list does not refresh it; one that waited has the late reply by now.
+      await sleep(stub.historyDelayMs + 800);
+      await take("turn 2 later");
+    },
+    (real) => {
+      // The scenario really played two turns (two identical but wrong runs would prove nothing).
+      const messages = real.requests.filter((request) => request.method === "POST" && request.url.endsWith("/messages"));
+      assert.deepEqual(
+        messages.map((request) => request.body.message),
+        ["first question", "second question"],
+      );
+      assert.equal(real.requests.filter((request) => request.url.endsWith("/events")).length, 2, "one stream request per turn");
+      assert.ok(real.requests.filter((request) => request.url.endsWith("/history")).length >= 2, "the history was read after each turn");
+      assert.deepEqual(real["turn 1"].rows, ["first question", "First answer, streamed."]);
+      assert.equal(real["turn 2 settled"].phase, "ready");
+      assert.ok(real["turn 2 settled"].rows.includes("second question"), "the second question is in the list");
+      assert.equal(real["turn 2 settled"].saved.requestId, null, "nothing is pending at the end");
+    },
+  ],
 ];
 
 describe("the chat double paints like the working tree's chat client (browser level)", { skip: SKIP, timeout: 240000 }, () => {
@@ -232,13 +284,14 @@ describe("the chat double paints like the working tree's chat client (browser le
     if (browser) await browser.close();
   });
 
-  for (const [name, scenario] of SCENARIOS) {
+  for (const [name, scenario, verify] of SCENARIOS) {
     it(name, async () => {
       const real = await play("real", name, scenario);
       const double = await play("double", name, scenario);
       // Sanity: the scenario really happened (a comparison of two empty runs proves nothing).
       assert.ok(Object.keys(real).length >= 2, "the scenario took at least one snapshot");
       assert.ok(real.requests.length >= 1, "the page talked to the stub");
+      if (verify) verify(real);
       assert.deepEqual(double, real);
     });
   }
