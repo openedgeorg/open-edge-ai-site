@@ -29,7 +29,12 @@
  * pressing Clear map and tapping the first suggestion again, so the older snapshot [Q1, A1] looks exactly
  * like the answer to the new question. The list alone cannot tell them apart; the bridge keeps a short
  * fingerprint of every reply it delivered in sessionStorage ("esp-atlas-seen": position and hash, never
- * text), which a reload does not clear, and so recognises the old A1. Test f looks at what is stored.
+ * text), which a reload does not clear, and so recognises the old A1. The same array holds a fingerprint
+ * of every question the page submitted ("q:" and the hash, F33), so that after a reload the visitor's own
+ * earlier questions are still echoes. Test f looks at what is stored.
+ *
+ * Test g is F32: the history can show one turn as several rows (a preamble, then the answer), and the
+ * Atlas reads them together.
  *
  * What the conversation client does that matters here (the double reproduces it):
  *  - After a reload the list (#history) is EMPTY and stays so until the visitor sends something.
@@ -56,7 +61,7 @@ import http from "node:http";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { LATE_SETTLE_MS, REJECT_PAUSE_MS, SEEN_KEY } from "../../site/js/atlas-chat.js";
+import { LATE_SETTLE_MS, REJECT_PAUSE_MS, SEEN_KEY, fnv1a32 } from "../../site/js/atlas-chat.js";
 import { FIRST_SUGGESTION, ISLANDS, START_ID, buildIndex } from "../../site/js/atlas-graph.js";
 import { compileGlossary, matchReply } from "../../site/js/atlas-match.js";
 import { deriveView } from "../../site/js/atlas-state.js";
@@ -651,7 +656,7 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
     });
   });
 
-  it("f. what the Atlas keeps of the replies it read: short position:hash entries in sessionStorage, no text, and a reload and Clear map leave them", async (t) => {
+  it("f. what the Atlas keeps of the questions and replies it saw: short q:hash and position:hash entries in sessionStorage, no text, and a reload and Clear map leave them", async (t) => {
     const { first } = plan();
     const { page, url } = await openSite(t, "seen-memory", (b) => {
       b.eventsMode = "sse";
@@ -664,15 +669,18 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
       for (let i = 0; i < sessionStorage.length; i += 1) { const name = sessionStorage.key(i); out[name] = sessionStorage.getItem(name); }
       return out;
     })()`;
-    assert.equal((await page.eval(STORAGE))[SEEN_KEY], undefined, "nothing is kept before a reply was read");
+    assert.equal((await page.eval(STORAGE))[SEEN_KEY], undefined, "nothing is kept before anything was asked");
 
     await page.click(CHIP);
     await page.waitFor(`${REPLIES_ARE(1)} && ${PHASE_IS("ready")}`, { timeout: 15000, what: "turn 1 to be answered and scanned" });
     const afterTurn = (await page.eval(STORAGE))[SEEN_KEY];
-    assert.ok(typeof afterTurn === "string", "a reply was read, so its fingerprint is kept");
+    assert.ok(typeof afterTurn === "string", "a question was asked and a reply was read, so their fingerprints are kept");
     const entries = JSON.parse(afterTurn);
-    assert.deepEqual(entries.length, 1);
-    assert.match(entries[0], /^1:[0-9a-f]{8}$/, "the reply sits at position 1 of the list and is kept as a hash");
+    assert.equal(entries.length, 2, "one question entry and one reply entry");
+    assert.match(entries[0], /^q:[0-9a-f]{8}$/, "the question is kept as a hash");
+    assert.equal(entries[0], `q:${fnv1a32(FIRST_SUGGESTION)}`, "the hash of the suggestion that was sent");
+    assert.match(entries[1], /^1:[0-9a-f]{8}$/, "the reply sits at position 1 of the list and is kept as a hash");
+    assert.equal(entries[1], `1:${fnv1a32(first.text)}`, "the hash of the reply the chat showed");
 
     // Not a word of the conversation is in any value of sessionStorage that the Atlas wrote.
     const words = [...new Set(`${FIRST_SUGGESTION} ${first.text}`.toLowerCase().match(/[a-z]{4,}/g))].filter((word) => !/^[0-9a-f]+$/.test(word));
@@ -685,6 +693,53 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
     await clearMap(page);
     assert.equal((await page.eval(STORAGE))[SEEN_KEY], afterTurn, "kept over Clear map");
     assertNothingLit(await read(page), "after Clear map");
+  });
+
+  // ---- F32: a turn that the chat shows as several rows -------------------------------------------
+
+  it("g. the chat shows one turn as a preamble row and an answer row: the Atlas reads both, lights their places exactly once, and a reload does not read them again", async (t) => {
+    const { first, second } = plan();
+    const { backend, page, url } = await openSite(t, "multi-row-turn", (b) => {
+      b.eventsMode = "404";
+      b.runMs = 300;
+      // The history of the turn: [Q, preamble, answer]. The adapter starts a new history item when the message id changes.
+      b.historyOverride = [
+        { role: "user", text: FIRST_SUGGESTION },
+        { role: "assistant", text: first.text },
+        { role: "assistant", text: second.text },
+      ];
+    });
+    await boot(page, url);
+    await page.eval(INSTALL_RECORDER);
+    await page.click(CHIP);
+    await page.waitFor(`${REPLIES_ARE(1)} && ${PHASE_IS("ready")}`, { timeout: 15000, what: "the turn to be answered and scanned" });
+    const lit = await read(page);
+    assert.deepEqual(lit.rows, [FIRST_SUGGESTION, first.text, second.text], "precondition: the chat shows three rows");
+    assertMapShows(lit, [`${first.text}\n${second.text}`], "after the two-row turn");
+    for (const id of [...first.lit, ...second.lit]) assert.ok(lit.visited.includes(id), `the places of both rows are lit (${id})`);
+
+    // Exactly once, however long the page then stays quiet.
+    await sleep(LATE_SETTLE_MS + 1500);
+    assertMapShows(await read(page), [`${first.text}\n${second.text}`], "a few seconds later");
+    const samples = await timeline(page);
+    assertLitOnceAfterFinal(samples, { before: 0, finalText: second.text, label: "a turn of two rows", waitsForQuiet: false });
+
+    // After a reload and Clear map the same suggestion is tapped again while the chat still shows the same
+    // three rows: that is the old turn, already read, and it lights nothing.
+    await reloadTab(page);
+    await clearMap(page);
+    await page.eval(INSTALL_RECORDER);
+    await page.click(CHIP);
+    await page.waitFor(`${PHASE_IS("ready")} && document.querySelectorAll("#history li > p").length === 3`, {
+      timeout: 15000,
+      what: "the chat to paint the same three rows again",
+    });
+    assert.equal(backend.posts.length, 2, "the suggestion went out again");
+    await sleep(LATE_SETTLE_MS + 2500);
+    const again = await read(page);
+    assertNothingLit(again, "on the old three rows");
+    assertNeverCounted(await timeline(page), "on the old three rows");
+    assert.equal(again.cspViolations, 0, "no Content-Security-Policy violation");
   });
 
   // ---- the normal path still works -------------------------------------------------------------
