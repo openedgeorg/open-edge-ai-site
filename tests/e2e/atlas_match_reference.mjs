@@ -6,10 +6,12 @@
  * correct, which is exactly what a reference is for. It lives ONLY in tests/: the shipped matcher
  * tokenises the reply once and never builds a regex per term.
  *
- * The only differences from the old matcher are the two F10 rules, which the shipped matcher also
- * has: a phrase whose first character is uppercase (an acronym expansion written out) is matched
- * case-sensitively, and the single-word allowlist is a parameter (the reviewed list is pinned in
- * the test files, not read from the matcher).
+ * The only differences from the old matcher are the F10 rules and the F35 gap rule, which the
+ * shipped matcher also has: a phrase whose first character is uppercase (an acronym expansion
+ * written out) is matched case-sensitively; a run of spaces, hyphens, asterisks, underscores and
+ * backticks between two words of a phrase is one gap; the en dash and the minus sign read as
+ * hyphens; and the single-word allowlist is a parameter (the reviewed list is pinned in the test
+ * files, not read from the matcher).
  *
  * Not a test file (no .test.mjs suffix): node --test ignores it, other test files import it.
  */
@@ -18,20 +20,20 @@ import { spawnSync } from "node:child_process";
 
 const BEFORE = "(?:^|[^\\p{L}\\p{N}])";
 const AFTER = "(?![\\p{L}\\p{N}])";
-const SEPARATOR = "[\\s\\-]+";
+const SEPARATOR = "[\\s\\-*_`]+";
 
 export function referenceNormalise(text) {
   if (typeof text !== "string") return "";
   return text
     .replace(/[‘’‚‛′]/g, "'")
     .replace(/[“”„‟″]/g, '"')
-    .replace(/[‐‑]/g, "-")
+    .replace(/[\u2010\u2011\u2013\u2212]/g, "-")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 const escapeRegExp = (text) => text.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
-const phraseTokens = (term) => term.split(/[\s-]+/).filter(Boolean);
+const phraseTokens = (term) => term.split(/[\s\-*_`]+/).filter(Boolean);
 
 /** @param {Set<string>|string[]} allowed lowercase single words that are valid terms */
 export function referenceClassify(term, allowed) {
@@ -39,7 +41,7 @@ export function referenceClassify(term, allowed) {
   if (typeof term !== "string") return "rejected";
   const text = referenceNormalise(term);
   if (!text) return "rejected";
-  if (/[\s-]/.test(text)) return phraseTokens(text).length >= 2 ? "phrase" : "rejected";
+  if (/[\s\-*_`]/.test(text)) return phraseTokens(text).length >= 2 ? "phrase" : "rejected";
   if (/^[\p{Lu}\p{N}]{2,}$/u.test(text) && /\p{Lu}/u.test(text)) return "acronym";
   if (/\p{Lu}/u.test(Array.from(text).slice(1).join(""))) return "acronym";
   return words.has(text.toLowerCase()) ? "word" : "rejected";

@@ -2,11 +2,20 @@
  * Atlas matcher: decides which islands of the concept graph a reply mentions.
  *
  * Matching is deliberately conservative. A reply must use the same words the design uses:
- * - an ACRONYM term (AtS, IsHEC, HEIDs, FUP) is matched case-sensitively as a whole token;
- * - a PHRASE term ("the pot", "spend-ahead") is matched case-insensitively, with spaces and
- *   hyphens interchangeable, EXCEPT a phrase whose first character is uppercase ("Allowance to
- *   Spend", "Consumption Record"): that is an acronym expansion written out, and it is matched
- *   case-sensitively, so a reply that merely says "allowance to spend" in passing lights nothing;
+ * - an ACRONYM term is matched case-sensitively as a whole token. The acronyms the graph uses as
+ *   terms are listed on the next line (a test keeps this line and the graph in step).
+ *   Acronym terms of the graph: AtS, CfEfA, ConRec, HCD, HEEA, HEID, HLAA, HPC, HSAT, HSATM, IPtD, IsHEC, RtgP, ZK.
+ *   A bare "FUP" is NOT a term: the acronym is in nearly every answer about the design and says
+ *   nothing about where the reply is. Only the phrases that contain it ("FUP faucet", "FUP audit") are.
+ * - a PHRASE term ("the pot", "spend-ahead") is matched case-insensitively. Between two of its words
+ *   a run of spaces, hyphens, asterisks, underscores and backticks counts as one gap, so "the pot",
+ *   "the-pot", "the **pot**", "the _pot_" and "the `pot`" are the same phrase (a model answer is
+ *   often Markdown), and an en dash or a minus sign reads as a hyphen ("spend–ahead" is "spend-ahead").
+ *   Any other character between the words (a full stop, a comma, a bracket, a quote) breaks the
+ *   phrase: a "the" that ends one sentence and a "pot" that starts the next never make "the pot".
+ *   EXCEPT a phrase whose first character is uppercase ("Allowance to Spend", "Consumption
+ *   Record"): that is an acronym expansion written out, and it is matched case-sensitively, so a
+ *   reply that merely says "allowance to spend" in passing lights nothing;
  * - a single plain WORD term is only allowed when it is listed in REVIEWED_WORDS, a short list
  *   somebody has read and decided is distinctive ESP vocabulary. Every other single word (pot,
  *   base, debt, fund, plan, bill, freeze, commitment, audit, collateral, immutable, finality,
@@ -30,6 +39,15 @@ import { ISLANDS } from "./atlas-graph.js";
  * The reviewed allowlist of single plain words that may be used as terms. Add a word here only
  * after reading it: it must be a genuinely distinctive ESP word that a faithful answer about the
  * island uses and that almost no other answer about ESP does. Never a common word.
+ *
+ * Why a short list of single words is acceptable at all: the visitor-facing AI answers only from
+ * the summary of the design, so each of these distinctive words is used in ONE sense there (the
+ * financial counterparty, the FUP faucet, a fungible base, hoarding of the allowance, an ISP
+ * overdraft, the Spotify example, an ISP that prepays). That reasoning does not extend to a word
+ * the summary uses only as deferred machinery. "slashing" and "slashed" were on this list until
+ * round 3 and were dropped: no island uses them as a single-word term, and a future settled island
+ * could otherwise have picked them up unchecked. Every word on this list must be used as a
+ * single-word term by some island of the shipped graph (atlas_match_graph.test.mjs fails otherwise).
  */
 export const REVIEWED_WORDS = new Set([
   "counterparty",
@@ -39,8 +57,6 @@ export const REVIEWED_WORDS = new Set([
   "overdraft",
   "spotify",
   "prepays",
-  "slashing",
-  "slashed",
 ]);
 
 /** The old name of REVIEWED_WORDS; the same Set. */
@@ -51,13 +67,19 @@ export const DISTINCT_WORDS = REVIEWED_WORDS;
 /** Start of text, or one character that is not a letter or digit. Only used by the regex fallback. */
 const BEFORE = "(?:^|[^\\p{L}\\p{N}])";
 const AFTER = "(?![\\p{L}\\p{N}])";
-const SEPARATOR = "[\\s\\-]+";
+/**
+ * What counts as one gap between two words of a phrase: whitespace, hyphen, and the Markdown marks
+ * asterisk, underscore and backtick. Keep SEPARATOR, phraseTokens, the phrase check in classifyTerm
+ * and canonicalGap in step (and the same four places in tests/e2e/atlas_match_reference.mjs).
+ */
+const SEPARATOR = "[\\s\\-*_`]+";
 /** A run of letters and digits: the unit of tokenisation. */
 const TOKEN_SOURCE = "[\\p{L}\\p{N}]+";
 
 /**
- * Curly quotes to straight, typographic hyphens to "-", NBSP and newlines to a space,
- * whitespace collapsed and trimmed.
+ * Curly quotes to straight, typographic hyphens, the en dash and the minus sign to "-", NBSP and
+ * newlines to a space, whitespace collapsed and trimmed. (The em dash is NOT mapped: it is
+ * sentence punctuation, not a hyphen.)
  * @param {unknown} text
  * @returns {string}
  */
@@ -66,7 +88,7 @@ export function normaliseReply(text) {
   return text
     .replace(/[‘’‚‛′]/g, "'")
     .replace(/[“”„‟″]/g, '"')
-    .replace(/[‐‑]/g, "-")
+    .replace(/[\u2010\u2011\u2013\u2212]/g, "-")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -78,7 +100,7 @@ function escapeRegExp(text) {
 
 /** @param {string} term already normalised */
 function phraseTokens(term) {
-  return term.split(/[\s-]+/).filter(Boolean);
+  return term.split(/[\s\-*_`]+/).filter(Boolean);
 }
 
 /**
@@ -89,7 +111,7 @@ export function classifyTerm(term) {
   if (typeof term !== "string") return "rejected";
   const text = normaliseReply(term);
   if (!text) return "rejected";
-  if (/[\s-]/.test(text)) {
+  if (/[\s\-*_`]/.test(text)) {
     // A phrase needs at least two real words: "debt-" must not behave like the word "debt".
     return phraseTokens(text).length >= 2 ? "phrase" : "rejected";
   }
@@ -113,11 +135,12 @@ function isCaseSensitive(text, kind) {
 }
 
 /**
- * Separator runs (spaces and hyphens) between two tokens all count the same.
+ * Separator runs (spaces, hyphens, asterisks, underscores, backticks) between two tokens all count
+ * the same: they become one space. Any other character in the gap is kept, so it never equals " ".
  * @param {string} gap
  */
 function canonicalGap(gap) {
-  return gap === " " ? gap : gap.replace(/[ -]+/g, " ");
+  return gap === " " ? gap : gap.replace(/[ \-*_`]+/g, " ");
 }
 
 /**

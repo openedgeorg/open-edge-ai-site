@@ -48,7 +48,7 @@ function anchorsOf(island) {
 }
 
 const isAcronymTerm = (term) => /^[\p{Lu}\p{N}]{2,}$/u.test(term) || /\p{Lu}/u.test(Array.from(term).slice(1).join(""));
-const isSingleToken = (term) => !/[\s-]/.test(term);
+const isSingleToken = (term) => !/[\s\-*_`]/.test(term);
 
 // ---------------------------------------------------------------- the glossary of the shipped graph
 
@@ -92,6 +92,48 @@ test("every single-word term of the shipped graph is on the reviewed list", () =
       if (isSingleToken(term) && !isAcronymTerm(term)) assert.equal(classifyTerm(term), "word", `${island.id}: ${term}`);
     }
   }
+});
+
+test("every word on the reviewed list is used as a single-word term by some island (F34)", () => {
+  // The list is justified by the visitor-facing AI using each distinctive word in one sense, as the
+  // islands do. A word that no island uses has no such check behind it and must leave the list.
+  const used = new Set();
+  for (const island of ISLANDS) {
+    for (const term of island.terms) {
+      if (isSingleToken(term) && !isAcronymTerm(term)) used.add(normaliseReply(term).toLowerCase());
+    }
+  }
+  assert.ok(REVIEWED_WORDS.size >= 1);
+  const unused = [...REVIEWED_WORDS].filter((word) => !used.has(word));
+  assert.deepEqual(unused, [], `reviewed words that no island uses as a single-word term (drop them from REVIEWED_WORDS): ${unused.join(", ")}`);
+  for (const word of REVIEWED_WORDS) {
+    const owners = ISLANDS.filter((island) => island.terms.some((term) => normaliseReply(term).toLowerCase() === word));
+    assert.ok(owners.length >= 1, word);
+    assert.ok(match(`We say ${word} here.`).some((id) => owners.some((island) => island.id === id)), `${word} lights its island`);
+  }
+  // Dropped in round 3: deferred machinery in the summary, no island uses them as single words.
+  for (const word of ["slashing", "slashed"]) assert.equal(REVIEWED_WORDS.has(word), false, word);
+});
+
+test("the acronyms listed in the matcher header are exactly the acronym terms of the graph, and bare FUP is not one (F35)", () => {
+  const source = readFileSync(new URL("../../site/js/atlas-match.js", import.meta.url), "utf8");
+  const line = source.match(/^ \*\s+Acronym terms of the graph: (.+)\.$/m);
+  assert.ok(line, "the matcher header carries an 'Acronym terms of the graph: ...' line");
+  const listed = line[1].split(/,\s*/).sort();
+  const actual = new Set();
+  for (const island of ISLANDS) {
+    for (const term of island.terms) if (classifyTerm(term) === "acronym") actual.add(normaliseReply(term));
+  }
+  assert.deepEqual(listed, [...actual].sort(), "update the header line of site/js/atlas-match.js to match the graph");
+  assert.equal(listed.includes("FUP"), false);
+  assert.equal(ISLANDS.some((island) => island.terms.some((term) => normaliseReply(term) === "FUP")), false, "bare FUP is not a term");
+  for (const text of ["The FUP applies to every household.", "the FUP and the FUPs, (FUP), **FUP**", "fup"]) {
+    assert.deepEqual(match(text), [], text);
+  }
+  // Only the phrases that contain FUP are terms.
+  const withFup = ISLANDS.flatMap((island) => island.terms.filter((term) => /\bFUP\b/.test(term)).map((term) => `${island.id}: ${term}`));
+  assert.ok(withFup.length >= 1, "at least one phrase term contains FUP");
+  for (const entry of withFup) assert.match(entry.split(": ")[1], /^FUP[\s-]\S+/, entry);
 });
 
 test("the generic phrases the round-1 reviewers flagged are not terms", () => {
@@ -153,6 +195,35 @@ test("case rules hold for every term of the shipped graph", () => {
       }
     }
   }
+});
+
+test("every term of the shipped graph still lights its island in Markdown emphasis or with en dashes (F35)", () => {
+  for (const island of ISLANDS) {
+    for (const term of island.terms) {
+      const variants = [
+        `**${term}**`,
+        `_${term}_`,
+        `\`${term}\``,
+        `**${term.split(" ").join("** **")}**`,
+        term.replace(/ /g, " _").replace(/^/, "_"),
+        term.replace(/-/g, "\u2013"),
+        term.replace(/-/g, "\u2212"),
+      ];
+      for (const variant of variants) {
+        const lit = match(`We discussed ${variant} in the answer.`);
+        assert.ok(lit.includes(island.id), `${island.id}: "${variant}" lights ${JSON.stringify(lit)}`);
+        assert.ok(lit.length <= 3, `"${variant}" lights ${lit.length} islands (${lit.join(", ")})`);
+      }
+    }
+  }
+});
+
+test("a pause between two sentences is not a gap: a stray 'the' and a 'pot' in different sentences do not make 'the pot'", () => {
+  assert.deepEqual(match("It depends on the. Pot of tea is another thing."), []);
+  assert.deepEqual(match("It is about the pot."), ["the-pot"]);
+  assert.deepEqual(match("It is about the **pot**."), ["the-pot"]);
+  assert.deepEqual(match("It is about the _pot_'s size."), ["the-pot"]);
+  assert.deepEqual(match("About the, **pot**."), []);
 });
 
 test("bare common words never light an island of the shipped graph", () => {
@@ -249,6 +320,9 @@ test("the hook example: a faithful first answer lights five islands and puts the
   assert.equal(view.status["the-pot"], "frontier");
   assert.equal(view.status.overdraft, "frontier");
   assert.equal(view.dragonsReached, false);
+  // The same answer as a model writes it: Markdown emphasis changes nothing (F35).
+  const marked = "**Your ISP**, as your financial **counterparty**. You pay it under one **standing plan**, and apps earn through the **protocol**. Its _monthly commitment_ for your household enters a **common fund** and funds your guaranteed **base allowance**.";
+  assert.deepEqual(match(marked), ids);
   const next = reduceAtlas(state, { type: "reply", ids: match("The pot is spending authority, not money.") });
   assert.deepEqual(next.visited.slice(-1), ["the-pot"]);
   assert.equal(deriveView(next).status["the-pot"], "visited");
@@ -273,6 +347,9 @@ test("differential: the tokenising matcher equals the regex reference on replies
     if (r < 0.44) return text.replace(/ /g, "-");
     if (r < 0.52) return text.replace(/\b(\w+)\b/g, "$1s");
     if (r < 0.6) return text.replace(/'/g, "’");
+    if (r < 0.68) return text.replace(/ /g, " **");
+    if (r < 0.74) return text.replace(/ /g, "_");
+    if (r < 0.8) return text.replace(/-/g, "\u2013").replace(/ /g, " `");
     return text;
   };
   const replies = [...pieces];
