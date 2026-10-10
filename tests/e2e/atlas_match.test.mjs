@@ -32,7 +32,8 @@ import {
 
 /**
  * The reviewed allowlist of single words, pinned HERE (not read back from the matcher or from the
- * graph). Changing the list means changing this constant in a reviewed commit.
+ * graph). Changing the list means changing this constant in a reviewed commit. "slashing" and
+ * "slashed" left the list in round 3 (F34): no island uses them as a single-word term.
  */
 const REVIEWED = [
   "counterparty",
@@ -41,8 +42,6 @@ const REVIEWED = [
   "hoarding",
   "overdraft",
   "prepays",
-  "slashed",
-  "slashing",
   "spotify",
 ];
 
@@ -117,6 +116,8 @@ test("the reviewed list holds no common word", () => {
     // the generic back doors the round-1 review found
     "collateral", "immutable", "finality", "bilateral", "underfunding", "epoch", "epochs",
     "diary", "timetable", "optimistically", "clawback", "expulsion", "settlement", "escrow",
+    // dropped in round 3 (F34): deferred machinery in the summary, used by no island as a single word
+    "slashing", "slashed", "slash",
   ]) {
     assert.equal(REVIEWED_WORDS.has(word), false, word);
   }
@@ -135,19 +136,20 @@ test("a single word that is not on the reviewed list is rejected, in a phrase it
   ]);
   assert.deepEqual(
     compiled.rejected.map((r) => r.term),
-    ["collateral", "immutable", "finality", "bilateral", "underfunding", "epoch"],
+    ["collateral", "immutable", "finality", "bilateral", "underfunding", "epoch", "slashing"],
   );
   assert.deepEqual(matchReply("the collateral", compiled), []);
   assert.deepEqual(matchReply("it is immutable", compiled), []);
   assert.deepEqual(matchReply("settlement finality", compiled), ["x"]);
   assert.deepEqual(matchReply("Posted Collateral", compiled), ["x"]);
-  assert.deepEqual(matchReply("a slashing", compiled), ["x"]);
+  assert.deepEqual(matchReply("a slashing", compiled), [], "slashing is not a reviewed word (F34)");
+  assert.deepEqual(matchReply("an overdraft", compiled), ["x"]);
 });
 
 test("the round-1 back-door replies light nothing", () => {
   // A faithful overdraft answer that mentions collateral, and "immutable once posted".
   const islands = [
-    { id: "penalties", terms: ["posted collateral", "slashing"] },
+    { id: "penalties", terms: ["posted collateral", "collateral slashing"] },
     { id: "finality", terms: ["settlement finality"] },
   ];
   const g = compileGlossary(islands);
@@ -183,6 +185,8 @@ test("classifyTerm", () => {
     Spotify: "word",
     prepays: "word",
     counterparty: "word",
+    slashing: "rejected",
+    Slashed: "rejected",
     pot: "rejected",
     base: "rejected",
     debt: "rejected",
@@ -228,6 +232,11 @@ test("normaliseReply", () => {
   assert.equal(normaliseReply("a b\nc\r\nd\te"), "a b c d e");
   assert.equal(normaliseReply("  a   b \n\n  c  "), "a b c");
   assert.equal(normaliseReply("spend‑ahead"), "spend-ahead");
+  // F35: the en dash and the minus sign are hyphens; the em dash is sentence punctuation and stays.
+  assert.equal(normaliseReply("spend\u2013ahead"), "spend-ahead");
+  assert.equal(normaliseReply("spend\u2212ahead"), "spend-ahead");
+  assert.equal(normaliseReply("spend\u2010ahead spend\u2011ahead"), "spend-ahead spend-ahead");
+  assert.equal(normaliseReply("spend\u2014ahead"), "spend\u2014ahead");
   assert.equal(normaliseReply(""), "");
   for (const bad of [null, undefined, 7, {}, []]) assert.equal(normaliseReply(bad), "");
 });
@@ -331,6 +340,104 @@ test("phrases are case-insensitive and hyphen and space are interchangeable", ()
   assert.deepEqual(match("a top up"), [], "a bare top-up is everyday talk and lights nothing");
   assert.deepEqual(match("top-ups"), []);
   assert.deepEqual(match("spendahead"), []);
+});
+
+// ---------------------------------------------------------------- Markdown marks and dashes are gaps (F35)
+
+test("Markdown emphasis marks between the words of a phrase are one gap: the **pot** is the pot", () => {
+  for (const text of [
+    "the **pot**",
+    "the _pot_",
+    "the *pot*",
+    "the `pot`",
+    "**the pot**",
+    "**the** **pot**",
+    "the ** pot",
+    "the\n\n**pot**",
+    "The   _POT_",
+    "the__pot",
+    "the-**pot**",
+    "the --pot",
+    "the pot's",
+    "the pot\u2019s",
+    "the **pots**",
+    "the ***pot***",
+  ]) {
+    assert.deepEqual(match(`It is ${text} here.`), ["pot"], JSON.stringify(text));
+  }
+  assert.deepEqual(match("a common **fund**"), ["fund"]);
+  assert.deepEqual(match("a **common fund**"), ["fund"]);
+  assert.deepEqual(match("it is **spend-ahead**"), ["ahead"]);
+  assert.deepEqual(match("a _monthly_ **commitment**"), ["commitment"]);
+  assert.deepEqual(match("an `ESP` `epoch`"), ["epoch"], "a case-sensitive phrase still matches through the marks");
+  assert.deepEqual(match("**Allowance** to **Spend**"), ["ats"]);
+  assert.deepEqual(match("**allowance** to **spend**"), [], "the marks do not relax the case rule");
+  for (const acronym of ["**AtS**", "_AtS_", "`AtS`", "*AtS*", "(**AtS**)"]) {
+    assert.deepEqual(match(`the ${acronym} list`), ["ats"], acronym);
+  }
+});
+
+test("only spaces, hyphens and Markdown marks are a gap: other punctuation still breaks a phrase", () => {
+  for (const text of [
+    "He said \"the\". Pot roast followed.",
+    "and then the.\n\n**Pot** roast",
+    "the. **pot**",
+    "the, **pot**",
+    "the (pot)",
+    "the \"pot\"",
+    "the: pot",
+    "the; pot",
+    "the \u2014 pot",
+    "the / pot",
+    "the ** . ** pot",
+    "the '*pot*",
+    "the p**ot**",
+    "the po*t",
+    "the p_ot",
+    "the potash and **the** thing",
+    "stray the. Another sentence about a pot.",
+    "spend, ahead",
+    "spend\u2014ahead",
+    "spend. **ahead**",
+  ]) {
+    assert.deepEqual(match(text), [], JSON.stringify(text));
+  }
+  assert.deepEqual(match("the pot's"), ["pot"], "a possessive after the phrase is fine");
+});
+
+test("an en dash and a minus sign read as hyphens in a reply, an em dash does not", () => {
+  for (const text of [
+    "spend\u2013ahead",
+    "spend \u2013 ahead",
+    "spend\u2212ahead",
+    "spend \u2212 ahead",
+    "Spend\u2013Ahead",
+    "spend\u2010ahead",
+    "spend\u2011ahead",
+  ]) {
+    assert.deepEqual(match(`It is ${text} behaviour.`), ["ahead"], JSON.stringify(text));
+  }
+  assert.deepEqual(match("Allowance\u2013to\u2013Spend"), ["ats"]);
+  assert.deepEqual(match("allowance\u2013to\u2013spend"), []);
+  assert.deepEqual(match("conditional top\u2013ups"), ["topups"]);
+  assert.deepEqual(match("off\u2212chain"), ["offchain"]);
+  assert.deepEqual(match("It is spend\u2014ahead behaviour."), [], "an em dash is sentence punctuation, not a hyphen");
+});
+
+test("a term written with Markdown marks or dashes is the same phrase as the plain one", () => {
+  for (const term of ["the_pot", "the*pot", "the`pot`", "the\u2013pot", "the\u2212pot", "the  --  pot"]) {
+    const g = glossaryOf([term]);
+    assert.equal(g.entries[0].tests.length, 1, term);
+    assert.equal(g.entries[0].tests[0].kind, "phrase", term);
+    for (const reply of ["the pot", "the-pot", "the **pot**", "THE _POT_"]) {
+      assert.deepEqual(matchReply(`see ${reply} now`, g), ["x"], `${term} <- ${reply}`);
+    }
+    assert.deepEqual(matchReply("see the. pot now", g), [], term);
+  }
+  // A lone mark, or a mark at an end, is not a second word.
+  for (const term of ["pot*", "_pot", "`pot`", "***", "_", "-*-"]) {
+    assert.equal(classifyTerm(term), "rejected", term);
+  }
 });
 
 // ---------------------------------------------------------------- acronym expansions are case-sensitive (F10)
@@ -796,6 +903,14 @@ const HANDWRITTEN_REPLIES = [
   "É the pot é AtS é",
   "x".repeat(300),
   "the ".repeat(100) + "pot",
+  "the **pot**, the _pot_, the `pot`, **the pot**, the *pot*, the ***pots***",
+  "the. **pot** and the, _pot_ and the (pot) and the \"pot\" and the p**ot**",
+  "spend\u2013ahead spend \u2212 ahead spend\u2014ahead spend\u2010ahead spend ** ahead spend_ahead",
+  "Allowance\u2013to\u2013Spend allowance\u2013to\u2013spend **Allowance** to **Spend** `Allowance to Spend`",
+  "ISP **bill** **ISP bill** `ISP` `bill` isp _bill_ ISP_bill",
+  "a_b c, a b c, a**b c, a_b-c, A_B C",
+  "common __fund__ common _*fund*_ common ** fund common.fund",
+  "**AtS** _AtS_ `AtS` *AtS* AtS_ _AtS non_AtS AtS**s",
 ];
 
 test("differential: the tokenising matcher equals the regex reference on handwritten replies", () => {
@@ -835,20 +950,32 @@ test("differential: terms with punctuation, accents, digits and odd separators",
   for (const island of odd) assertSameAsReference([island], replies, `odd ${island.id}`);
 });
 
-/** Random replies and terms from a vocabulary that is full of near misses. Seeds are fixed so a failure replays. */
-function fuzz(seed, rounds, repliesPerRound) {
+/**
+ * Random replies and terms from a vocabulary that is full of near misses. Seeds are fixed so a
+ * failure replays. With `markdown`, the separators between words also include the Markdown marks
+ * (asterisk, underscore, backtick), the en dash and the minus sign (F35); without it the generator
+ * is exactly the round-2 one.
+ */
+function fuzz(seed, rounds, repliesPerRound, markdown = false) {
   const atoms = [
     "pot", "Pot", "POT", "the", "The", "AtS", "ats", "ATS", "HEID", "HEIDs", "HEIDS", "fund", "funds", "Fund", "common",
     "Common", "bill", "x", "s", "é", "Éa", "9", "42", "overdraft", "Overdraft", "Spotify", "spotify", "ISP", "ISP's", "isp",
     "C++", "a.b", "IsHEC", "IsHEC(1)", "(AtS)", "+", "FUP", "faucet", "spend", "ahead", "Allowance", "to", "Spend",
-    "Consumption", "Record", "Records", "ß", "ẞ", "Ä", "ä", "日本", "٣", "½", "a_b", "slashed", "prepays", "counterparty",
+    "Consumption", "Record", "Records", "ß", "ẞ", "Ä", "ä", "日本", "٣", "½", "a_b", "hoarding", "prepays", "counterparty",
   ];
-  const separators = [" ", "-", " - ", "  ", "\n", ", ", ".", "(", ")", "'", "++", "'s ", " — ", "🧠", " ", "‑", "’", "“", "/", " ,"];
+  const separators = [" ", "-", " - ", "  ", "\n", ", ", ".", "(", ")", "'", "++", "'s ", " — ", "🧠", " ", "‑", "’", "“", "/", " ,"];
+  const termJoins = [" ", "-", " ", " - ", "  ", "‑", "\n"];
+  const gapMix = [" ", "-", " - ", "\n"];
+  if (markdown) {
+    separators.push(" **", "** ", "_", " _", "`", "*", "\u2013", " \u2013 ", "\u2212", " ** ", "_ ", "**", " `");
+    termJoins.push("_", "*", "`", "\u2013", " **", "** ", "\u2212", "*_");
+    gapMix.push("**", " _", "`", "\u2013", "\u2212", "* ", "_");
+  }
   const rnd = seededRandom(seed);
   const pick = (list) => list[Math.floor(rnd() * list.length)];
   const randomTerm = () => {
     let term = pick(atoms);
-    for (let n = Math.floor(rnd() * 4); n > 0; n -= 1) term += pick([" ", "-", " ", " - ", "  ", "‑", "\n"]) + pick(atoms);
+    for (let n = Math.floor(rnd() * 4); n > 0; n -= 1) term += pick(termJoins) + pick(atoms);
     if (rnd() < 0.08) term = pick(["(", "+", "-", " ", "."]) + term;
     if (rnd() < 0.08) term += pick([")", "+", "-", " ", "."]);
     return term;
@@ -858,7 +985,7 @@ function fuzz(seed, rounds, repliesPerRound) {
     if (r < 0.15) return text.toUpperCase();
     if (r < 0.3) return text.toLowerCase();
     if (r < 0.4) return `${text}s`;
-    if (r < 0.5) return text.replace(/[ -]/g, () => pick([" ", "-", " - ", "\n"]));
+    if (r < 0.5) return text.replace(/[ -]/g, () => pick(gapMix));
     if (r < 0.58) return `x${text}`;
     if (r < 0.66) return `${text}x`;
     if (r < 0.72) return text.slice(1);
@@ -909,7 +1036,19 @@ test("differential: 12,000 generated replies against generated glossaries", () =
   assert.ok(lit > compared * 0.3, `the generated replies light something often enough to mean something (${lit} of ${compared})`);
 });
 
-test("the differential test has teeth: a matcher that ignores case, plurals or gaps would be caught", () => {
+test("differential: 6,000 generated replies whose words are joined by Markdown marks, en dashes and minus signs", () => {
+  let compared = 0;
+  let lit = 0;
+  for (const seed of [3, 4, 20261011]) {
+    const result = fuzz(seed, 40, 50, true);
+    compared += result.compared;
+    lit += result.lit;
+  }
+  assert.equal(compared, 6000);
+  assert.ok(lit > compared * 0.3, `the generated replies light something often enough to mean something (${lit} of ${compared})`);
+});
+
+test("the differential test has teeth: a matcher that ignores case, plurals, gaps, Markdown marks or dashes would be caught", () => {
   // The reference is only worth something if a wrong matcher disagrees with it. Check the three
   // rules that most easily go wrong on a handwritten pair each.
   const ref = referenceCompile([{ id: "x", terms: ["AtS", "the pot", "spend-ahead", "Allowance to Spend"] }], new Set(REVIEWED));
@@ -921,6 +1060,14 @@ test("the differential test has teeth: a matcher that ignores case, plurals or g
     ["spend  -  ahead", ["x"]],
     ["spend, ahead", []],
     ["allowance to spend", []],
+    ["THE **POT**", ["x"]],
+    ["the _pot_s", ["x"]],
+    ["the. pot", []],
+    ["the p**ot**", []],
+    ["spend\u2013ahead", ["x"]],
+    ["spend\u2212 ahead", ["x"]],
+    ["spend\u2014ahead", []],
+    ["**Allowance** to **Spend**", ["x"]],
   ]) {
     assert.deepEqual(referenceMatch(reply, ref), expected, `reference: ${reply}`);
     assert.deepEqual(matchReply(reply, g), expected, `matcher: ${reply}`);
