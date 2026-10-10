@@ -21,9 +21,11 @@
  *   (not including) the first row that is an echo of a question the visitor submitted. The chat's
  *   history can hold one turn as several rows (a preamble, then the answer: the adapter starts a new
  *   history item whenever the message id changes), so those rows are delivered together, joined by a
- *   newline; a row that is an echo, and anything after it, belongs to a later turn. If the question
- *   is not in the list (a reload, or the chat showing an older snapshot) there is nothing to deliver
- *   yet and the bridge keeps waiting. A row is never taken merely because it is the last one.
+ *   blank line (each row is a paragraph of its own to the matcher, so the end of one row and the start
+ *   of the next never make a phrase: F43); a row that is an echo, and anything after it, belongs to a
+ *   later turn. If the question is not in the list (a reload, or the chat showing an older snapshot)
+ *   there is nothing to deliver yet and the bridge keeps waiting. A row is never taken merely because
+ *   it is the last one.
  * - A delivered reply is remembered as `${position of its first row}:${hash of its squashed text}`, so an
  *   identical canned answer in a later turn still counts while a second read of the very same list does not.
  * - That memory also lives in sessionStorage (SEEN_KEY, passed in as `storage`), because a reload
@@ -32,7 +34,10 @@
  *   A1 would be taken for the new answer and light its places. The same array also holds a short
  *   fingerprint (`q:` and 8 hex digits) of every question submitted, so after a reload the visitor's own
  *   earlier questions are still recognised as echoes in a stale list such as [T1, Q2, A2]. Only short
- *   hashes are stored, never a reply, a row or a question; 200 entries in all, the oldest dropped first.
+ *   hashes are stored, never a reply, a row or a question. Replies and questions are capped SEPARATELY, at
+ *   200 entries of each kind (about 6 KB in all), the oldest of a kind dropped first (F44): a turn leaves one
+ *   entry of each kind, so a shared cap of 200 would have forgotten turn 1 after 100 turns, and a stale
+ *   read of an old list could then hand on a whole old turn.
  */
 
 import { FIRST_SUGGESTION, ISLANDS } from "./atlas-graph.js";
@@ -58,7 +63,11 @@ export const START_GIVE_UP_MS = 10000;
 export const LATE_SETTLE_MS = 1500;
 
 const BUSY_PHASES = new Set(["submitting", "running", "reconciling", "recovering"]);
-/** The most entries the stored memory holds, replies and questions together; the oldest go first. */
+/**
+ * The most entries the stored memory holds of EACH kind (reply keys, and `q:` question keys); the
+ * oldest of a kind goes first. A turn adds one of each, so this is also the number of turns the
+ * bridge can recognise a stale read of.
+ */
 const SEEN_LIMIT = 200;
 const ECHO_LIMIT = 100;
 /**
@@ -69,7 +78,7 @@ export const SEEN_KEY = "esp-atlas-seen";
 /** What one stored entry must look like (a reply, or a question); anything else in the array is ignored. */
 const SEEN_REPLY_ENTRY = /^\d{1,9}:[0-9a-f]{8}$/;
 const SEEN_QUESTION_ENTRY = /^q:[0-9a-f]{8}$/;
-/** A stored value longer than this is not even parsed (200 entries need about 3 KB). */
+/** A stored value longer than this is not even parsed (the full 400 entries need about 6 KB). */
 const SEEN_MAX_CHARS = 65536;
 
 const MESSAGES = {
@@ -341,6 +350,7 @@ export function createChatBridge({
   // rows that have text), and `q:${fnv1a32 of the squashed text}` of every question submitted. Seeded from
   // storage when the bridge is created and written back after each change.
   const seen = new Set();
+  const kept = { reply: { count: 0 }, question: { count: 0 } }; // how many of each kind `seen` holds (SEEN_LIMIT applies to each)
   const echoes = new Set(); // squashed text of every submit of this page: a row equal to one is the visitor's echo
   const unsubscribers = [];
 
@@ -480,11 +490,24 @@ export function createChatBridge({
     changed();
   }
 
-  /** Add `entry` as the newest (an entry that is already there moves to the end); past SEEN_LIMIT the oldest go. */
+  /**
+   * Add `entry` as the newest (an entry that is already there moves to the end). Past SEEN_LIMIT entries
+   * of ITS kind (a reply key, or a `q:` question key) the oldest of that kind go; the other kind is not
+   * touched, so a long run of questions never pushes the reply keys out, nor the other way round (F44).
+   */
   function remember(entry) {
-    seen.delete(entry);
+    const question = entry.startsWith("q:");
+    const kind = question ? kept.question : kept.reply;
+    if (seen.delete(entry)) kind.count -= 1;
     seen.add(entry);
-    while (seen.size > SEEN_LIMIT) seen.delete(seen.values().next().value);
+    kind.count += 1;
+    if (kind.count <= SEEN_LIMIT) return;
+    for (const old of seen) {
+      if (old.startsWith("q:") !== question) continue;
+      seen.delete(old);
+      kind.count -= 1;
+      if (kind.count <= SEEN_LIMIT) break;
+    }
   }
 
   /**
@@ -557,7 +580,7 @@ export function createChatBridge({
   /**
    * The reply to `submitted`: the rows with text AFTER the last row that equals the submitted text
    * (whitespace squashed), up to the first row that is an echo of a submitted question, joined by a
-   * newline. A turn can be several rows ([Q, preamble, answer]): the xAI adapter starts a new history
+   * blank line. A turn can be several rows ([Q, preamble, answer]): the xAI adapter starts a new history
    * item whenever the message id changes. With a single row this is that row, as the page shows it.
    * Nothing is returned when
    * - the question is not in the list yet (a reload, or an older snapshot of the list), or it is the
@@ -598,7 +621,8 @@ export function createChatBridge({
     if (seen.has(key)) return null;
     remember(key);
     storeSeen();
-    return turn.map((row) => row.text).join("\n");
+    // Joined by a blank line: to the matcher each row is a paragraph, so no phrase spans two rows (F43).
+    return turn.map((row) => row.text).join("\n\n");
   }
 
   function deliver(reply) {

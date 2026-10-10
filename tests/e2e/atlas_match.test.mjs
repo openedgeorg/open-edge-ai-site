@@ -353,7 +353,7 @@ test("Markdown emphasis marks between the words of a phrase are one gap: the **p
     "**the pot**",
     "**the** **pot**",
     "the ** pot",
-    "the\n\n**pot**",
+    "the\n**pot**", // one newline inside a paragraph is only a space (a blank line is not: see F43 below)
     "The   _POT_",
     "the__pot",
     "the-**pot**",
@@ -438,6 +438,137 @@ test("a term written with Markdown marks or dashes is the same phrase as the pla
   for (const term of ["pot*", "_pot", "`pot`", "***", "_", "-*-"]) {
     assert.equal(classifyTerm(term), "rejected", term);
   }
+});
+
+// ---------------------------------------------------------------- paragraphs and list items are phrase breaks (F43)
+
+/** Islands shaped like the ones the F43 review found: bullets that are island names, and a join. */
+const BLOCKS = compileGlossary([
+  { id: "monthly", terms: ["monthly epoch"] },
+  { id: "layers", terms: ["identity layers"] },
+  { id: "identity", terms: ["epoch identity"] },
+  { id: "opening", terms: ["epoch opening"] },
+  { id: "pot", terms: ["the pot"] },
+  { id: "ats", terms: ["Allowance to Spend", "AtS"] },
+  { id: "rules", terms: ["C++ rules"] },
+]);
+const blocks = (text) => matchReply(text, BLOCKS);
+
+test("two list items never make a phrase of the end of one and the start of the next (the F43 example)", () => {
+  // Each bullet is an island name on its own; "monthly epoch" + "identity layers" must not read as "epoch identity".
+  assert.deepEqual(blocks("- **Monthly epoch**\n- **Identity layers**"), ["monthly", "layers"]);
+  for (const [first, second] of [["-", "-"], ["*", "*"], ["+", "+"], ["1.", "2."], ["2)", "3)"], ["10.", "11."], ["#", "##"]]) {
+    const text = `${first} **Monthly epoch**\n${second} **Identity layers**`;
+    assert.deepEqual(blocks(text), ["monthly", "layers"], JSON.stringify(text));
+  }
+  assert.deepEqual(blocks("- Monthly epoch\n- Identity layers"), ["monthly", "layers"]);
+  assert.deepEqual(blocks("* _Monthly epoch_\n* `Identity` layers"), ["monthly", "layers"]);
+  assert.deepEqual(blocks("- monthly epoch\n  - identity layers"), ["monthly", "layers"], "an indented sub-item");
+  assert.deepEqual(blocks("- monthly epoch\n\t- identity layers"), ["monthly", "layers"], "a tab-indented sub-item");
+  assert.deepEqual(blocks("- monthly epoch\r\n- identity layers"), ["monthly", "layers"], "Windows line ends");
+  // The same words in one line, or as the phrase itself, do light the island they make.
+  assert.deepEqual(blocks("The monthly epoch identity layers."), ["monthly", "layers", "identity"]);
+  assert.deepEqual(blocks("- the epoch identity is fresh"), ["identity"]);
+});
+
+test("a heading is a break too: the last words of a paragraph and the first of the next heading never join", () => {
+  assert.deepEqual(blocks("It starts with the epoch\n# identity layers"), ["layers"]);
+  assert.deepEqual(blocks("It starts with the epoch\n### identity layers"), ["layers"]);
+  assert.deepEqual(blocks("# Monthly epoch\n## Identity layers"), ["monthly", "layers"]);
+  assert.deepEqual(blocks("the epoch\n\n# identity"), []);
+  // A "#" with no space after it is not a heading (and its own mark already ends a phrase).
+  assert.deepEqual(blocks("the epoch\n#identity"), []);
+  // A heading at the very start of the reply has nothing before it to be cut off from.
+  assert.deepEqual(blocks("# the epoch identity"), ["identity"]);
+  assert.deepEqual(blocks("## The epoch\nidentity is fresh"), ["identity"], "the line after a heading is a plain wrapped line");
+});
+
+test("a blank line is a break: a phrase never spans two paragraphs (the 'The epoch' / 'Opening an epoch' example)", () => {
+  const text = "**The epoch**\n\nOpening an epoch means the household is admitted.";
+  assert.deepEqual(blocks(text), [], "'epoch' ends one paragraph and 'Opening' starts the next");
+  for (const gap of ["\n\n", "\n\n\n\n", "\n \n", "\n\t\n", "\n  \n  \n", "\r\n\r\n", "\n\r\n", " \n\n ", "\n \n", "\n \n"]) {
+    assert.deepEqual(blocks(`the epoch${gap}opening`), [], JSON.stringify(gap));
+    assert.deepEqual(blocks(`**the epoch**${gap}**opening** a household`), [], `${JSON.stringify(gap)} with Markdown marks`);
+  }
+  assert.deepEqual(blocks("the\n\n**pot**"), []);
+  assert.deepEqual(blocks("the\n\n**pot** and the pot"), ["pot"], "the second paragraph's own phrase still lights");
+  assert.deepEqual(blocks("The pot.\n\nThe epoch opening."), ["opening", "pot"], "a phrase inside a paragraph lights");
+  // A break does not hide anything that is wholly inside a paragraph, however many there are.
+  assert.deepEqual(blocks("a\n\nb\n\nepoch opening\n\nc\n\nthe pot"), ["opening", "pot"], "graph order");
+});
+
+test("a single newline inside a paragraph is still an ordinary gap: a soft-wrapped phrase lights", () => {
+  for (const text of [
+    "the epoch opening",
+    "the epoch\nopening",
+    "the epoch\n  opening",
+    "the epoch\t\n\topening",
+    "the epoch \n opening",
+    "the epoch\r\nopening",
+    "the epoch\n**opening**",
+    "the **epoch**\n**opening** is soft-wrapped",
+    "the epoch\n_opening_",
+    "the epoch\n`opening`",
+    "the epoch\n-opening",
+    "the epoch\n*opening*",
+    "the epoch\n# opening".replace("# ", ""),
+    "- the epoch\n  opening continues the bullet",
+    "1. the epoch\n   opening continues the item",
+  ]) {
+    assert.deepEqual(blocks(text), ["opening"], JSON.stringify(text));
+  }
+  assert.deepEqual(blocks("the\npot"), ["pot"]);
+  assert.deepEqual(blocks("the\n  \tpot"), ["pot"]);
+  assert.deepEqual(blocks("Allowance\nto\nSpend"), ["ats"]);
+  // A hyphenated word that wraps at its hyphen is not a list item.
+  assert.deepEqual(blocks("a spend-\nahead"), []);
+});
+
+test("every list marker and heading form is a break, with or without indentation", () => {
+  // The glue between "epoch" and "opening" is the same plain gap in every case below (a newline and
+  // marks that read as a hyphen), so the only thing that can stop the phrase is the break.
+  for (const start of ["- ", "* ", "+ ", "1. ", "23. ", "9) ", "# ", "## ", "###### ", "#\t", "-\t", "  - ", "    * ", "\t+ ", " 1. "]) {
+    const text = `see the epoch\n${start}opening`;
+    assert.deepEqual(blocks(text), [], JSON.stringify(text));
+  }
+  // The same lines without a marker keep the phrase: these are not list items, and a hyphen or an
+  // asterisk is a gap mark (F35), so they only wrap the paragraph.
+  for (const start of ["", "-", "*", "**", "***", "-- ", "--- ", "-\u00a0", "*\u00a0", "**\u00a0", "_ ", "` "]) {
+    const text = `see the epoch\n${start}opening`;
+    assert.deepEqual(blocks(text), ["opening"], JSON.stringify(text));
+  }
+  // A marker at the very start of the reply has no text before it.
+  assert.deepEqual(blocks("- the pot"), ["pot"]);
+  assert.deepEqual(blocks("1. the pot"), ["pot"]);
+  assert.deepEqual(blocks("\n- the pot"), ["pot"]);
+  assert.deepEqual(blocks("# the pot"), ["pot"]);
+});
+
+test("a break holds for phrases of every kind of term, including a term that keeps a regex of its own", () => {
+  assert.deepEqual(blocks("C++ rules"), ["rules"]);
+  assert.deepEqual(blocks("C++\nrules"), ["rules"]);
+  assert.deepEqual(blocks("C++\n\nrules"), []);
+  assert.deepEqual(blocks("C++\n- rules"), []);
+  assert.deepEqual(blocks("Allowance to\n\nSpend"), []);
+  assert.deepEqual(blocks("Allowance to\n* Spend"), []);
+  assert.deepEqual(blocks("Allowance to\nSpend"), ["ats"]);
+  // An acronym is one token: a break around it changes nothing.
+  assert.deepEqual(blocks("\n\nAtS\n\n- AtS\n\n"), ["ats"]);
+  assert.deepEqual(blocks("x\n\n**AtS**\n\ny"), ["ats"]);
+});
+
+test("the break mark is not a letter, a digit or a gap: a reply's own pilcrow acts like any punctuation", () => {
+  assert.deepEqual(blocks("the epoch¶opening"), []);
+  assert.deepEqual(blocks("the epoch ¶ opening"), []);
+  assert.deepEqual(blocks("the ¶pot"), []);
+  assert.deepEqual(blocks("¶the pot¶"), ["pot"]);
+  assert.deepEqual(blocks("\n\n"), []);
+  assert.deepEqual(blocks("\n- \n"), []);
+});
+
+test("normaliseReply is unchanged by F43: it still turns every newline into a space", () => {
+  assert.equal(normaliseReply("a\n\nb"), "a b");
+  assert.equal(normaliseReply("a\n- b\n# c"), "a - b # c");
 });
 
 // ---------------------------------------------------------------- acronym expansions are case-sensitive (F10)
@@ -791,6 +922,19 @@ test("performance: separator-heavy and repetitive input does not blow up", () =>
     "x ".repeat(25000),
     "́".repeat(5000),
     "é".repeat(5000),
+    // the hard-break rule (F43): newlines, blank lines, list markers and long runs of indentation
+    "\n".repeat(50000),
+    "\n\n".repeat(25000),
+    "\n ".repeat(25000),
+    "\n- ".repeat(17000),
+    "the\n".repeat(12000),
+    "the\n\n".repeat(8000),
+    "the\n- pot\n".repeat(5000),
+    "\n" + " ".repeat(50000),
+    ("\n" + " ".repeat(500) + "x").repeat(90),
+    "\n#".repeat(25000),
+    "\n1".repeat(25000),
+    "\n123456789012345678901234567890. ".repeat(1500),
   ];
   const start = performance.now();
   for (const text of hostile) matchReply(text, g);
@@ -911,6 +1055,28 @@ const HANDWRITTEN_REPLIES = [
   "a_b c, a b c, a**b c, a_b-c, A_B C",
   "common __fund__ common _*fund*_ common ** fund common.fund",
   "**AtS** _AtS_ `AtS` *AtS* AtS_ _AtS non_AtS AtS**s",
+  // F43: blank lines, list items and headings are breaks, a single newline is not
+  "the\n\npot",
+  "the\npot",
+  "the\n\n\n\npot, the \n \t \n pot, the\r\n\r\npot, the\r\npot",
+  "- **common**\n- **fund**",
+  "- common fund\n- the pot\n- spend\n- ahead\n- spend-ahead",
+  "* common\n* fund\n+ the\n+ pot\n1. the\n2. pot\n3) the\n4) pot",
+  "common\n  - fund\ncommon\n\t* fund\ncommon\n    1. fund",
+  "common\n# fund\ncommon\n###### fund\ncommon\n#fund\ncommon\n#\tfund",
+  "common\n-fund\ncommon\n*fund*\ncommon\n**fund**\ncommon\n-- fund\ncommon\n---\nfund",
+  "the\n1.5 pot\nthe\n12345678901. pot\nthe\n1.pot\nthe\n1 pot",
+  "# the pot\n\n## common fund\n\nAtS and\n\nAllowance to\nSpend and Allowance to\n\nSpend",
+  "Allowance to\n\nSpend, Consumption\nRecord, Consumption\n- Record, ZK\n\nZK, the pot\n\n\n",
+  "\n\nthe pot\n\n",
+  "\n- the pot",
+  "  \n  - the pot\n  ",
+  "\n",
+  "\n\n",
+  "\n- \n",
+  "- ",
+  "x\n\n¶\n\nthe pot",
+  "the ¶ pot, the¶pot",
 ];
 
 test("differential: the tokenising matcher equals the regex reference on handwritten replies", () => {
@@ -954,9 +1120,10 @@ test("differential: terms with punctuation, accents, digits and odd separators",
  * Random replies and terms from a vocabulary that is full of near misses. Seeds are fixed so a
  * failure replays. With `markdown`, the separators between words also include the Markdown marks
  * (asterisk, underscore, backtick), the en dash and the minus sign (F35); without it the generator
- * is exactly the round-2 one.
+ * is exactly the round-2 one. With `blocks`, they also include blank lines, list markers and headings
+ * (F43), and a word of a term is sometimes replaced by such a break in the reply.
  */
-function fuzz(seed, rounds, repliesPerRound, markdown = false) {
+function fuzz(seed, rounds, repliesPerRound, markdown = false, blocks = false) {
   const atoms = [
     "pot", "Pot", "POT", "the", "The", "AtS", "ats", "ATS", "HEID", "HEIDs", "HEIDS", "fund", "funds", "Fund", "common",
     "Common", "bill", "x", "s", "é", "Éa", "9", "42", "overdraft", "Overdraft", "Spotify", "spotify", "ISP", "ISP's", "isp",
@@ -970,6 +1137,17 @@ function fuzz(seed, rounds, repliesPerRound, markdown = false) {
     separators.push(" **", "** ", "_", " _", "`", "*", "\u2013", " \u2013 ", "\u2212", " ** ", "_ ", "**", " `");
     termJoins.push("_", "*", "`", "\u2013", " **", "** ", "\u2212", "*_");
     gapMix.push("**", " _", "`", "\u2013", "\u2212", "* ", "_");
+  }
+  if (blocks) {
+    const breaks = [
+      "\n\n", "\n\n\n", "\n \n", "\n\t\n", "\r\n\r\n", "\n  \n  \n", "\n- ", "\n* ", "\n+ ", "\n1. ", "\n23) ", "\n# ",
+      "\n### ", "\n  - ", "\n\t* ", "\n    1. ", "\n\n- ", "\n\n# ", ".\n\n", ".\n- ",
+    ];
+    // Near misses that are NOT breaks: a single newline, or a marker with no space after it.
+    const notBreaks = ["\n", "\r\n", "\n ", "\n  ", "\n-", "\n*", "\n**", "\n#", "\n1.", "\n+", "\n-- ", "\n1.5 ", "\n\u00a0- ", "-\n", "*\n"];
+    separators.push(...breaks, ...notBreaks);
+    termJoins.push("\n\n", "\n- ");
+    gapMix.push(...breaks, ...notBreaks);
   }
   const rnd = seededRandom(seed);
   const pick = (list) => list[Math.floor(rnd() * list.length)];
@@ -1048,6 +1226,18 @@ test("differential: 6,000 generated replies whose words are joined by Markdown m
   assert.ok(lit > compared * 0.3, `the generated replies light something often enough to mean something (${lit} of ${compared})`);
 });
 
+test("differential: 8,000 generated replies with blank lines, list items and headings between their words (F43)", () => {
+  let compared = 0;
+  let lit = 0;
+  for (const seed of [5, 6, 20261012, 20261013]) {
+    const result = fuzz(seed, 40, 50, true, true);
+    compared += result.compared;
+    lit += result.lit;
+  }
+  assert.equal(compared, 8000);
+  assert.ok(lit > compared * 0.3, `the generated replies light something often enough to mean something (${lit} of ${compared})`);
+});
+
 test("the differential test has teeth: a matcher that ignores case, plurals, gaps, Markdown marks or dashes would be caught", () => {
   // The reference is only worth something if a wrong matcher disagrees with it. Check the three
   // rules that most easily go wrong on a handwritten pair each.
@@ -1068,6 +1258,20 @@ test("the differential test has teeth: a matcher that ignores case, plurals, gap
     ["spend\u2212 ahead", ["x"]],
     ["spend\u2014ahead", []],
     ["**Allowance** to **Spend**", ["x"]],
+    // F43: a blank line or a list item ends a phrase, a single newline does not
+    ["the\npot", ["x"]],
+    ["the\n\npot", []],
+    ["the\n \t\n**pot**", []],
+    ["the\r\n\r\npot", []],
+    ["the\n- pot", []],
+    ["- the\n- pot", []],
+    ["the\n1. pot", []],
+    ["the\n# pot", []],
+    ["spend\n\n- ahead", []],
+    ["spend\n  ahead", ["x"]],
+    ["- the pot", ["x"]],
+    ["- Allowance to\n  Spend", ["x"]],
+    ["- Allowance\n- to Spend", []],
   ]) {
     assert.deepEqual(referenceMatch(reply, ref), expected, `reference: ${reply}`);
     assert.deepEqual(matchReply(reply, g), expected, `matcher: ${reply}`);

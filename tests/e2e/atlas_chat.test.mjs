@@ -15,6 +15,7 @@ import {
   fnv1a32,
 } from "../../site/js/atlas-chat.js";
 import { FIRST_SUGGESTION, ISLANDS } from "../../site/js/atlas-graph.js";
+import { compileGlossary, matchReply } from "../../site/js/atlas-match.js";
 
 /* ---------- helpers: manual clock, fake port ---------- */
 
@@ -841,7 +842,7 @@ describe("a reply is tied to its question", () => {
     port.setPhase("running");
     port.setHistory(["Q", "A", "something added later"]);
     port.setPhase("ready");
-    assert.deepEqual(replies, ["A\nsomething added later"]);
+    assert.deepEqual(replies, ["A\n\nsomething added later"]);
   });
 
   test("a row after the question that is another question of the visitor is not a reply", () => {
@@ -895,20 +896,20 @@ describe("a turn can be several rows (F32)", () => {
     port.setPhase("ready");
   }
 
-  test("[Q, preamble, answer] delivers both rows, joined by a newline, once", () => {
+  test("[Q, preamble, answer] delivers both rows, joined by a blank line, once", () => {
     const { port, clock, replies } = setup();
     port.composerSubmit("Q");
     port.setPhase("running");
     port.setHistory(["Q", "Let me check the notes.", "The pot is shared by the household."]);
     port.setPhase("ready");
-    assert.deepEqual(replies, ["Let me check the notes.\nThe pot is shared by the household."]);
+    assert.deepEqual(replies, ["Let me check the notes.\n\nThe pot is shared by the household."]);
     // the chat repaints the very same list for the same question: not delivered again
     port.composerSubmit("Q");
     port.setPhase("running");
     port.setHistory(["Q", "Let me check the notes.", "The pot is shared by the household."]);
     port.setPhase("ready");
     clock.advance(LATE_SETTLE_MS * 3);
-    assert.deepEqual(replies, ["Let me check the notes.\nThe pot is shared by the household."]);
+    assert.deepEqual(replies, ["Let me check the notes.\n\nThe pot is shared by the household."]);
   });
 
   test("[Q, a, b, c] delivers all three rows in order", () => {
@@ -917,7 +918,7 @@ describe("a turn can be several rows (F32)", () => {
     port.setPhase("running");
     port.setHistory(["Q0", "A0", "Q", "a", "b", "c"]);
     port.setPhase("ready");
-    assert.deepEqual(replies, ["a\nb\nc"]);
+    assert.deepEqual(replies, ["a\n\nb\n\nc"]);
   });
 
   test("blank rows are left out, and every row is passed on as the page shows it", () => {
@@ -926,13 +927,60 @@ describe("a turn can be several rows (F32)", () => {
     port.setPhase("running");
     port.setHistory(["Q", "", "  first part ", "  \n ", "second\n  part", ""]);
     port.setPhase("ready");
-    assert.deepEqual(replies, ["  first part \nsecond\n  part"]);
+    assert.deepEqual(replies, ["  first part \n\nsecond\n  part"]);
   });
 
   test("a one-row reply is still that row alone, unchanged", () => {
     const { port, replies } = setup();
     composerCycle(port, "Q", "  Line one\n\nLine two  ");
     assert.deepEqual(replies, ["  Line one\n\nLine two  "]);
+  });
+
+  test("rows are separate paragraphs for the matcher: no phrase spans the end of one row and the start of the next (F43)", () => {
+    const glossary = compileGlossary(ISLANDS);
+    const lit = (text) => matchReply(text, glossary);
+    // 'The epoch' as a title row and 'Opening an epoch ...' as the next row: joined by a single newline they
+    // read as the phrase "epoch opening" and lit the island of that name.
+    const { port, replies } = setup();
+    port.composerSubmit("Q");
+    port.setPhase("running");
+    port.setHistory(["Q", "**The epoch**", "Opening an epoch means the household is admitted."]);
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["**The epoch**\n\nOpening an epoch means the household is admitted."]);
+    assert.equal(lit(replies[0]).includes("epoch-opening"), false, "two rows are two paragraphs");
+    // The same words in ONE row are the phrase, and a soft-wrapped row still is.
+    assert.equal(lit("**The epoch** Opening an epoch means the household is admitted.").includes("epoch-opening"), true);
+    assert.equal(lit("**The epoch**\nOpening an epoch means the household is admitted.").includes("epoch-opening"), true);
+    // Two rows that are two bullets: "Monthly epoch" and "Identity layers" must not make "epoch identity".
+    const bullets = setup();
+    bullets.port.composerSubmit("Q2");
+    bullets.port.setPhase("running");
+    bullets.port.setHistory(["Q2", "- **Monthly epoch**", "- **Identity layers**"]);
+    bullets.port.setPhase("ready");
+    assert.equal(bullets.replies.length, 1);
+    assert.equal(lit(bullets.replies[0]).includes("heid"), false);
+    assert.deepEqual(lit(bullets.replies[0]), ["monthly-epochs", "identity-layers"]);
+    // Rows that are bare words, with blank-ish rows between: still paragraphs.
+    const bare = setup();
+    bare.port.composerSubmit("Q3");
+    bare.port.setPhase("running");
+    bare.port.setHistory(["Q3", "the", "", "  \n ", "pot"]);
+    bare.port.setPhase("ready");
+    assert.equal(bare.replies[0], "the\n\npot");
+    assert.deepEqual(lit(bare.replies[0]), []);
+  });
+
+  test("every pair of neighbouring rows is separated by exactly one blank line, and a one-row reply is untouched (F43)", () => {
+    const { port, replies } = setup();
+    port.composerSubmit("Q");
+    port.setPhase("running");
+    port.setHistory(["Q", "one", "two", "three"]);
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["one\n\ntwo\n\nthree"]);
+    assert.equal(replies[0].split("\n\n").length, 3);
+    const single = setup();
+    composerCycle(single.port, "Q", "only\nrow");
+    assert.deepEqual(single.replies, ["only\nrow"], "no blank line is added to a single row");
   });
 
   test("[Q, answer, Q-echo, stale] stops before the echo of a question the visitor submitted", () => {
@@ -962,7 +1010,7 @@ describe("a turn can be several rows (F32)", () => {
     port.setPhase("running");
     port.setHistory(["Q", "old preamble", "old answer", "Q", "new preamble", "new answer"]);
     port.setPhase("ready");
-    assert.deepEqual(replies, ["new preamble\nnew answer"]);
+    assert.deepEqual(replies, ["new preamble\n\nnew answer"]);
   });
 
   test("a turn that is still arriving is delivered once the list has been quiet, and then in full", () => {
@@ -976,9 +1024,9 @@ describe("a turn can be several rows (F32)", () => {
     clock.advance(LATE_SETTLE_MS - 1);
     assert.deepEqual(replies, [], "every new row (or edit) restarts the wait");
     clock.advance(1);
-    assert.deepEqual(replies, ["Let me look.\nBecause the pot is shared."]);
+    assert.deepEqual(replies, ["Let me look.\n\nBecause the pot is shared."]);
     clock.advance(LATE_SETTLE_MS * 4);
-    assert.deepEqual(replies, ["Let me look.\nBecause the pot is shared."], "once only");
+    assert.deepEqual(replies, ["Let me look.\n\nBecause the pot is shared."], "once only");
   });
 
   test("the key kept for a turn is the first row's position and the hash of the squashed concatenation", () => {
@@ -988,7 +1036,7 @@ describe("a turn can be several rows (F32)", () => {
     port.setPhase("running");
     port.setHistory(["Q", "  Let me\n check. ", "The pot   is shared."]);
     port.setPhase("ready");
-    assert.deepEqual(replies, ["  Let me\n check. \nThe pot   is shared."]);
+    assert.deepEqual(replies, ["  Let me\n check. \n\nThe pot   is shared."]);
     assert.deepEqual(
       storage.seen().filter((entry) => !entry.startsWith("q:")),
       [`1:${fnv1a32("Let me check. The pot is shared.")}`],
@@ -1004,7 +1052,7 @@ describe("a turn can be several rows (F32)", () => {
     first.port.setPhase("running");
     first.port.setHistory(["Q", "preamble", "answer"]);
     first.port.setPhase("ready");
-    assert.deepEqual(first.replies, ["preamble\nanswer"]);
+    assert.deepEqual(first.replies, ["preamble\n\nanswer"]);
     first.bridge.dispose();
 
     const { port, clock, replies, bridge } = setup({}, { storage });
@@ -1016,14 +1064,14 @@ describe("a turn can be several rows (F32)", () => {
     assert.deepEqual(replies, [], "the old turn is not the answer to the new question");
     port.setHistory(["Q", "preamble", "answer", "Q", "second preamble", "second answer"]);
     clock.advance(LATE_SETTLE_MS);
-    assert.deepEqual(replies, ["second preamble\nsecond answer"]);
+    assert.deepEqual(replies, ["second preamble\n\nsecond answer"]);
   });
 
   test("hostile rows: non-strings read as blank rows and never break the join", () => {
     const { port, replies } = setup();
     port.rows = () => ["Q", 42, null, "a", { text: "x" }, undefined, "b"];
     composerCycle(port, "Q", "ignored");
-    assert.deepEqual(replies, ["a\nb"]);
+    assert.deepEqual(replies, ["a\n\nb"]);
   });
 });
 
@@ -1259,36 +1307,151 @@ describe("the delivered replies and the submitted questions are kept in sessionS
     ]);
   });
 
-  test("the memory is bounded to 200 entries in all, replies and questions together, the oldest dropped", () => {
+  /** The reply keys and the question keys of a stored list, each in stored order. */
+  const kinds = (entries) => ({
+    replies: entries.filter((entry) => !isQuestionEntry(entry)),
+    questions: entries.filter(isQuestionEntry),
+  });
+
+  test("the memory is capped per kind: 200 reply keys and 200 question keys, the oldest of each dropped (F44)", () => {
     const storage = makeFakeStorage();
     const { port, replies } = setup({}, { storage });
     for (let turn = 1; turn <= 250; turn += 1) composerCycle(port, `question ${turn}`, `answer number ${turn}`);
     assert.equal(replies.length, 250);
     const stored = storage.seen();
-    assert.equal(stored.length, 200, "two entries per turn: the newest 100 turns are left");
-    assert.equal(stored[0], qKey("question 151"), "turns 1 to 150 were dropped");
-    assert.equal(stored[1], key(2 * 151 - 1, "answer number 151"));
-    assert.equal(stored[198], qKey("question 250"));
-    assert.equal(stored[199], key(2 * 250 - 1, "answer number 250"));
+    assert.equal(stored.length, 400, "a turn leaves two entries, one of each kind: the newest 200 turns are left");
+    assert.equal(kinds(stored).questions.length, 200);
+    assert.equal(kinds(stored).replies.length, 200);
+    assert.equal(stored[0], qKey("question 51"), "turns 1 to 50 were dropped");
+    assert.equal(stored[1], key(2 * 51 - 1, "answer number 51"));
+    assert.equal(stored[398], qKey("question 250"));
+    assert.equal(stored[399], key(2 * 250 - 1, "answer number 250"));
     assert.ok(stored.every((entry) => ENTRY.test(entry)));
-    assert.equal(stored.filter(isQuestionEntry).length, 100);
+    assert.ok(JSON.stringify(stored).length < 8000, "about 6 KB at most, and still only hashes");
   });
 
-  test("a stored list of replies and questions longer than 200 is cut to the newest 200 when it is loaded", () => {
+  test("each kind is capped on its own: questions never push reply keys out, nor the other way round (F44)", () => {
+    // 150 reply keys are stored; 300 questions then arrive and get no reply. Only the question keys are cut.
+    const replyKeys = Array.from({ length: 150 }, (_, n) => key(n + 1, `stored reply ${n + 1}`));
+    const first = makeFakeStorage({ [SEEN_KEY]: JSON.stringify(replyKeys) });
+    const { port } = reloaded(first);
+    for (let n = 1; n <= 300; n += 1) port.composerSubmit(`unanswered question ${n}`);
+    assert.deepEqual(kinds(first.seen()).replies, replyKeys, "all 150 reply keys are still there");
+    assert.deepEqual(
+      kinds(first.seen()).questions,
+      Array.from({ length: 200 }, (_, n) => qKey(`unanswered question ${n + 101}`)),
+      "the newest 200 question keys",
+    );
+
+    // 150 question keys are stored; one question is asked again and again and 250 different replies arrive.
+    const questionKeys = Array.from({ length: 150 }, (_, n) => qKey(`stored question ${n + 1}`));
+    const second = makeFakeStorage({ [SEEN_KEY]: JSON.stringify(questionKeys) });
+    const other = reloaded(second);
+    for (let n = 1; n <= 250; n += 1) composerCycle(other.port, "the same question", `a different reply ${n}`);
+    assert.equal(other.replies.length, 250);
+    assert.deepEqual(kinds(second.seen()).questions, [...questionKeys, qKey("the same question")], "151 question keys, none cut");
+    assert.equal(kinds(second.seen()).replies.length, 200, "the reply keys are capped at 200");
+  });
+
+  test("a question asked again moves to the end of its kind and is not counted twice", () => {
+    const storage = makeFakeStorage();
+    const { port } = setup({}, { storage });
+    for (let n = 1; n <= 200; n += 1) port.composerSubmit(`question ${n}`);
+    assert.equal(kinds(storage.seen()).questions.length, 200);
+    port.composerSubmit("question 1"); // already there: it moves, nothing is dropped
+    const questions = kinds(storage.seen()).questions;
+    assert.equal(questions.length, 200);
+    assert.equal(questions[0], qKey("question 2"));
+    assert.equal(questions[199], qKey("question 1"));
+    port.composerSubmit("question 201"); // new: now the oldest (question 2) goes
+    const after = kinds(storage.seen()).questions;
+    assert.equal(after.length, 200);
+    assert.equal(after[0], qKey("question 3"));
+    assert.equal(after[199], qKey("question 201"));
+  });
+
+  test("150 turns, then a stale repeat of turn 1, deliver nothing: on the same page and after a reload (F44)", () => {
+    const storage = makeFakeStorage();
+    const first = setup({}, { storage });
+    const stale = [];
+    for (let turn = 1; turn <= 150; turn += 1) {
+      composerCycle(first.port, `question ${turn}`, `answer ${turn}`);
+      stale.push(`question ${turn}`, `answer ${turn}`);
+    }
+    assert.equal(first.replies.length, 150);
+    assert.equal(storage.seen().length, 300, "150 reply keys and 150 question keys, none dropped");
+
+    // The visitor asks question 1 again; the chat repaints the OLD list, which does not hold the new question yet.
+    first.port.composerSubmit("question 1");
+    first.port.setPhase("running");
+    first.port.setHistory(stale);
+    first.port.setPhase("ready");
+    first.clock.advance(LATE_SETTLE_MS * 4);
+    assert.equal(first.replies.length, 150, "the old answer 1 and the old questions after it are not delivered");
+    // The real list arrives: only the new answer counts, once.
+    first.port.setHistory([...stale, "question 1", "answer 1, again"]);
+    first.clock.advance(LATE_SETTLE_MS);
+    assert.deepEqual(first.replies.slice(150), ["answer 1, again"]);
+    first.bridge.dispose();
+
+    const { port, clock, replies, bridge } = reloaded(storage);
+    assert.equal(bridge.sendTeaser("question 1").sent, true);
+    port.setPhase("running");
+    port.setHistory(stale);
+    port.setPhase("ready");
+    clock.advance(LATE_SETTLE_MS * 4);
+    assert.deepEqual(replies, [], "after a reload the stored keys alone refuse the old turns");
+    port.setHistory([...stale, "question 1", "answer 1, a third time"]);
+    clock.advance(LATE_SETTLE_MS);
+    assert.deepEqual(replies, ["answer 1, a third time"]);
+  });
+
+  test("the stale repeat of turn 1 is still refused after 200 turns, and the horizon is 200 turns, not 100 (F44)", () => {
+    const storage = makeFakeStorage();
+    const { port, replies } = setup({}, { storage });
+    const list = [];
+    for (let turn = 1; turn <= 200; turn += 1) {
+      composerCycle(port, `question ${turn}`, `answer ${turn}`);
+      list.push(`question ${turn}`, `answer ${turn}`);
+    }
+    assert.equal(storage.seen().length, 400);
+    port.composerSubmit("question 1");
+    port.setPhase("running");
+    port.setHistory(list);
+    port.setPhase("ready");
+    assert.equal(replies.length, 200, "turn 200 back is still in the memory");
+    // One turn further the oldest keys go (the horizon is finite, and is stated here): the reply key of turn 1
+    // is forgotten, turn 2's is not. Question 1 was asked again just now, so it is the newest question key and
+    // question 2 is the oldest one.
+    composerCycle(port, "question 201", "answer 201");
+    assert.equal(replies.length, 201);
+    assert.equal(storage.seen().includes(key(1, "answer 1")), false, "the key of answer 1 was the oldest reply key");
+    assert.equal(storage.seen().includes(key(3, "answer 2")), true, "the key of answer 2 is still there");
+    assert.equal(storage.seen().includes(qKey("question 2")), false, "question 2 was the oldest question key");
+    assert.equal(storage.seen().includes(qKey("question 1")), true, "question 1 moved to the end when it was asked again");
+    assert.equal(storage.seen().length, 400);
+  });
+
+  test("a stored list with more than 200 of each kind is cut per kind when it is loaded, and junk between the entries is ignored", () => {
     const entries = [];
-    for (let n = 1; n <= 150; n += 1) entries.push(qKey(`older question ${n}`), key(n, `older reply ${n}`));
-    assert.equal(entries.length, 300);
+    for (let n = 1; n <= 260; n += 1) entries.push("junk", qKey(`older question ${n}`), 7, key(n, `older reply ${n}`), "q:ZZZZZZZZ");
     const storage = makeFakeStorage({ [SEEN_KEY]: JSON.stringify(entries) });
     const { port } = reloaded(storage);
     port.composerSubmit("a new question");
+    const stored = storage.seen();
+    const wanted = entries.filter((entry) => typeof entry === "string" && ENTRY.test(entry));
+    assert.equal(wanted.length, 520);
+    // 260 -> 200 of each kind at load; the new question makes 201 questions, so the oldest remaining question goes too.
+    assert.deepEqual(kinds(stored).replies, kinds(wanted).replies.slice(-200), "the newest 200 reply keys");
     assert.deepEqual(
-      storage.seen(),
-      [...entries.slice(-199), qKey("a new question")],
-      "the newest 199 stay, the new question is the 200th",
+      kinds(stored).questions,
+      [...kinds(wanted).questions.slice(-199), qKey("a new question")],
+      "the newest 199 question keys and the new one",
     );
+    assert.ok(stored.every((entry) => ENTRY.test(entry)), "no junk is written back");
   });
 
-  test("a stored list longer than 200 is cut to the newest 200 when it is loaded", () => {
+  test("a stored list of reply keys longer than 200 is cut to the newest 200 when it is loaded", () => {
     const entries = [];
     for (let position = 1; position <= 250; position += 1) entries.push(key(position, `reply ${position}`));
     const storage = makeFakeStorage({ [SEEN_KEY]: JSON.stringify(entries) });
@@ -1299,7 +1462,8 @@ describe("the delivered replies and the submitted questions are kept in sessionS
     port.setHistory(["Q", "reply 1"]);
     port.setPhase("ready");
     assert.deepEqual(replies, ["reply 1"]);
-    assert.ok(storage.seen().length <= 200);
+    assert.ok(kinds(storage.seen()).replies.length <= 200, "the reply keys stay at 200 or fewer");
+    assert.equal(kinds(storage.seen()).questions.length, 1);
     // ... and the newest one is still remembered (the list is 250 rows long, the question is row 249).
     const rows = Array.from({ length: 248 }, (_, i) => `filler ${i}`);
     port.composerSubmit("Q again");
@@ -1541,7 +1705,7 @@ describe("the visitor's own earlier questions are echoes after a reload too (F33
     port.setHistory([T1, "Q2, typed by the visitor", "A2"]);
     port.setPhase("ready");
     clock.advance(LATE_SETTLE_MS * 4);
-    assert.deepEqual(replies, ["Q2, typed by the visitor\nA2"], "a memory-only bridge cannot know Q2 was a question");
+    assert.deepEqual(replies, ["Q2, typed by the visitor\n\nA2"], "a memory-only bridge cannot know Q2 was a question");
   });
 
   test("the stale list is refused on the fast path (ready at once) and on the late path alike", () => {

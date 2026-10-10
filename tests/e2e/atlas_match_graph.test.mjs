@@ -226,6 +226,56 @@ test("a pause between two sentences is not a gap: a stray 'the' and a 'pot' in d
   assert.deepEqual(match("About the, **pot**."), []);
 });
 
+// ---------------------------------------------------------------- paragraphs and list items are phrase breaks (F43)
+
+test("two bullets that are island names never join into a third island (F43: 'epoch identity')", () => {
+  for (const id of ["monthly-epochs", "identity-layers", "heid", "epoch-opening"]) assert.ok(byId.has(id), `the F43 examples need the island ${id}`);
+  assert.ok(byId.get("heid").terms.includes("epoch identity"), "heid has the phrase the two bullets used to make");
+  const bullets = "- **Monthly epoch**\n- **Identity layers**";
+  assert.deepEqual(match(bullets), inGraphOrder(["monthly-epochs", "identity-layers"]), "each bullet lights its own island and nothing else");
+  for (const joined of ["* **Monthly epoch**\n* **Identity layers**", "1. **Monthly epoch**\n2. **Identity layers**", "## Monthly epoch\n## Identity layers"]) {
+    assert.equal(match(joined).includes("heid"), false, JSON.stringify(joined));
+  }
+  // The same two phrases as one run of words are the phrase "epoch identity" and do light it.
+  assert.ok(match("The monthly epoch identity layers.").includes("heid"));
+  assert.ok(match("Each epoch identity is fresh.").includes("heid"));
+});
+
+test("a title line and the paragraph under it never join (F43: 'epoch opening'), but a wrapped line still does", () => {
+  const title = "**The epoch**";
+  const body = "Opening an epoch means the household is admitted.";
+  assert.equal(match(`${title}\n\n${body}`).includes("epoch-opening"), false, "two paragraphs");
+  assert.equal(match(`${title}\n- ${body}`).includes("epoch-opening"), false, "a title and a list item");
+  assert.equal(match("The epoch\n## Opening an epoch").includes("epoch-opening"), false, "a heading starts a new block");
+  assert.equal(match("# The epoch\n\n## Opening an epoch").includes("epoch-opening"), false);
+  // The same words in one line, or wrapped by a single newline in a paragraph, are the phrase.
+  assert.ok(match("The epoch opening is the first step.").includes("epoch-opening"));
+  assert.ok(match("The epoch\nopening is the first step.").includes("epoch-opening"), "a soft-wrapped line");
+  assert.ok(match("The **epoch**\n**opening** is the first step.").includes("epoch-opening"), "a soft-wrapped line with marks");
+  assert.ok(match("- The epoch\n  opening is the first step.").includes("epoch-opening"), "a wrapped list item");
+});
+
+test("every multi-word term of the shipped graph is cut by a blank line, a list item or a heading at every gap, and kept by a single newline (F43)", () => {
+  let cut = 0;
+  for (const island of ISLANDS) {
+    for (const term of island.terms) {
+      if (classifyTerm(term) !== "phrase") continue;
+      const words = normaliseReply(term).split(/[\s\-*_`]+/).filter(Boolean);
+      const only = compileGlossary([{ id: island.id, terms: [term] }]);
+      for (let at = 1; at < words.length; at += 1) {
+        const join = (glue) => `see ${words.slice(0, at).join(" ")}${glue}${words.slice(at).join(" ")} here`;
+        assert.deepEqual(matchReply(join(" "), only), [island.id], `${island.id}: ${term} in one line`);
+        assert.deepEqual(matchReply(join("\n"), only), [island.id], `${island.id}: ${term} wrapped by a newline`);
+        for (const glue of ["\n\n", "\n \n", "\n- ", "\n* ", "\n+ ", "\n1. ", "\n# ", "\n\n**", "\n  - "]) {
+          assert.deepEqual(matchReply(join(glue), only), [], `${island.id}: ${term} cut by ${JSON.stringify(glue)} at word ${at}`);
+          cut += 1;
+        }
+      }
+    }
+  }
+  assert.ok(cut > 500, `the check ran on ${cut} cuts`);
+});
+
 test("bare common words never light an island of the shipped graph", () => {
   const common = [
     "pot", "base", "debt", "fund", "plan", "bill", "freeze", "commitment", "audit", "price", "allowance", "app", "apps",
@@ -323,6 +373,32 @@ test("the hook example: a faithful first answer lights five islands and puts the
   // The same answer as a model writes it: Markdown emphasis changes nothing (F35).
   const marked = "**Your ISP**, as your financial **counterparty**. You pay it under one **standing plan**, and apps earn through the **protocol**. Its _monthly commitment_ for your household enters a **common fund** and funds your guaranteed **base allowance**.";
   assert.deepEqual(match(marked), ids);
+  // ... and so does the structure a model gives it: paragraphs, a heading, bullets, a wrapped line (F43).
+  const structured = [
+    [
+      "## How you pay",
+      "",
+      "**Your ISP**, as your financial **counterparty**. You pay it under one **standing plan**,",
+      "and apps earn through the **protocol**.",
+      "",
+      "Its _monthly commitment_ for your household enters a **common fund**",
+      "and funds your guaranteed **base allowance**.",
+    ].join("\n"),
+    [
+      "- **Your ISP**, as your financial **counterparty**.",
+      "- You pay it under one **standing plan**, and apps earn through the **protocol**.",
+      "- Its _monthly commitment_ for your household enters a **common fund** and funds",
+      "  your guaranteed **base allowance**.",
+    ].join("\n"),
+    [
+      "1. Your ISP, as your financial counterparty.",
+      "2. You pay it under one standing plan, and apps earn through the protocol.",
+      "3. Its monthly commitment for your household enters a common fund.",
+      "4. That fund pays your guaranteed base allowance.",
+    ].join("\r\n"),
+    "Your ISP, as your financial counterparty.\n\nYou pay it under one standing plan.\n\nIts monthly commitment for your household enters a common fund.\n\nIt funds your guaranteed base allowance.",
+  ];
+  for (const text of structured) assert.deepEqual(match(text), ids, JSON.stringify(text));
   const next = reduceAtlas(state, { type: "reply", ids: match("The pot is spending authority, not money.") });
   assert.deepEqual(next.visited.slice(-1), ["the-pot"]);
   assert.equal(deriveView(next).status["the-pot"], "visited");
@@ -368,6 +444,31 @@ test("differential: the tokenising matcher equals the regex reference on replies
   assert.ok(lit > replies.length * 0.5, `${lit} of ${replies.length} generated replies light something`);
 });
 
+test("differential: the same, with paragraphs, list items and headings between the pieces and inside them (F43)", () => {
+  const reference = referenceCompile(ISLANDS, new Set(REVIEWED_WORDS));
+  const rnd = seededRandom(20261014);
+  const pick = (list) => list[Math.floor(rnd() * list.length)];
+  const pieces = [];
+  for (const island of ISLANDS) {
+    pieces.push(island.name, island.teaser, ...anchorsOf(island), ...island.terms.map((term) => `We discussed ${term} in the answer.`));
+  }
+  const breaks = ["\n\n", "\n- ", "\n* ", "\n1. ", "\n# ", "\n\n- ", "\n  - ", "\r\n\r\n", "\n \n", "\n2) ", "\n"];
+  const inside = (text) => text.replace(/ /g, () => (rnd() < 0.25 ? pick(breaks) : " "));
+  const replies = [];
+  let lit = 0;
+  for (let i = 0; i < 700; i += 1) {
+    const parts = [];
+    for (let n = 1 + Math.floor(rnd() * 5); n > 0; n -= 1) parts.push(rnd() < 0.4 ? inside(pick(pieces)) : pick(pieces));
+    replies.push(parts.join(pick(breaks)));
+  }
+  for (const reply of replies) {
+    const got = match(reply);
+    assert.deepEqual(got, referenceMatch(reply, reference), JSON.stringify(reply));
+    if (got.length > 0) lit += 1;
+  }
+  assert.ok(lit > replies.length * 0.5, `${lit} of ${replies.length} generated replies light something`);
+});
+
 // ---------------------------------------------------------------- speed on the shipped glossary
 
 function replyOfSize(size) {
@@ -386,6 +487,25 @@ test("performance: the first reply on the shipped glossary is fast even cold (5 
   const large = coldFirstMatchMs(islands, replyOfSize(50 * 1024));
   assert.ok(large.ids.length > 0);
   assert.ok(large.ms < 100, `first matchReply on 50 KB took ${large.ms.toFixed(2)} ms`);
+});
+
+test("performance: a reply with paragraphs, bullets and headings is as fast as a flat one, cold (F43)", () => {
+  const islands = ISLANDS.map(({ id, terms }) => ({ id, terms }));
+  // The same sentences, one to a bullet, a heading line now and then, and a blank line every few.
+  const structured = (size) => {
+    const lines = ISLANDS.map((island) => `${island.name} is discussed; ${island.terms.join(" and ")}, the household and the ISP.`);
+    let text = "";
+    for (let i = 0; text.length < size; i += 1) {
+      text += i % 9 === 0 ? `\n\n## ${lines[i % lines.length]}\n` : i % 4 === 0 ? `\n\n${lines[i % lines.length]}` : `\n- **${lines[i % lines.length]}**`;
+    }
+    return text.slice(0, size);
+  };
+  const small = coldFirstMatchMs(islands, structured(5 * 1024));
+  assert.ok(small.ids.length > 0);
+  assert.ok(small.ms < 20, `first matchReply on 5 KB of Markdown took ${small.ms.toFixed(2)} ms`);
+  const large = coldFirstMatchMs(islands, structured(50 * 1024));
+  assert.ok(large.ids.length > 0);
+  assert.ok(large.ms < 100, `first matchReply on 50 KB of Markdown took ${large.ms.toFixed(2)} ms`);
 });
 
 test("compiling the shipped glossary is cheap", () => {

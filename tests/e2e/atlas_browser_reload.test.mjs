@@ -564,7 +564,11 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
    * snapshot of the conversation (`stale`) for several seconds. Nothing may light, and the reply
    * count stays 0, until the list holds the real answer to turn 2; then exactly its places light, once.
    */
-  async function staleScenario(t, label, { stale, staleRows, question = QUESTION_TWO, ask = (page) => typeAndSend(page, QUESTION_TWO) }) {
+  async function staleScenario(
+    t,
+    label,
+    { stale, staleRows, question = QUESTION_TWO, ask = (page) => typeAndSend(page, QUESTION_TWO), prepare = null, finish = null },
+  ) {
     const { first, second } = plan();
     const { backend, page, url } = await openSite(t, label, (b) => {
       b.eventsMode = "sse";
@@ -572,6 +576,7 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
       b.reply = (_message, n) => (n === 1 ? first.text : second.text);
     });
     await firstTurnReloadClear(page, url, first);
+    if (prepare) await prepare(page);
 
     // Turn 2: no stream, and /history shows an older snapshot.
     backend.eventsMode = "404";
@@ -614,6 +619,7 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
     const gap = assertLitOnceAfterFinal(samples, { before: 0, finalText: second.text, label, waitsForQuiet: true });
     t.diagnostic(`answer shown at ${gap.shownAt} ms, map lit at ${gap.litAt} ms (waited ${gap.litAt - gap.shownAt} ms for a quiet list)`);
     assert.equal(later.cspViolations, 0, "no Content-Security-Policy violation");
+    if (finish) await finish(page);
   }
 
   it("a. reload, Clear map, turn 2 on an older [Q1, A1] snapshot: nothing from A1 lights; A2 lights once when the list shows it", async (t) => {
@@ -695,6 +701,43 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
     assertNothingLit(await read(page), "after Clear map");
   });
 
+  it("h. the stored keys of replies and of questions are capped apart (F44): 149 more stored turns behind turn 1 do not push it out, and the older [Q1, A1] still lights nothing", async (t) => {
+    const { first } = plan();
+    const STORED = `JSON.parse(sessionStorage.getItem(${JSON.stringify(SEEN_KEY)}))`;
+    let real = null;
+    await staleScenario(t, "reload-stale-many-turns", {
+      stale: (backend) => {
+        backend.lagging = true;
+        backend.lagFromTurn = 2; // only turn 1 is shown: [Q1, A1]
+      },
+      staleRows: [FIRST_SUGGESTION, first.text],
+      question: FIRST_SUGGESTION,
+      ask: (page) => page.click(CHIP),
+      // Turn 1 is the oldest entry pair. Behind it, the keys of 149 more turns: 150 turns in all, 300 entries.
+      // One shared cap of 200 would drop turn 1 (the two oldest entries) when the page loads them.
+      prepare: async (page) => {
+        real = await page.eval(STORED);
+        assert.equal(real.length, 2, "precondition: turn 1 left a question key and a reply key");
+        const more = [];
+        for (let n = 1; n <= 149; n += 1) more.push(`q:${fnv1a32(`another question ${n}`)}`, `${2 * n + 1}:${fnv1a32(`another reply ${n}`)}`);
+        await page.eval(`sessionStorage.setItem(${JSON.stringify(SEEN_KEY)}, ${JSON.stringify(JSON.stringify([...real, ...more]))})`);
+        await reloadTab(page);
+        await clearMap(page);
+        assert.equal((await page.eval(STORED)).length, 300, "precondition: 150 question keys and 150 reply keys are stored");
+      },
+      finish: async (page) => {
+        const entries = await page.eval(STORED);
+        const questions = entries.filter((entry) => entry.startsWith("q:"));
+        const replies = entries.filter((entry) => !entry.startsWith("q:"));
+        assert.equal(questions.length, 150, "no question key was cut: the cap is per kind");
+        assert.equal(replies.length, 151, "no reply key was cut, and the new answer's key was added");
+        assert.ok(entries.includes(real[1]), "the reply key of turn 1 is still stored");
+        assert.equal(entries[entries.length - 1], `3:${fnv1a32(plan().second.text)}`, "the newest entry is the key of the new answer at position 3");
+        assert.ok(entries.every((entry) => /^(?:\d+|q):[0-9a-f]{8}$/.test(entry)), "only fingerprints");
+      },
+    });
+  });
+
   // ---- F32: a turn that the chat shows as several rows -------------------------------------------
 
   it("g. the chat shows one turn as a preamble row and an answer row: the Atlas reads both, lights their places exactly once, and a reload does not read them again", async (t) => {
@@ -715,12 +758,12 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
     await page.waitFor(`${REPLIES_ARE(1)} && ${PHASE_IS("ready")}`, { timeout: 15000, what: "the turn to be answered and scanned" });
     const lit = await read(page);
     assert.deepEqual(lit.rows, [FIRST_SUGGESTION, first.text, second.text], "precondition: the chat shows three rows");
-    assertMapShows(lit, [`${first.text}\n${second.text}`], "after the two-row turn");
+    assertMapShows(lit, [`${first.text}\n\n${second.text}`], "after the two-row turn");
     for (const id of [...first.lit, ...second.lit]) assert.ok(lit.visited.includes(id), `the places of both rows are lit (${id})`);
 
     // Exactly once, however long the page then stays quiet.
     await sleep(LATE_SETTLE_MS + 1500);
-    assertMapShows(await read(page), [`${first.text}\n${second.text}`], "a few seconds later");
+    assertMapShows(await read(page), [`${first.text}\n\n${second.text}`], "a few seconds later");
     const samples = await timeline(page);
     assertLitOnceAfterFinal(samples, { before: 0, finalText: second.text, label: "a turn of two rows", waitsForQuiet: false });
 
@@ -740,6 +783,33 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
     assertNothingLit(again, "on the old three rows");
     assertNeverCounted(await timeline(page), "on the old three rows");
     assert.equal(again.cspViolations, 0, "no Content-Security-Policy violation");
+  });
+
+  it("g2. a title row and the paragraph row under it are two paragraphs for the matcher (F43): the end of one row and the start of the next never make a phrase", async (t) => {
+    const { first } = plan();
+    const title = "**The epoch**";
+    const body = `Opening an epoch means the household is admitted. ${first.text}`;
+    // The scenario is only worth something if one newline WOULD have joined the two rows into a phrase.
+    assert.ok(lightOf(`${title}\n${body}`).includes("epoch-opening"), "precondition: joined by a single newline the rows light epoch-opening");
+    assert.ok(!lightOf(`${title}\n\n${body}`).includes("epoch-opening"), "precondition: as two paragraphs they do not");
+    const { page, url } = await openSite(t, "title-and-body-rows", (b) => {
+      b.eventsMode = "404";
+      b.runMs = 300;
+      b.historyOverride = [
+        { role: "user", text: FIRST_SUGGESTION },
+        { role: "assistant", text: title },
+        { role: "assistant", text: body },
+      ];
+    });
+    await boot(page, url);
+    await page.click(CHIP);
+    await page.waitFor(`${REPLIES_ARE(1)} && ${PHASE_IS("ready")}`, { timeout: 15000, what: "the turn to be answered and scanned" });
+    const lit = await read(page);
+    assert.deepEqual(lit.rows, [FIRST_SUGGESTION, title, body], "precondition: the chat shows three rows");
+    assertMapShows(lit, [`${title}\n\n${body}`], "after the title and body rows");
+    assert.equal(lit.visited.includes("epoch-opening"), false, "epoch-opening is not lit by 'epoch' + 'Opening' across two rows");
+    for (const id of first.lit) assert.ok(lit.visited.includes(id), `the places of the body are lit (${id})`);
+    assert.equal(lit.cspViolations, 0, "no Content-Security-Policy violation");
   });
 
   // ---- the normal path still works -------------------------------------------------------------
