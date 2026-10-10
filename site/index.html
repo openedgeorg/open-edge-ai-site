@@ -67,6 +67,7 @@
                     <p id="atlas-announce" class="atlas-announce" role="status"></p>
                     <div class="atlas-toolbar" id="atlas-toolbar" hidden>
                         <p id="atlas-count" class="atlas-count"></p>
+                        <a class="atlas-to-chat" href="#conversation" hidden>Go to the conversation</a>
                         <div class="atlas-controls">
                             <div class="atlas-tabs" role="group" aria-label="Atlas view">
                                 <button type="button" id="atlas-view-map" aria-pressed="true">Map</button>
@@ -89,87 +90,93 @@
                         <!-- atlas-index:begin -->
                         <h3>The Coast · L0 · The promise</h3>
                         <ul>
-                            <li><strong>ISP as your counterparty</strong> · §1 · Why do I pay my ISP instead of billing each app separately?</li>
+                            <li><strong>ISP as your counterparty</strong> · §1 · Why do I pay my ISP instead of being billed by each app separately?</li>
                             <li><strong>Apps set their own prices</strong> · §1 · Do apps share a fixed subscription pool, like on Spotify?</li>
                             <li><strong>Your internet bill</strong> · §1, §3 · Does ESP change what I pay my ISP each month?</li>
-                            <li><strong>One standing plan</strong> · §1 · Why a fixed monthly plan instead of paying per app?</li>
+                            <li><strong>One standing plan</strong> · §1 · What does a fixed monthly plan give me that separate purchases would not?</li>
                             <li><strong>Monthly epochs</strong> · §1 · What happens during one ESP month?</li>
                         </ul>
                         <h3>The Lowlands · L1 · Living with an allowance</h3>
                         <ul>
                             <li><strong>Prices push on the ISP</strong> · §1 · Can app price rises end up in my plan price?</li>
-                            <li><strong>Price feedback by experience</strong> · §1, §3 · How would I notice that an app has become expensive?</li>
-                            <li><strong>Household analytics</strong> · §3 · Can I see which app is using up my allowance?</li>
-                            <li><strong>The FUP faucet</strong> · §3 · How does my ISP decide how much extra to give me?</li>
+                            <li><strong>Price feedback and analytics</strong> · §1, §3 · How would I notice that an app has become expensive?</li>
+                            <li><strong>The FUP faucet</strong> · §3 · Does a top-up request name an amount, and who sizes the grant?</li>
                             <li><strong>Base allowance and top-ups</strong> · §3 · If I run out, can I ask for more?</li>
                             <li><strong>The retail contract</strong> · §3, §8 · Who decides how big my allowance is?</li>
-                            <li><strong>A refusal you can prove</strong> · §3 · What if my ISP refuses a top-up I was promised?</li>
+                            <li><strong>A refusal leaves signed evidence</strong> · §3 · What if my ISP refuses a top-up that my plan entitles me to?</li>
                         </ul>
                         <h3>The Interior · L2 · Money plumbing</h3>
                         <ul>
                             <li><strong>The common fund</strong> · §2 · Where does the money for the apps actually sit?</li>
-                            <li><strong>ISP monthly commitment</strong> · §2 · What does my ISP prepay each month, and for whom?</li>
+                            <li><strong>ISP monthly commitment</strong> · §2 · What does an ISP prepay each month, and does it set my allowance?</li>
                             <li><strong>The pot</strong> · §2, §3 · What is the pot an ISP gets each month?</li>
                             <li><strong>Overdraft</strong> · §2 · Can the pot be bigger than what the ISP committed?</li>
-                            <li><strong>Debt from executed use</strong> · §2 · When does an ISP actually owe the fund money?</li>
+                            <li><strong>Debt from executed consumption</strong> · §2 · The debt-control rules and thresholds are unresolved · When does an ISP actually owe the fund money?</li>
                             <li><strong>The monthly debt update</strong> · §2 · How is an ISP's debt recalculated after each month?</li>
-                            <li><strong>The commitment floor</strong> · §2 · What happens to an ISP that keeps underfunding?</li>
                         </ul>
                         <h3>The Highlands · L3 · Signed facts</h3>
                         <ul>
-                            <li><strong>Epoch price catalogue</strong> · § status note, §4 · <em>awaits incorporation</em> · How is an app's price meant to become binding for the month?</li>
+                            <li><strong>Epoch price catalogue</strong> · § status note, §4 · <em>awaits incorporation into the authoritative design and message catalogue</em> · How is an app's price meant to become binding for the month?</li>
                             <li><strong>Consumption Record (ConRec)</strong> · §4 · What proves that I really used an app?</li>
-                            <li><strong>Optimistic serving</strong> · §4 · Can an app serve me before my top-up arrives?</li>
-                            <li><strong>Evidence kept off-chain</strong> · §4, §8 · Where do the signed records live, and for how long?</li>
+                            <li><strong>Optimistic serving</strong> · §4 · What risk does an app take by serving beyond my current allowance?</li>
+                            <li><strong>Off-chain evidence in normal use</strong> · §4, §5 · The exact retention period is deferred · Where do the signed records live, and for how long?</li>
                             <li><strong>Signed allowance message (HSATM)</strong> · §3 · Who signs my allowance, and what exactly do they sign?</li>
-                            <li><strong>The box declines to sign</strong> · §3, §8 · What does my box do when my allowance runs out?</li>
+                            <li><strong>A normal box declines to sign</strong> · §3 · What does my box do when my allowance runs out?</li>
                         </ul>
                         <h3>The Mountains · L4 · Masks</h3>
                         <ul>
-                            <li><strong>Fresh key, fresh HEID</strong> · §5 · Can apps follow me from one month to the next?</li>
+                            <li><strong>Fresh key, fresh HEID</strong> · §5 · Does my household's ID stay the same from one month to the next?</li>
+                            <li><strong>Opening a household's epoch</strong> · §5, §6 · In what order does an epoch open, and what if a household never activates?</li>
+                            <li><strong>Admission credential (HPC)</strong> · §5 · How does an app check that a household is admitted for the epoch?</li>
                             <li><strong>Three layers of identity</strong> · §5 · Who can see who I am, and who can't?</li>
                             <li><strong>Encrypted HEIDs</strong> · §5 · Why can't two apps tell, from public claims, that they share a customer?</li>
-                            <li><strong>The verification tag</strong> · §5, §9 · How can I find my own entry in a public list?</li>
+                            <li><strong>The verification tag</strong> · §5, §7 · How can I find my own entry in a public list?</li>
                             <li><strong>Allowance to Spend (AtS)</strong> · §5, §6 · What is the public list of closing allowances?</li>
-                            <li><strong>IsHEC against your diary</strong> · §5 · How do I check what my ISP says I consumed?</li>
+                            <li><strong>IsHEC against your diary</strong> · §5 · The route for demanding a missing IsHEC is unresolved · How do I check what my ISP says I consumed?</li>
                         </ul>
                         <h3>The Deep Valley · L5 · Month-end machinery</h3>
                         <ul>
                             <li><strong>The epoch timetable</strong> · §6, §8 · In what order does a month's machinery run?</li>
-                            <li><strong>Opening the month: the HCD</strong> · §6 · How does an ISP open a month?</li>
+                            <li><strong>The HCD: the ISP's household roster</strong> · §6, §8 · The roster is trusted, not verified; a revision may reconsider · How does an ISP open a month, and who vouches for its household list?</li>
                             <li><strong>Request to get Paid (RtgP)</strong> · §6 · How does an app get paid for a month of requests?</li>
-                            <li><strong>Reconciling all claims together</strong> · §6, §8 · Does the first app to claim get first dibs on my allowance?</li>
-                            <li><strong>Household escrow account (HEEA)</strong> · §6 · What caps what can be paid for one household?</li>
-                            <li><strong>The IPtD: proposed payouts</strong> · §6, §8 · What does the ISP publish about who gets paid?</li>
+                            <li><strong>Reconciling all claims together</strong> · §6 · Does the first app to claim get first dibs on my allowance?</li>
+                            <li><strong>Household epoch escrow (HEEA)</strong> · §6 · What caps what can be paid for one household?</li>
+                            <li><strong>The IPtD: proposed payouts</strong> · §6 · What does the ISP publish about who gets paid?</li>
                             <li><strong>Settle clean, freeze flagged</strong> · §6, §7 · What happens when a household's claims exceed its cap?</li>
-                            <li><strong>Slashing and collateral</strong> · §6, §8 · What does an ISP or an app stand to lose if it breaks the rules?</li>
-                            <li><strong>Emergency settlement (pilot)</strong> · §6 · What if the ISP misses its IPtD deadline in the pilot?</li>
+                            <li><strong>When an ISP fails its epoch</strong> · §6 · Slashing and wind-down are intended; the machinery is deferred · What happens if an ISP does not fund or close its epoch?</li>
+                            <li><strong>Who does what: box, ISP, apps</strong> · §8 · What are the box, the ISP and the apps each trusted to do?</li>
                         </ul>
                         <h3>The Badlands · L6 · Disputes and attacks</h3>
                         <ul>
-                            <li><strong>Evidence rounds and the CfEfA</strong> · §7 · What triggers a dispute, and what gets made public?</li>
-                            <li><strong>Mechanical resolution</strong> · §7 · Is a dispute meant to be settled by arithmetic or discretion?</li>
-                            <li><strong>Escalation audit</strong> · §7 · What happens to an app caught with one fake row?</li>
-                            <li><strong>Silent padding</strong> · §7, §9 · How could an app invent charges that stay under my cap?</li>
+                            <li><strong>Evidence rounds and the CfEfA</strong> · §7 · The household-report route is unresolved; penalties are deferred · What triggers a dispute, and what gets made public?</li>
+                            <li><strong>Mechanical resolution</strong> · §7 · The ISP's witness list is trusted to be complete · Is a dispute meant to be settled by arithmetic, and who lists the apps?</li>
+                            <li><strong>Unsupported row, escalation audit</strong> · §7 · The audit mechanism itself is deferred · What happens to an app whose row has no supporting evidence?</li>
+                            <li><strong>Silent padding</strong> · §7, §9 · One collusion form is still undefeated · How could an app invent charges that stay under my cap?</li>
                             <li><strong>Household fraud: the pro-rata split</strong> · §7 · What if a household really consumed more than its allowance?</li>
-                            <li><strong>Three timing states of an audit</strong> · §3, §9 · How does an audit tell a fair top-up race from cheating?</li>
-                            <li><strong>Hoarding</strong> · §3, §9 · Why is asking for a top-up far ahead of need a violation?</li>
-                            <li><strong>FUP audits: private, then bilateral</strong> · §3 · A production implementation may reduce exposure with zero-knowledge proofs · How is my top-up behaviour audited, in the pilot and after?</li>
-                            <li><strong>The pilot operator</strong> · §8 · Who carries a household's evidence into the protocol?</li>
-                            <li><strong>Final at execution (pilot)</strong> · §6, §7 · In the pilot, can an executed payment be reversed?</li>
+                            <li><strong>Correcting a false closing entry</strong> · §7 · How a household's challenge reaches the protocol is unsealed · What if the closing allowance listed for a household is wrong?</li>
+                            <li><strong>The FUP timing audit</strong> · §3, §9 · Invocation, proofs and result record are deferred · What counts as compliant consumption, and what counts as spend-ahead?</li>
+                            <li><strong>Hoarding</strong> · §3, §9 · The audit that would establish it is deferred · Why is asking for a top-up far ahead of need a violation?</li>
+                            <li><strong>Detection plus consequences</strong> · §7 · Does ESP stop fraud as it happens, or catch it afterwards?</li>
                         </ul>
                         <h3>Here be dragons · L7 · Open, not ratified</h3>
+                        <p>Open, not ratified: the designers' own open list, not a roadmap.</p>
                         <ul>
+                            <li><strong>Epoch-opening handoff mechanics</strong> · §5, §10 · <em>open, not ratified</em> · Which epoch-opening handoff mechanics are still unspecified?</li>
+                            <li><strong>AtS-binding challenge route</strong> · §10 · <em>open, not ratified</em> · Which parts of the AtS-binding challenge are still unspecified?</li>
+                            <li><strong>Pre-activation ConRec enforcement</strong> · §5, §10 · <em>open, not ratified</em> · Can anyone prove an app checked the HPC before serving?</li>
                             <li><strong>Tariff-agreement format</strong> · §10 · <em>open, not ratified</em> · What is still unspecified about tariff agreements?</li>
-                            <li><strong>Credit-policy calibration</strong> · §10 · <em>open, not ratified</em> · Which parts of the ISP credit policy still need calibration?</li>
+                            <li><strong>Credit policy and debt control</strong> · §2, §10 · <em>open, not ratified</em> · Which credit-policy numbers and debt-control rules are still undecided?</li>
                             <li><strong>Dishonest-ISP analysis</strong> · §10 · <em>open, not ratified</em> · Which dishonest-ISP cases must the design still test?</li>
-                            <li><strong>ISP-and-app collusion</strong> · §10 · <em>open, not ratified</em> · Is there a padding attack the design cannot yet stop?</li>
+                            <li><strong>ISP-and-app collusion</strong> · §10 · <em>open, not ratified</em> · Is there a silent-padding form the current design does not defeat?</li>
                             <li><strong>Anti-collusion candidates</strong> · §10 · <em>open, not ratified</em> · Which anti-collusion ideas are only candidates so far?</li>
                             <li><strong>Borrow-and-default</strong> · §10 · <em>open, not ratified</em> · When would turning an ISP overdraft into cash pay off?</li>
-                            <li><strong>A durable second instance</strong> · §10 · <em>open, not ratified</em> · Why is the pilot operator only a temporary second instance?</li>
-                            <li><strong>Finality and clawback horizon</strong> · §10 · <em>open, not ratified</em> · How is fraud found after payment handled, and what is still open?</li>
+                            <li><strong>A durable second instance</strong> · §8, §10 · <em>open, not ratified</em> · Who judges a dispute in which the ISP is a party?</li>
+                            <li><strong>Finality and post-execution recovery</strong> · §4, §6, §10 · <em>open, not ratified</em> · When does a payment become irreversible, and what if fraud shows up later?</li>
+                            <li><strong>Penalty enforcement</strong> · §6, §7, §8, §10 · <em>open, not ratified</em> · Which penalty rules behind slashing and expulsion are still undefined?</li>
                             <li><strong>ISP fronting of shortfalls</strong> · §10 · <em>open, not ratified</em> · Could the ISP pay apps in full and recover from the household?</li>
-                            <li><strong>Post-pilot emergency settlement</strong> · §6 · <em>open, not ratified</em> · Undefined after the pilot · Is there a post-pilot equivalent of emergency settlement?</li>
+                            <li><strong>Emergency settlement route</strong> · §6, §8 · <em>open, not ratified</em> · What happens if the ISP misses the IPtD deadline?</li>
+                            <li><strong>Household-facing routes</strong> · §2, §5, §7, §8 · <em>open, not ratified</em> · Which household-facing routes does the design leave undefined?</li>
+                            <li><strong>Audit mechanisms not yet designed</strong> · §3, §7 · <em>open, not ratified</em> · What is still undecided about the FUP and escalation audits?</li>
                         </ul>
                         <!-- atlas-index:end -->
                     </noscript>

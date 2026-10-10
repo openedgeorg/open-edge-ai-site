@@ -1,13 +1,23 @@
 /**
- * Atlas graph integrity: the shape, the status rules and the honesty rules of
- * site/js/atlas-graph.js. Grounding against the brain text lives in test_atlas_graph.py.
+ * Atlas graph integrity: the shape, the status rules, the honesty rules and the trace fixture of
+ * site/js/atlas-graph.js. Whether each quotation really occurs in the section it names is checked
+ * in test_atlas_graph.py. Whether a label is faithful to its quotation needs a human read.
+ *
+ * Nothing here pins island names, teasers, labels, terms or anchors. Every expectation is derived at
+ * run time from the graph, from tests/fixtures/atlas-trace.json and from the summary embedded in the
+ * local draft brain (counts of section 10 bullets, the summary hash, the contested item).
+ *
  * Run with: node --test tests/e2e/atlas_graph.test.mjs
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
+  CONTESTED_FULL_LABEL,
   CONTESTED_LABEL,
   EDGE_DRAGON_CAPTION,
   EDGES,
@@ -24,24 +34,26 @@ import {
 const REGION_IDS = ["coast", "lowlands", "interior", "highlands", "mountains", "valley", "badlands", "dragons"];
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MIN_SPACING = 60;
+/** Radius of an island body in viewBox units (atlas-map.js BODY_R): the circle must sit inside its band. */
+const BODY_RADIUS = 11;
+/** Where the region bands start and stop vertically (atlas-map.js BAND_TOP, BAND_BOTTOM). */
+const BAND_TOP = 10;
+const BAND_BOTTOM = 742;
+/** What an edge that touches a contested or an open island must say (F4). */
+const QUALIFIER = /\b(?:awaits incorporation|still open|open|not ratified|undefined|deferred|unsealed)\b/i;
+const PRONOUN_START = /^(?:it|they|this|that|these|those|its|their)\b/i;
+const ROADMAP_WORDS = /\b(?:will|roadmap|next steps?)\b/i;
 
-/** The lead phrase of each of the nine bullets of section 10 of the summary. */
-const SECTION_10_BULLETS = [
-  "Epoch tariff agreements still need a format and evidence specification",
-  "The ISP credit policy still needs numerical calibration",
-  "Dishonest-ISP analysis remains incomplete",
-  "ISP-and-app collusion still has an undefeated silent-padding form",
-  "Several production anti-collusion mechanisms remain candidates",
-  "Borrow-and-default replaces consumption-weighted allocation farming",
-  "Production needs a durable second instance",
-  "Production needs a deliberate finality and clawback horizon",
-  "ISP fronting of household shortfalls remains optional future work",
-];
+const ROOT = fileURLToPath(new URL("../..", import.meta.url));
+const repo = (...parts) => join(ROOT, ...parts);
 
 const ids = ISLANDS.map((island) => island.id);
 const idSet = new Set(ids);
 const byId = new Map(ISLANDS.map((island) => [island.id, island]));
 const index = buildIndex();
+const dragons = ISLANDS.filter((island) => island.region === "dragons");
+const openIslands = ISLANDS.filter((island) => island.status === "open");
+const contestedIslands = ISLANDS.filter((island) => island.status === "contested");
 
 /** @param {unknown} value */
 function isNonEmptyString(value) {
@@ -52,6 +64,70 @@ function isNonEmptyString(value) {
 function isValidSection(section) {
   return section === "preamble" || (Number.isInteger(section) && section >= 1 && section <= 10);
 }
+
+/** Curly quotes become straight and every run of whitespace becomes one space. */
+function squash(text) {
+  return text
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** The brain the local listener serves, found through knowledge/release/local_draft.py. */
+function brainPath() {
+  const python = readFileSync(repo("knowledge", "release", "local_draft.py"), "utf8");
+  const match = python.match(/BRAIN_DIR\s*=\s*ROOT\s*\/\s*"knowledge"\s*\/\s*"brain"\s*\/\s*"([\w.-]+)"/);
+  assert.ok(match, "knowledge/release/local_draft.py no longer names BRAIN_DIR the way this test reads it");
+  return { release: match[1], file: repo("knowledge", "brain", match[1], "canonical_brain.md") };
+}
+
+/** The bytes between the BEGIN SOURCE and END SOURCE marker lines, as a Buffer. */
+function embeddedSource(brain) {
+  const text = brain.toString("latin1"); // one char per byte, so string offsets are byte offsets
+  const begins = [...text.matchAll(/^----- BEGIN SOURCE [^\n]* -----\n/gm)];
+  const ends = [...text.matchAll(/^----- END SOURCE [^\n]* -----\n/gm)];
+  assert.equal(begins.length, 1, "BEGIN SOURCE markers");
+  assert.equal(ends.length, 1, "END SOURCE markers");
+  const start = begins[0].index + begins[0][0].length;
+  assert.ok(start <= ends[0].index);
+  return brain.subarray(start, ends[0].index);
+}
+
+/** The squashed preamble and sections 1..10 of the summary, and the squashed bullets of section 10. */
+function loadNotes() {
+  const { release, file } = brainPath();
+  const source = embeddedSource(readFileSync(file));
+  const text = source.toString("utf8");
+  const headings = [...text.matchAll(/^## (\d+)\. /gm)];
+  assert.deepEqual(
+    headings.map((heading) => Number(heading[1])),
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+  );
+  const sections = new Map();
+  headings.forEach((heading, position) => {
+    const stop = position + 1 < headings.length ? headings[position + 1].index : text.length;
+    sections.set(Number(heading[1]), text.slice(heading.index, stop));
+  });
+  const tail = sections.get(10);
+  const starts = [...tail.matchAll(/^- \*\*/gm)].map((match) => match.index);
+  const bullets = starts.map((start, position) =>
+    squash(tail.slice(start, position + 1 < starts.length ? starts[position + 1] : tail.length)),
+  );
+  return {
+    release,
+    sha256: createHash("sha256").update(source).digest("hex"),
+    bytes: source.length,
+    preamble: squash(text.slice(0, headings[0].index)),
+    sections: new Map([...sections].map(([number, body]) => [number, squash(body)])),
+    bullets,
+    awaitsIncorporation: (text.match(/awaits incorporation/g) ?? []).length,
+  };
+}
+
+const notes = loadNotes();
+const fixture = JSON.parse(readFileSync(repo("tests", "fixtures", "atlas-trace.json"), "utf8"));
 
 /** Every string a visitor could see or that feeds the matcher, with a label for failure messages. */
 function textFields() {
@@ -71,20 +147,56 @@ function visibleFields() {
   return textFields().filter(([where]) => !where.endsWith(".terms"));
 }
 
-/** @param {string} startId */
-function reachableFrom(startId) {
-  const seen = new Set([startId]);
+/** Hops from `startId` to every reachable island. */
+function hopsFrom(startId) {
+  const hops = new Map([[startId, 0]]);
   const queue = [startId];
   while (queue.length > 0) {
     const current = queue.shift();
     for (const next of index.neighbours.get(current) ?? []) {
-      if (!seen.has(next)) {
-        seen.add(next);
+      if (!hops.has(next)) {
+        hops.set(next, hops.get(current) + 1);
         queue.push(next);
       }
     }
   }
-  return seen;
+  return hops;
+}
+
+/** The inner x range of a region's band, by the midpoint rule of atlas-map.js. */
+function bandOf(regionId) {
+  const position = REGIONS.findIndex((region) => region.id === regionId);
+  const region = REGIONS[position];
+  const prev = REGIONS[position - 1];
+  const next = REGIONS[position + 1];
+  const left = prev ? (prev.x + region.x) / 2 : Math.max(8, region.x - (next ? (next.x - region.x) / 2 : 70));
+  const right = next
+    ? (region.x + next.x) / 2
+    : Math.min(VIEWBOX.width - 8, region.x + (prev ? (region.x - prev.x) / 2 : 70));
+  return { left: left + 1.5, right: right - 1.5 };
+}
+
+/** @param {unknown} value @param {(key: string, path: string) => void} visit @param {string} path */
+function walkKeys(value, visit, path = "$") {
+  if (Array.isArray(value)) {
+    value.forEach((item, position) => walkKeys(item, visit, `${path}[${position}]`));
+  } else if (value !== null && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      visit(key, `${path}.${key}`);
+      walkKeys(child, visit, `${path}.${key}`);
+    }
+  }
+}
+
+/** Every file under a directory, as absolute paths. */
+function filesUnder(directory) {
+  const found = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) found.push(...filesUnder(path));
+    else if (entry.isFile()) found.push(path);
+  }
+  return found.sort();
 }
 
 describe("graph size and identity", () => {
@@ -143,24 +255,44 @@ describe("edges", () => {
   });
 
   it("is connected from START_ID", () => {
-    const seen = reachableFrom(START_ID);
+    const seen = hopsFrom(START_ID);
     const missing = ids.filter((id) => !seen.has(id));
     assert.deepEqual(missing, [], `unreachable from ${START_ID}`);
+    assert.equal(seen.size, ISLANDS.length);
   });
 
   it("gives the start island at least three neighbours", () => {
     assert.ok(index.neighbours.get(START_ID).size >= 3, `neighbours: ${index.neighbours.get(START_ID).size}`);
   });
 
-  it("gives every edge a 3..60 character label and a traced anchor", () => {
+  it("gives every edge a 3..60 character label and a traced section", () => {
     for (const edge of EDGES) {
       const where = `edge ${edge.a}|${edge.b}`;
       assert.ok(isNonEmptyString(edge.label), `${where} label`);
       assert.ok(edge.label.length >= 3 && edge.label.length <= 60, `${where} label length ${edge.label.length}`);
       assert.ok(edge.trace && typeof edge.trace === "object", `${where} trace`);
       assert.ok(isValidSection(edge.trace.section), `${where} trace section ${edge.trace.section}`);
-      assert.ok(isNonEmptyString(edge.trace.anchor), `${where} trace anchor`);
     }
+  });
+
+  it("starts no path label with a pronoun, because a label is read from both ends", () => {
+    const bad = EDGES.filter((edge) => PRONOUN_START.test(edge.label.trim()));
+    assert.deepEqual(
+      bad.map((edge) => `${edge.a}|${edge.b}: ${edge.label}`),
+      [],
+    );
+  });
+
+  it("makes every path that touches a contested or an open island say so (F4)", () => {
+    const flagged = new Set([...openIslands, ...contestedIslands].map((island) => island.id));
+    const touching = EDGES.filter((edge) => flagged.has(edge.a) || flagged.has(edge.b));
+    assert.ok(touching.length >= 1, "no path touches a contested or an open island");
+    const bad = touching.filter((edge) => !QUALIFIER.test(edge.label));
+    assert.deepEqual(
+      bad.map((edge) => `${edge.a}|${edge.b}: ${edge.label}`),
+      [],
+      "a path to a contested or open island must carry its qualifier",
+    );
   });
 });
 
@@ -191,12 +323,11 @@ describe("islands", () => {
     );
   });
 
-  it("traces every island to at least one section 1..10 or the preamble with an anchor", () => {
+  it("traces every island to at least one section 1..10 or the preamble", () => {
     for (const island of ISLANDS) {
       assert.ok(Array.isArray(island.trace) && island.trace.length >= 1, `${island.id} trace`);
       for (const entry of island.trace) {
         assert.ok(isValidSection(entry.section), `${island.id} trace section ${entry.section}`);
-        assert.ok(isNonEmptyString(entry.anchor), `${island.id} trace anchor`);
       }
     }
   });
@@ -212,12 +343,27 @@ describe("islands", () => {
     }
   });
 
-  it("places every island inside the viewBox", () => {
+  it("gives a note, where an island has one, as plain non-empty text", () => {
+    for (const island of ISLANDS) {
+      if (island.note !== undefined) assert.ok(isNonEmptyString(island.note), `${island.id}.note`);
+    }
+  });
+
+  it("places every island inside the viewBox and inside the band of its region", () => {
     assert.ok(VIEWBOX.width > 0 && VIEWBOX.height > 0);
     for (const island of ISLANDS) {
       assert.ok(Number.isFinite(island.x) && Number.isFinite(island.y), `${island.id} position`);
       assert.ok(island.x > 0 && island.x < VIEWBOX.width, `${island.id} x ${island.x}`);
       assert.ok(island.y > 0 && island.y < VIEWBOX.height, `${island.id} y ${island.y}`);
+      const band = bandOf(island.region);
+      assert.ok(
+        island.x - BODY_RADIUS >= band.left && island.x + BODY_RADIUS <= band.right,
+        `${island.id} x ${island.x} leaves the ${island.region} band ${band.left}..${band.right}`,
+      );
+      assert.ok(
+        island.y - BODY_RADIUS >= BAND_TOP && island.y + BODY_RADIUS <= BAND_BOTTOM,
+        `${island.id} y ${island.y} leaves the bands ${BAND_TOP}..${BAND_BOTTOM}`,
+      );
     }
   });
 
@@ -262,6 +408,19 @@ describe("regions", () => {
       assert.ok(members.length >= 1, `region ${region.id} is empty`);
     }
   });
+
+  it("keeps the coast within three hops of the start, each coastal island next to the coast or the lowlands (F21)", () => {
+    const hops = hopsFrom(START_ID);
+    const coast = ISLANDS.filter((island) => island.region === "coast");
+    assert.ok(coast.length >= 2);
+    for (const island of coast) {
+      assert.ok(hops.get(island.id) <= 3, `${island.id} is ${hops.get(island.id)} hops from ${START_ID}`);
+      const near = [...index.neighbours.get(island.id)].filter((id) =>
+        ["coast", "lowlands"].includes(byId.get(id).region),
+      );
+      assert.ok(near.length >= 1, `${island.id} hangs off the interior or deeper only`);
+    }
+  });
 });
 
 describe("status rules", () => {
@@ -274,10 +433,10 @@ describe("status rules", () => {
   it("pins the exported labels", () => {
     assert.equal(OPEN_LABEL, "open, not ratified");
     assert.equal(CONTESTED_LABEL, "awaits incorporation");
+    assert.equal(CONTESTED_FULL_LABEL, `${CONTESTED_LABEL} into the authoritative design and message catalogue`);
   });
 
   it("marks every dragon open with the exact label", () => {
-    const dragons = ISLANDS.filter((island) => island.region === "dragons");
     assert.ok(dragons.length >= 1);
     for (const island of dragons) {
       assert.equal(island.status, "open", `${island.id} status`);
@@ -285,44 +444,70 @@ describe("status rules", () => {
     }
   });
 
-  it("marks nothing outside the dragons region open", () => {
-    const strays = ISLANDS.filter((island) => island.status === "open" && island.region !== "dragons");
-    assert.deepEqual(
-      strays.map((island) => island.id),
-      [],
-    );
+  it("gives every open island the exact label and keeps open islands in the dragons region only", () => {
+    assert.ok(openIslands.length >= 1);
+    for (const island of openIslands) {
+      assert.equal(island.region, "dragons", `${island.id} is open outside the dragons`);
+      assert.equal(island.label, OPEN_LABEL, `${island.id} label`);
+    }
     for (const island of ISLANDS.filter((candidate) => candidate.region !== "dragons")) {
-      assert.notEqual(island.label, "open, not ratified", `${island.id} borrows the dragon label`);
+      assert.notEqual(island.label, OPEN_LABEL, `${island.id} borrows the dragon label`);
+    }
+    assert.equal(openIslands.length, dragons.length);
+  });
+
+  it("lets only the two exported labels appear, each with its own status", () => {
+    for (const island of ISLANDS) {
+      if (island.label === undefined) {
+        assert.equal(island.status, undefined, `${island.id} has a status but no label`);
+      } else {
+        const expected = { [OPEN_LABEL]: "open", [CONTESTED_LABEL]: "contested" }[island.label];
+        assert.ok(expected, `${island.id} label ${JSON.stringify(island.label)}`);
+        assert.equal(island.status, expected, `${island.id} label ${island.label}`);
+      }
     }
   });
 
-  it("marks exactly the epoch price catalogue contested", () => {
-    const contested = ISLANDS.filter((island) => island.status === "contested");
-    assert.equal(contested.length, 1, `contested: ${contested.map((island) => island.id).join(", ")}`);
-    assert.equal(contested[0].id, "price-catalogue");
-    assert.match(contested[0].name, /price catalogue/i);
-    assert.equal(contested[0].label, "awaits incorporation");
-  });
-
-  it("has the post-pilot emergency settlement dragon", () => {
-    const island = byId.get("post-pilot-emergency");
-    assert.ok(island, "post-pilot-emergency island is missing");
-    assert.equal(island.region, "dragons");
-    assert.equal(island.status, "open");
-    assert.match(island.name, /post-pilot emergency settlement/i);
-    assert.ok(island.trace.some((entry) => entry.section === 6 && /post-pilot/.test(entry.anchor)));
-  });
-
-  it("covers each of the nine bullets of section 10 with a dragon traced to section 10", () => {
-    const dragons = ISLANDS.filter((island) => island.region === "dragons");
-    for (const bullet of SECTION_10_BULLETS) {
-      const match = dragons.find((island) =>
-        island.trace.some((entry) => entry.section === 10 && entry.anchor.startsWith(bullet)),
+  it("flags as contested what the summary preamble flags, and nothing else", () => {
+    assert.ok(notes.awaitsIncorporation >= 1, "the summary no longer flags a contested item");
+    assert.ok(notes.preamble.includes(CONTESTED_FULL_LABEL), "the preamble does not say the full contested label");
+    assert.equal(contestedIslands.length, notes.awaitsIncorporation, "contested islands vs flagged items");
+    const flagged = notes.preamble.match(/mechanism in section (\d+) awaits incorporation/);
+    assert.ok(flagged, "the preamble no longer names the section of the contested mechanism");
+    for (const island of contestedIslands) {
+      assert.equal(island.label, CONTESTED_LABEL, `${island.id} label`);
+      assert.ok(
+        island.trace.some((entry) => entry.section === Number(flagged[1])),
+        `${island.id} does not trace to section ${flagged[1]}, where the preamble puts the contested mechanism`,
       );
-      assert.ok(match, `no dragon traced to section 10 for: ${bullet}`);
     }
+  });
+
+  it("covers every bullet of section 10 with its own dragon traced to section 10", () => {
+    assert.ok(notes.bullets.length >= 1, "no bullets found in section 10 of the brain");
     const covering = dragons.filter((island) => island.trace.some((entry) => entry.section === 10));
-    assert.ok(covering.length >= SECTION_10_BULLETS.length, `dragons tracing section 10: ${covering.length}`);
+    assert.ok(
+      covering.length >= notes.bullets.length,
+      `${covering.length} dragons trace section 10 but the summary has ${notes.bullets.length} bullets there`,
+    );
+    for (const bullet of notes.bullets) {
+      const match = covering.find((island) =>
+        island.trace.some(
+          (entry, position) =>
+            entry.section === 10 && bullet.includes(squash(fixture.islands[island.id]?.[position] ?? "\u0000")),
+        ),
+      );
+      assert.ok(match, `no dragon has a section 10 anchor inside the bullet: ${bullet.slice(0, 80)}`);
+    }
+  });
+
+  it("adds the other open items of the summary as dragons beyond section 10", () => {
+    const outsideTen = dragons.filter((island) => !island.trace.some((entry) => entry.section === 10));
+    const mentionsOpen = [...notes.sections]
+      .filter(([number]) => number < 10)
+      .filter(([, body]) => /\b(?:undefined|unsealed|deferred)\b/i.test(body));
+    assert.ok(mentionsOpen.length >= 1, "the summary no longer calls anything undefined, unsealed or deferred");
+    assert.ok(outsideTen.length >= 1, "every dragon cites section 10: the open items of sections 2 to 8 have none");
   });
 
   it("ties every section 10 trace on an island to a dragon", () => {
@@ -330,6 +515,13 @@ describe("status rules", () => {
       if (island.trace.some((entry) => entry.section === 10)) {
         assert.equal(island.region, "dragons", `${island.id} cites section 10 outside the dragons`);
       }
+    }
+  });
+
+  it("keeps the open items out of the first-load neighbourhood", () => {
+    const next = index.neighbours.get(START_ID);
+    for (const island of openIslands) {
+      assert.ok(!next.has(island.id), `${island.id} is a first-load neighbour of ${START_ID}`);
     }
   });
 });
@@ -344,6 +536,19 @@ describe("honest wording", () => {
   it("never uses the word roadmap", () => {
     for (const [where, value] of textFields()) {
       assert.ok(!/roadmap/i.test(value), `${where} uses roadmap: ${value}`);
+    }
+  });
+
+  it("never reads as a roadmap on an open island or on a path to one", () => {
+    const flagged = new Set(openIslands.map((island) => island.id));
+    for (const island of openIslands) {
+      for (const key of ["name", "teaser", "label", "note"]) {
+        if (island[key] === undefined) continue;
+        assert.ok(!ROADMAP_WORDS.test(island[key]), `island ${island.id}.${key} promises something: ${island[key]}`);
+      }
+    }
+    for (const edge of EDGES.filter((candidate) => flagged.has(candidate.a) || flagged.has(candidate.b))) {
+      assert.ok(!ROADMAP_WORDS.test(edge.label), `edge ${edge.a}|${edge.b} promises something: ${edge.label}`);
     }
   });
 
@@ -374,37 +579,107 @@ describe("first-load facts", () => {
   });
 });
 
-describe("edge grounding fixes and the source revision", () => {
-  const edgeOf = (a, b) => EDGES.find((edge) => edgeKey(edge.a, edge.b) === edgeKey(a, b));
-
-  it("has 96 paths and has dropped the one that could not be grounded", () => {
-    assert.equal(EDGES.length, 96);
-    assert.equal(edgeOf("isp-counterparty", "app-set-prices"), undefined, "isp-counterparty|app-set-prices is gone");
-    assert.ok(index.neighbours.get("isp-counterparty").size >= 1, "isp-counterparty is still connected");
-    assert.ok(index.neighbours.get("app-set-prices").size >= 1, "app-set-prices is still connected");
-    assert.equal(reachableFrom(START_ID).size, ISLANDS.length, "the graph stays connected from the start");
+describe("no quotation of the summary is served (F13)", () => {
+  it("has no anchor key anywhere in the graph objects", () => {
+    const found = [];
+    for (const [name, value] of [["ISLANDS", ISLANDS], ["EDGES", EDGES], ["REGIONS", REGIONS], ["VIEWBOX", VIEWBOX]]) {
+      walkKeys(value, (key, path) => {
+        if (/anchor/i.test(key)) found.push(`${name}${path.slice(1)}`);
+      });
+    }
+    assert.deepEqual(found, []);
   });
 
-  it("grounds the ConRec to RtgP path in the section that says it", () => {
-    const edge = edgeOf("conrec", "rtgp");
-    assert.equal(edge.label, "ConRecs are the evidence behind each claim row");
-    assert.equal(edge.trace.section, 7);
-    assert.equal(edge.trace.anchor, "publish the signed ConRecs supporting its rows");
+  it("keeps only a section number in every trace entry", () => {
+    for (const island of ISLANDS) {
+      for (const entry of island.trace) assert.deepEqual(Object.keys(entry), ["section"], `${island.id} trace`);
+    }
+    for (const edge of EDGES) assert.deepEqual(Object.keys(edge.trace), ["section"], `${edge.a}|${edge.b} trace`);
   });
 
-  it("grounds the timetable to HCD path in the section 8 footprint sentence", () => {
-    const edge = edgeOf("epoch-timetable", "hcd");
-    assert.equal(edge.label, "each ISP posts one HCD per epoch");
-    assert.equal(edge.trace.section, 8);
-    assert.equal(edge.trace.anchor, "each ISP has one HCD");
+  it("does not name an anchor field in the code of atlas-graph.js", () => {
+    const source = readFileSync(repo("site", "js", "atlas-graph.js"), "utf8");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    assert.ok(!/anchor/i.test(code), "atlas-graph.js code mentions an anchor");
   });
 
-  it("records which revision of the summary the anchors were checked against", () => {
-    const source = readFileSync(new URL("../../site/js/atlas-graph.js", import.meta.url), "utf8");
+  it("copies no fixture anchor into any file under site/", () => {
+    const anchors = [
+      ...Object.values(fixture.islands).flat(),
+      ...Object.values(fixture.edges),
+    ].map((anchor) => squash(anchor).toLowerCase());
+    assert.ok(anchors.length >= ISLANDS.length + EDGES.length);
+    const files = filesUnder(repo("site"));
+    assert.ok(files.length >= 10, `site/ files: ${files.length}`);
+    const leaks = new Set();
+    for (const file of files) {
+      // Compared without regard to case, quote style and line breaks: a label that only lower-cases a quotation still copies it.
+      const text = squash(readFileSync(file, "utf8")).toLowerCase();
+      for (const anchor of anchors) {
+        if (text.includes(anchor)) leaks.add(`${file.slice(ROOT.length)}: ${anchor}`);
+      }
+    }
+    assert.deepEqual([...leaks], []);
+  });
+});
+
+describe("the trace fixture", () => {
+  const anchorsOfIslands = Object.entries(fixture.islands).flatMap(([id, list]) =>
+    list.map((anchor, position) => [`island ${id} trace[${position}]`, anchor]),
+  );
+  const anchorsOfEdges = Object.entries(fixture.edges).map(([key, anchor]) => [`edge ${key}`, anchor]);
+
+  it("has exactly the keys summary_sha256, islands and edges", () => {
+    assert.deepEqual(Object.keys(fixture).sort(), ["edges", "islands", "summary_sha256"]);
+  });
+
+  it("is the summary embedded in the brain: its hash is the sha256 of the embedded source", () => {
+    assert.match(fixture.summary_sha256, /^[0-9a-f]{64}$/);
+    assert.equal(fixture.summary_sha256, notes.sha256);
+  });
+
+  it("has an entry for every island and no other", () => {
+    assert.deepEqual(Object.keys(fixture.islands).sort(), [...ids].sort());
+  });
+
+  it("has one anchor string per trace entry of every island", () => {
+    for (const island of ISLANDS) {
+      const list = fixture.islands[island.id];
+      assert.ok(Array.isArray(list), `${island.id} has no anchor list`);
+      assert.equal(list.length, island.trace.length, `${island.id}: ${list.length} anchors for ${island.trace.length} traces`);
+      list.forEach((anchor, position) => assert.ok(isNonEmptyString(anchor), `${island.id} anchor ${position}`));
+    }
+  });
+
+  it("has an entry for every edge, keyed by the sorted edgeKey, and no other", () => {
+    const keys = Object.keys(fixture.edges);
+    assert.deepEqual(keys.slice().sort(), EDGES.map((edge) => edgeKey(edge.a, edge.b)).sort());
+    for (const key of keys) {
+      const ends = key.split("|");
+      assert.equal(ends.length, 2, `edge key ${key}`);
+      assert.equal(key, edgeKey(ends[0], ends[1]), `edge key ${key} is not sorted the way edgeKey sorts it`);
+      assert.ok(isNonEmptyString(fixture.edges[key]), `edge ${key} anchor`);
+    }
+  });
+
+  it("gives every anchor at least 20 characters and 4 words", () => {
+    assert.ok(anchorsOfIslands.length >= ISLANDS.length);
+    const bad = [...anchorsOfIslands, ...anchorsOfEdges].filter(([, anchor]) => {
+      const text = squash(anchor);
+      return text.length < 20 || text.split(" ").length < 4;
+    });
+    assert.deepEqual(
+      bad.map(([where, anchor]) => `${where}: ${anchor}`),
+      [],
+    );
+  });
+
+  it("records the revision of the summary in the graph header", () => {
+    const source = readFileSync(repo("site", "js", "atlas-graph.js"), "utf8");
     const header = source.slice(0, source.indexOf("export const VIEWBOX"));
-    assert.match(header, /knowledge\/brain\/local-draft-v3/);
-    assert.match(header, /37,749 bytes/);
-    assert.match(header, /sha256[\s*]+b2f2982d6df3d9d003fb284c110ef1ebe21e890c5c30de5a00ae967af288b59b/);
-    assert.match(header, /live notes file has[\s*]+moved on/);
+    assert.ok(header.includes(`knowledge/brain/${notes.release}`), `header does not name ${notes.release}`);
+    assert.ok(header.includes(`${notes.bytes.toLocaleString("en-US")} bytes`), `header does not give ${notes.bytes} bytes`);
+    assert.match(header, new RegExp(`sha256[\\s*]+${notes.sha256}`));
+    assert.equal(notes.sha256, fixture.summary_sha256);
   });
 });
