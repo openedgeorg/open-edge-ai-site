@@ -11,9 +11,11 @@ and the real site/js/atlas*.js. The conversation client in their page is chosen 
   a stream, fill the history, settle and send the CSRF header; the second test below skips, saying
   what is missing, when the tree has none of that.
 
-What the real run adds over the double run: the double paints like the live client, but it is a
-stand-in written from its observable behaviour. Only a run on the real client notices a change in
-how the shipped client really paints (its element updates, its timing, its request headers).
+What the real run adds over the double run: the double paints like the live client because it is a
+self-contained port of the working-tree client (site/js/app.js, api.js, state.js) as of 2026-10-10;
+the sha256 of those three files is recorded in the header of the fixture. It is not an independent
+reconstruction, and it can drift from the live client. Only a run on the real client notices a change
+in how the shipped client really paints (its element updates, its timing, its request headers).
 atlas_chat_double.test.mjs and atlas_browser_double.test.mjs keep the double honest: they play the
 same scripted scenarios against both clients and compare phases, rows, drafts, storage and every
 request. What no run covers: citations and the source panel of the live client, and the live API.

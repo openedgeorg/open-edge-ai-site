@@ -7,7 +7,7 @@
  *
  * Which conversation client runs in the page (ATLAS_CHAT, read once at import, see CHAT_SETUP):
  *  - "double" (the default): tests/fixtures/atlas_chat_double/app.js is served at /js/app.js in
- *    place of site/js/app.js. It is a self-contained stand-in that paints the way the live client
+ *    place of site/js/app.js. It is a self-contained port of the working-tree client (see its header for the source hashes) that paints the way the live client
  *    does (stream follow, history fill, settled phase, CSRF header, the early "ready" quirk) and
  *    imports nothing from site/js/. The suites then depend only on what is committed in site/js/atlas*.js
  *    and on the tests, never on the state of the chat client files, so they pass on a clean checkout.

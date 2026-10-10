@@ -6,8 +6,18 @@
  * Why it exists: the Atlas does not talk to the chat API. It watches what the conversation client
  * paints (#phase, #history, #draft) and works from that. To test the Atlas in a real browser the
  * page needs a client that paints in the same way, with the same awkward timing, on any checkout
- * of the repository. This file is that client, written as a single self-contained module from the
- * observable behaviour only. It imports nothing: not api.js, state.js, sse.js or render.js.
+ * of the repository. This file is that client: a self-contained PORT of the working-tree chat
+ * client (site/js/app.js, api.js and state.js, which carry uncommitted edits by their owner) as of
+ * 2026-10-10, folded into one module with renamed identifiers. It is NOT an independent
+ * reconstruction: its structure and logic follow those three files closely, quirks included. It
+ * imports nothing: not api.js, state.js, sse.js or render.js.
+ *
+ * Source files of the port (sha256 at the time of the port):
+ *   site/js/app.js    e16947f9ca235bc172bd2c42214591fa2aefb34b387699f08ebdd89341be1665
+ *   site/js/api.js    c702f14f652cd587e37a2875ece6ca2f1fa5782bc74461acb0fa88a8ea70ee6e
+ *   site/js/state.js  7c209ef473c2dcab8e618bccc3ca1ce3e559bd73899ca673a2dd77779a6df272
+ * When those files change, the differential suites (atlas_chat_double.test.mjs and
+ * atlas_browser_double.test.mjs) show where this port has drifted from the live client.
  *
  * What it reproduces (the things the Atlas bridge depends on):
  *  - the element ids #composer #provider #draft #send #cancel #phase #history;
