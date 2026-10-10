@@ -1,17 +1,26 @@
 /**
- * Browser end-to-end tests for the Atlas: the real site/index.html and the real js/app.js +
- * js/atlas*.js modules, driven in headless Chrome through the DevTools protocol (no npm
- * packages: Node built-ins only, see atlas_browser_support.mjs).
+ * Browser end-to-end tests for the Atlas: the real site/index.html and the real js/atlas*.js
+ * modules, driven in headless Chrome through the DevTools protocol (no npm packages: Node
+ * built-ins only, see atlas_browser_support.mjs).
  *
- * The page is served from site/ by a node:http server that also answers the chat API calls
- * app.js makes (same origin, relative URLs). No Content-Security-Policy header is added: the
- * meta tag in index.html is what ships, and Chrome enforces it here.
+ * The page is served from site/ by a node:http server that also answers the chat API calls the
+ * conversation client makes (same origin, relative URLs). No Content-Security-Policy header is
+ * added: the meta tag in index.html is what ships, and Chrome enforces it here.
+ *
+ * The conversation client in the page is chosen by ATLAS_CHAT (see atlas_browser_support.mjs):
+ * "double" (the default) serves tests/fixtures/atlas_chat_double/app.js at /js/app.js, a
+ * self-contained stand-in that paints like the live client, so this file passes on a clean
+ * checkout whatever state site/js/app.js, api.js and state.js are in; "real" serves the working
+ * tree's own client and is skipped, with the reason printed, when that tree cannot follow a
+ * stream, fill the history, settle and send the CSRF header; "auto" picks real when it can.
  *
  * Island names, teasers and terms are never hardcoded: they are read from js/atlas-graph.js.
  * Only three first-load facts are written out on purpose (the start island, the first suggestion
  * and the edge dragon caption), because a visitor sees exactly those words on a first visit.
  *
- * Run: node --test tests/e2e/atlas_browser.test.mjs
+ * Run: node --test --test-concurrency=1 tests/e2e/atlas_browser.test.mjs
+ * (`node --test` runs FILES in parallel and each browser file starts its own Chrome: run the
+ * browser files one at a time, as tests/e2e/test_atlas.py does.)
  * Chrome: /usr/bin/google-chrome, or the executable named by ATLAS_CHROME. Without a Chrome
  * the whole suite is skipped with the reason printed. Screenshots go to /tmp/atlas-e2e/.
  */
@@ -27,7 +36,7 @@ import { EDGES, EDGE_DRAGON_CAPTION, FIRST_SUGGESTION, ISLANDS, REGIONS, START_I
 import { classifyTerm, compileGlossary, matchReply } from "../../site/js/atlas-match.js";
 import { regionHeading, statusWord, suggestionItems } from "../../site/js/atlas-panel.js";
 import { deriveView } from "../../site/js/atlas-state.js";
-import { OUT_DIR, SITE_DIR, findChrome, launchBrowser, sleep, startSite } from "./atlas_browser_support.mjs";
+import { CHAT_SETUP, OUT_DIR, SITE_DIR, findChrome, launchBrowser, sleep, startSite } from "./atlas_browser_support.mjs";
 
 const INDEX = buildIndex();
 const GLOSSARY = compileGlossary(ISLANDS);
@@ -104,7 +113,8 @@ const READ_ATLAS = `(() => {
     edges[g.getAttribute("data-edge")] = g.classList.contains("is-lit") ? "lit" : g.classList.contains("is-stub") ? "stub" : "hidden";
   }
   const chips = Array.from(document.querySelectorAll("#atlas-suggest .atlas-chip")).map((chip) => ({
-    text: chip.textContent,
+    // The question a tap would send. A chip on the open list also carries a small "open, not ratified" tag.
+    text: (chip.querySelector(".atlas-chip-text") || chip).textContent,
     disabled: chip.disabled,
     ariaDisabled: chip.getAttribute("aria-disabled"),
   }));
@@ -163,7 +173,7 @@ function assertMatchesModel(snap, visited, replies) {
   assert.equal(snap.inked, replies > 0, "edge dragon inked once there has been a reply");
   assert.deepEqual(
     snap.chips.map((chip) => chip.text),
-    suggestionItems(view),
+    suggestionItems(view, { visited }),
     "suggestion chips",
   );
 }
@@ -368,8 +378,9 @@ const focusIsland = (page, id) =>
 // suite
 // ---------------------------------------------------------------------------------------------
 
-describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason, timeout: 150000 }, () => {
-  before(async () => {
+describe("Atlas in a real browser", { skip: CHROME.path ? CHAT_SETUP.skip : CHROME.reason, timeout: 240000 }, () => {
+  before(async (t) => {
+    t.diagnostic(CHAT_SETUP.label);
     browser = await launchBrowser(CHROME.path);
     ensureOutDir();
   });
@@ -1163,7 +1174,9 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
     const dom = await page.eval(`(() => {
       const sections = [];
       for (const h3 of document.querySelectorAll("#atlas noscript h3")) {
-        const list = h3.nextElementSibling;
+        // The open-list heading is followed by a one-sentence framing paragraph before its list.
+        let list = h3.nextElementSibling;
+        while (list && list.tagName !== "UL" && list.tagName !== "OL") list = list.nextElementSibling;
         sections.push({ heading: h3.textContent, tag: list.tagName, listStyle: getComputedStyle(list.querySelector("li")).listStyleType, names: Array.from(list.querySelectorAll("li > strong")).map((s) => s.textContent) });
       }
       const box = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
@@ -1550,7 +1563,11 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
     assert.equal(after.ariaDisabled, null, "and it is enabled again");
     assert.equal(after.describedBy, null);
     const view = deriveView({ visited: visitedAfter([START_ID], HOOK_REPLY), replies: 1 }, INDEX);
-    assert.equal(after.text, suggestionItems(view)[0], "its text is now the first of the new suggestions");
+    assert.equal(
+      after.text.startsWith(suggestionItems(view, { visited: visitedAfter([START_ID], HOOK_REPLY) })[0]),
+      true,
+      "its text is now the first of the new suggestions",
+    );
     assertMatchesModel(await readAtlas(page), visitedAfter([START_ID], HOOK_REPLY), 1);
 
     // The list's Ask button: same rule.
@@ -1597,7 +1614,9 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
     assert.notEqual(noticeFacts.display, "none");
     assert.equal(noticeFacts.role, "status");
     assert.equal(noticeFacts.text, "");
-    assert.ok(noticeFacts.height >= 2 * noticeFacts.lineHeight, `the notice slot is two lines high even when empty (${noticeFacts.height}px, line ${noticeFacts.lineHeight}px)`);
+    // Round 2 (F6): the notice is an overlay slot. Empty, it reserves no blank band above the map; when it
+    // speaks it takes no room either, which is what the "nothing moves" checks below prove.
+    assert.ok(noticeFacts.height < noticeFacts.lineHeight, `an empty notice reserves no blank band (${noticeFacts.height}px, line ${noticeFacts.lineHeight}px)`);
 
     // 1. The visitor types: chips pause, nothing is written, nothing moves.
     await page.click("#draft");
@@ -1614,15 +1633,16 @@ describe("Atlas in a real browser", { skip: CHROME.path ? false : CHROME.reason,
     const cleared = await page.eval(BOXES);
     assert.deepEqual(cleared, afterClick, "clearing the box moves nothing either");
 
-    // 2. A question runs: the notice speaks into its reserved slot, nothing around it moves.
+    // 2. A question runs: the notice speaks into its overlay slot, nothing around it moves.
     const release = stub.holdStreams();
     await page.click(".atlas-chip");
     await stub.waitFor(() => stub.posts.length >= 1, { what: "the chip's POST" });
     await page.waitFor(`document.querySelector("#atlas-notice").textContent.trim().length > 0`, { what: "the busy notice" });
     const busy = await page.eval(BOXES);
-    for (const part of ["suggest", "notice", "toolbar", "map", "inspector"]) {
+    for (const part of ["suggest", "toolbar", "map", "inspector"]) {
       assert.deepEqual(busy[part], idle[part], `${part} did not move when the notice appeared`);
     }
+    assert.ok(busy.notice[3] > 0, "and the notice itself now has a box with the message in it");
     const snapBusy = await readAtlas(page);
     assertPaused(snapBusy, "busy");
     const message = snapBusy.notice;

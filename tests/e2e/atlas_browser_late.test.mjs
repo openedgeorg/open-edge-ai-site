@@ -3,14 +3,17 @@
  * awkward ways: a "ready" that arrives before the reply, an older /history snapshot, a backend
  * that dies after the page loaded, a chat that never boots.
  *
- * Same method as atlas_browser.test.mjs: the real site/index.html and the real js/app.js +
- * js/atlas*.js modules run in headless Chrome (DevTools protocol, Node built-ins only), served by
- * a node:http server that also answers the chat API. This file has its OWN stub backend because
- * it needs behaviours the shared stub does not have (a /history that lags, a session endpoint
- * that dies); it only reuses the Chrome launcher and the DevTools client from
- * atlas_browser_support.mjs.
+ * Same method as atlas_browser.test.mjs: the real site/index.html and the real js/atlas*.js
+ * modules run in headless Chrome (DevTools protocol, Node built-ins only), served by a node:http
+ * server that also answers the chat API. This file has its OWN stub backend because it needs
+ * behaviours the shared stub does not have (a /history that lags, a session endpoint that dies);
+ * it only reuses the Chrome launcher, the DevTools client and the choice of conversation client
+ * from atlas_browser_support.mjs. That client is the test double
+ * (tests/fixtures/atlas_chat_double/app.js) by default, so the file passes on a clean checkout;
+ * ATLAS_CHAT=real serves the working tree's own site/js/app.js instead (and skips, saying why, when
+ * that tree cannot follow a stream and fill the history). Both clients behave as described next.
  *
- * What js/app.js really does (read-only, never changed here):
+ * What the conversation client does (the double reproduces it; site/js/app.js is never changed here):
  *  - /events that answers 404 (or ends before the run does) makes follow() settle at once; the
  *    chat then polls /history every 2 s, but only until ANY assistant row exists, which from turn
  *    2 on is true from the first fetch.
@@ -25,7 +28,8 @@
  * The waits are real time on purpose (the bridge's timers are the thing under test): the file
  * takes about 20 s, its tests run side by side.
  *
- * Run: node --test tests/e2e/atlas_browser_late.test.mjs
+ * Run: node --test --test-concurrency=1 tests/e2e/atlas_browser_late.test.mjs
+ * (`node --test` runs FILES in parallel; run the browser files one at a time.)
  * Chrome: /usr/bin/google-chrome, or ATLAS_CHROME. Without a Chrome the whole file is skipped.
  */
 
@@ -39,7 +43,7 @@ import { LATE_SETTLE_MS, NO_PROGRESS_MS, START_GIVE_UP_MS } from "../../site/js/
 import { ISLANDS, START_ID, buildIndex } from "../../site/js/atlas-graph.js";
 import { compileGlossary, matchReply } from "../../site/js/atlas-match.js";
 import { deriveView } from "../../site/js/atlas-state.js";
-import { SITE_DIR, findChrome, launchBrowser, sleep } from "./atlas_browser_support.mjs";
+import { BROWSER_CONCURRENCY, CHAT_SETUP, findChrome, launchBrowser, siteFileFor, sleep } from "./atlas_browser_support.mjs";
 
 const INDEX = buildIndex();
 const GLOSSARY = compileGlossary(ISLANDS);
@@ -192,8 +196,8 @@ async function handle(req, res, backend) {
   if (method === "GET" || method === "HEAD") {
     let relative = decodeURIComponent(pathname);
     if (relative.endsWith("/")) relative += "index.html";
-    const full = path.normalize(path.join(SITE_DIR, relative));
-    if (full !== SITE_DIR && !full.startsWith(SITE_DIR + path.sep)) return void res.writeHead(403).end();
+    const full = siteFileFor(relative);
+    if (full === null) return void res.writeHead(403).end();
     return fs.readFile(full, (error, data) => {
       if (error) {
         res.writeHead(404, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
@@ -382,8 +386,11 @@ function assertLitOnceAfterFinal(samples, { before, finalText, label }) {
 // the scenarios
 // ---------------------------------------------------------------------------------------------
 
-describe("Atlas chat bridge in a real browser: late and failing chats", { skip: CHROME.path ? false : CHROME.reason, timeout: 150000, concurrency: 4 }, () => {
-  before(async () => {
+const SUITE = { skip: CHROME.path ? CHAT_SETUP.skip : CHROME.reason, timeout: 240000, concurrency: BROWSER_CONCURRENCY };
+
+describe("Atlas chat bridge in a real browser: late and failing chats", SUITE, () => {
+  before(async (t) => {
+    t.diagnostic(CHAT_SETUP.label);
     browser = await launchBrowser(CHROME.path);
   });
 

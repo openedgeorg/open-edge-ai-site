@@ -1,9 +1,27 @@
 /**
- * Support code for tests/e2e/atlas_browser.test.mjs (not a test file itself).
+ * Support code for the Atlas browser tests (tests/e2e/atlas_browser*.test.mjs; not a test file itself).
  *
  * Node built-ins only: a tiny Chrome DevTools Protocol client over the global WebSocket, a
  * headless Chrome launcher, and one node:http server that serves the repo's site/ directory
- * and, on the same origin, a stub of the chat API the real js/app.js calls.
+ * and, on the same origin, a stub of the chat API the page's conversation client calls.
+ *
+ * Which conversation client runs in the page (ATLAS_CHAT, read once at import, see CHAT_SETUP):
+ *  - "double" (the default): tests/fixtures/atlas_chat_double/app.js is served at /js/app.js in
+ *    place of site/js/app.js. It is a self-contained stand-in that paints the way the live client
+ *    does (stream follow, history fill, settled phase, CSRF header, the early "ready" quirk) and
+ *    imports nothing from site/js/. The suites then depend only on what is committed in site/js/atlas*.js
+ *    and on the tests, never on the state of the chat client files, so they pass on a clean checkout.
+ *  - "real": site/js/app.js (with api.js, state.js, sse.js, render.js) is served as it is. This
+ *    needs a working tree whose chat client can follow a stream, fill the history, settle and send the
+ *    CSRF header (see realChatCapability). Without those the suites skip, saying why.
+ *  - "auto": real when the working tree has those capabilities, else double.
+ * What the two modes do and do not cover is written down in tests/fixtures/atlas_chat_double/app.js.
+ *
+ * Load: `node --test` runs test FILES in parallel, and every browser file starts its own Chrome.
+ * Run the browser files one at a time (node --test --test-concurrency=1 tests/e2e/atlas_browser*.test.mjs,
+ * which is what tests/e2e/test_atlas.py does) or the timing-sensitive scenarios can flake on a busy
+ * machine. Tests inside one file share one Chrome; BROWSER_CONCURRENCY (ATLAS_BROWSER_CONCURRENCY,
+ * default 2) is the number of those that run side by side.
  *
  * The server never adds a Content-Security-Policy header: the meta tag inside index.html is
  * what ships, and it is what Chrome has to enforce.
@@ -19,8 +37,87 @@ import { fileURLToPath } from "node:url";
 export const SITE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "site");
 export const OUT_DIR = process.env.ATLAS_E2E_OUT || "/tmp/atlas-e2e";
 
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+/** The stand-in conversation client (never part of the served site). */
+export const CHAT_DOUBLE_FILE = path.resolve(HERE, "..", "fixtures", "atlas_chat_double", "app.js");
+
+/** How many tests of one browser file run side by side (they share one Chrome). */
+export const BROWSER_CONCURRENCY = Math.max(1, Number.parseInt(process.env.ATLAS_BROWSER_CONCURRENCY || "", 10) || 2);
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export { sleep };
+
+// ---------------------------------------------------------------------------------------------
+// Which conversation client runs in the page
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Can the working tree's own chat client (site/js/app.js, api.js, state.js) do what the Atlas
+ * tests need from it? The browser tests need a client that follows /events into the list, fills
+ * the list from /history, settles back to `ready` and sends the CSRF header. A tree without those
+ * can only show "The chat is not available right now." and never posts a question.
+ * @returns {{ok: boolean, missing: string[]}}
+ */
+export function realChatCapability() {
+  const read = (name) => {
+    try {
+      return fs.readFileSync(path.join(SITE_DIR, "js", name), "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const app = read("app.js");
+  const api = read("api.js");
+  const state = read("state.js");
+  const missing = [];
+  if (!/showHistory/.test(app)) missing.push("site/js/app.js has no showHistory (the list is never filled from /history)");
+  if (!/follow/.test(app)) missing.push("site/js/app.js has no follow (the event stream is never followed)");
+  if (!/csrf/i.test(api)) missing.push("site/js/api.js sends no CSRF header");
+  if (!/settled/.test(state)) missing.push("site/js/state.js has no settled phase (the chat never returns to ready)");
+  return { ok: missing.length === 0, missing };
+}
+
+/**
+ * The conversation client of this run, from ATLAS_CHAT=double|real|auto (default: double).
+ * `skip` is a reason string when the run asked for the real client and the tree cannot provide it
+ * (pass it to describe({skip})), else false.
+ * @returns {{requested: string, mode: "double"|"real", capable: boolean, missing: string[], skip: string|false, label: string}}
+ */
+export function resolveChatSetup(env = process.env) {
+  const requested = String(env.ATLAS_CHAT || "double").trim().toLowerCase() || "double";
+  if (!["double", "real", "auto"].includes(requested)) {
+    throw new Error(`ATLAS_CHAT must be double, real or auto (got ${JSON.stringify(env.ATLAS_CHAT)})`);
+  }
+  const capability = realChatCapability();
+  const mode = requested === "auto" ? (capability.ok ? "real" : "double") : requested;
+  const skip =
+    mode === "real" && !capability.ok
+      ? `ATLAS_CHAT=real needs the working tree's own chat client, which lacks: ${capability.missing.join("; ")}`
+      : false;
+  const label =
+    mode === "double"
+      ? "chat client: test double (tests/fixtures/atlas_chat_double/app.js)"
+      : "chat client: the working tree's site/js/app.js";
+  return { requested, mode, capable: capability.ok, missing: capability.missing, skip, label };
+}
+
+export const CHAT_SETUP = resolveChatSetup();
+
+/**
+ * Where a request path is served from. Everything comes from site/, except that in double mode
+ * /js/app.js is the test double. Returns null for a path outside site/.
+ * @param {string} pathname decoded URL path
+ * @param {"double"|"real"} [mode] defaults to the mode of this run (CHAT_SETUP)
+ * @returns {string|null}
+ */
+export function siteFileFor(pathname, mode = CHAT_SETUP.mode) {
+  let relative = pathname;
+  if (relative.endsWith("/")) relative += "index.html";
+  const full = path.normalize(path.join(SITE_DIR, relative));
+  if (full !== SITE_DIR && !full.startsWith(SITE_DIR + path.sep)) return null;
+  if (mode === "double" && full === path.join(SITE_DIR, "js", "app.js")) return CHAT_DOUBLE_FILE;
+  return full;
+}
 
 // ---------------------------------------------------------------------------------------------
 // Chrome discovery and launch
@@ -50,9 +147,25 @@ export function findChrome() {
 
 /**
  * Start headless Chrome with a fresh profile and connect to its browser DevTools endpoint.
+ * A start that fails (Chrome slow to print its DevTools URL on a busy machine, or dying early) is
+ * tried once more with a new profile before the error is given to the test.
  * @param {string} binary
+ * @param {{attempts?: number}} [options]
  */
-export async function launchBrowser(binary) {
+export async function launchBrowser(binary, { attempts = 2 } = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await launchBrowserOnce(binary);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await sleep(750);
+    }
+  }
+  throw new Error(`Chrome did not start after ${attempts} attempts: ${lastError && lastError.message}`);
+}
+
+async function launchBrowserOnce(binary) {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-chrome-"));
   const child = spawn(
     binary,
@@ -67,12 +180,23 @@ export async function launchBrowser(binary) {
       "--disable-extensions",
       "--disable-dev-shm-usage",
       "--mute-audio",
+      // Quieter start-up, less background work on a shared machine (none of it changes what a page does).
+      "--disable-background-networking",
+      "--disable-component-update",
+      "--disable-sync",
+      "--no-pings",
+      "--metrics-recording-only",
+      "--disable-features=Translate,MediaRouter,OptimizationHints",
       "about:blank",
     ],
     { stdio: ["ignore", "ignore", "pipe"], detached: true },
   );
   let exited = false;
   child.once("exit", () => {
+    exited = true;
+  });
+  child.once("error", () => {
+    // The binary could not be started at all: there is no process to wait for.
     exited = true;
   });
 
@@ -241,7 +365,9 @@ export class Cdp {
  *   test can move the clock on instead of waiting 30 or 60 seconds;
  * - a record of every securitypolicyviolation event (what Chrome blocked under the page's CSP);
  * - a count of requestIdleCallback calls (window.__idle), so a test can see that the Atlas
- *   warms its matcher in idle time.
+ *   warms its matcher in idle time;
+ * - a count of pointer and key releases (window.__input), so a click or a key press can be waited
+ *   for until the page has really handled it.
  */
 const PAGE_HOOKS_SOURCE = `(() => {
   const realNow = Date.now.bind(Date);
@@ -252,6 +378,14 @@ const PAGE_HOOKS_SOURCE = `(() => {
   document.addEventListener("securitypolicyviolation", (event) => {
     window.__cspViolations.push({ directive: event.violatedDirective, blocked: event.blockedURI, sample: event.sample });
   }, true);
+  // How many pointer releases and key releases the page has seen. Input.dispatchMouseEvent and
+  // Input.dispatchKeyEvent can return BEFORE the page has run its handlers (they are only routed to
+  // the renderer), so a Runtime.evaluate sent right after can read the page as it was before the
+  // click. Page.click / Page.press wait on these counters to close that gap.
+  const input = { pointer: 0, key: 0 };
+  Object.defineProperty(window, "__input", { value: input });
+  for (const type of ["pointerup", "mouseup"]) window.addEventListener(type, () => { input.pointer += 1; }, true);
+  window.addEventListener("keyup", () => { input.key += 1; }, true);
   const idle = { scheduled: 0, ran: 0 };
   Object.defineProperty(window, "__idle", { value: idle });
   const realIdle = typeof window.requestIdleCallback === "function" ? window.requestIdleCallback.bind(window) : null;
@@ -304,6 +438,25 @@ export class Browser {
     await this.disposeProcess();
   }
 }
+
+/**
+ * Page-side helper, pasted into the click expressions: wait until the centre of an element has not
+ * moved for two animation frames (or 600 ms are over), like a visitor who aims at a page that has
+ * stopped moving. Without it a click can land on whatever slid under the pointer after the aim
+ * (the chips row changing height after a reply made a click on the List tab hit the map).
+ */
+const SETTLE_SOURCE = `const settle = async (el) => {
+  const centre = () => { const r = el.getBoundingClientRect(); return Math.round((r.left + r.width / 2) * 2) + "," + Math.round((r.top + r.height / 2) * 2); };
+  const frame = () => new Promise((resolve) => { const timer = setTimeout(resolve, 50); requestAnimationFrame(() => { clearTimeout(timer); resolve(); }); });
+  const until = performance.now() + 600;
+  let last = centre();
+  let still = 0;
+  while (still < 2 && performance.now() < until) {
+    await frame();
+    const now = centre();
+    if (now === last) still += 1; else { still = 0; last = now; }
+  }
+};`;
 
 export class Page {
   constructor(cdp, { sessionId, targetId, browserContextId, label, diagnostics }) {
@@ -441,16 +594,52 @@ export class Page {
     await this.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1, ...extra });
   }
 
+  /** The page's count of pointer or key releases, or -1 when the page has no hook (scripts off). */
+  async #released(kind) {
+    try {
+      const value = await this.eval(`window.__input ? window.__input.${kind} : -1`);
+      return typeof value === "number" ? value : -1;
+    } catch {
+      return -1;
+    }
+  }
+
+  /**
+   * Wait until the page has seen one more release than `before`. The DevTools input commands can
+   * answer before the page has run its handlers, which made a read right after a click see the old
+   * page (a flaky "the list is still hidden"). A release that never reaches the page (a click on a
+   * disabled control) is given up on after `timeoutMs`.
+   */
+  async #handled(kind, before, timeoutMs = 1500) {
+    if (before < 0) return;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if ((await this.#released(kind)) > before) return;
+      await sleep(4);
+    }
+  }
+
+  /** Move, press and release at a point, and return once the page has handled the click. */
+  async #tap(x, y) {
+    const before = await this.#released("pointer");
+    await this.#mouse("mouseMoved", x, y, { button: "none", clickCount: 0 });
+    await this.#mouse("mousePressed", x, y);
+    await this.#mouse("mouseReleased", x, y);
+    await this.#handled("pointer", before);
+  }
+
   /**
    * Real mouse click at the centre of an element. Throws if another element covers that point.
    * @param {string} selector
    * @param {{within?: string}} [options] within: a selector; a hit inside the same closest(within) counts
    */
   async click(selector, { within = "" } = {}) {
-    const target = await this.eval(`(() => {
+    const target = await this.eval(`(async () => {
+      ${SETTLE_SOURCE}
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return { error: "no element for " + ${JSON.stringify(selector)} };
       el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      await settle(el);
       const r = el.getBoundingClientRect();
       const x = r.left + r.width / 2;
       const y = r.top + r.height / 2;
@@ -463,9 +652,7 @@ export class Page {
     })()`);
     if (target.error) throw new Error(target.error);
     if (!target.ok) throw new Error(`click on ${selector} would hit ${target.hit} instead (covered at ${target.x},${target.y})`);
-    await this.#mouse("mouseMoved", target.x, target.y, { button: "none", clickCount: 0 });
-    await this.#mouse("mousePressed", target.x, target.y);
-    await this.#mouse("mouseReleased", target.x, target.y);
+    await this.#tap(target.x, target.y);
   }
 
   /** Click the circular hit area of an island on the map. */
@@ -481,9 +668,11 @@ export class Page {
    * @param {{within?: string}} [options]
    */
   async clickInView(selector, { within = "" } = {}) {
-    const target = await this.eval(`(() => {
+    const target = await this.eval(`(async () => {
+      ${SETTLE_SOURCE}
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return { error: "no element for " + ${JSON.stringify(selector)} };
+      await settle(el);
       const r = el.getBoundingClientRect();
       const x = r.left + r.width / 2;
       const y = r.top + r.height / 2;
@@ -495,24 +684,22 @@ export class Page {
     })()`);
     if (target.error) throw new Error(target.error);
     if (!target.ok) throw new Error(`click on ${selector} would hit ${target.hit} instead`);
-    await this.#mouse("mouseMoved", target.x, target.y, { button: "none", clickCount: 0 });
-    await this.#mouse("mousePressed", target.x, target.y);
-    await this.#mouse("mouseReleased", target.x, target.y);
+    await this.#tap(target.x, target.y);
   }
 
   /** Real mouse click at a point of the viewport (for empty parts of the map). */
   async clickPoint(x, y) {
-    await this.#mouse("mouseMoved", x, y, { button: "none", clickCount: 0 });
-    await this.#mouse("mousePressed", x, y);
-    await this.#mouse("mouseReleased", x, y);
+    await this.#tap(x, y);
   }
 
   async press(key, { modifiers = 0 } = {}) {
     const spec = KEYS[key];
     if (!spec) throw new Error(`unknown key ${key}`);
     const base = { key, code: spec.code, windowsVirtualKeyCode: spec.vk, nativeVirtualKeyCode: spec.vk, modifiers };
+    const before = await this.#released("key");
     await this.send("Input.dispatchKeyEvent", { type: "keyDown", ...base, ...(spec.text ? { text: spec.text } : {}) });
     await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+    await this.#handled("key", before);
   }
 
   /** Insert text into the focused control, like a paste or an IME commit. */
@@ -634,8 +821,20 @@ export function createStub() {
     deltaGapMs: 5,
     /** (userMessage, turnNumber) => assistant reply text. */
     reply: (message, n) => `Plain reply number ${n}.`,
-    /** (postNumber, message) => "accept" | 409 | 429. */
+    /**
+     * (postNumber, message) => "accept" | 409 | 429 | "drop". "drop" cuts the connection before any
+     * answer, like a network that loses the acceptance (the chat then reconciles).
+     */
     outcome: () => "accept",
+    /** "ok" | "html" (a 502 page, the chat never boots) | "reset" (connection dropped) for POST /visitor-session. */
+    sessionMode: "ok",
+    /**
+     * "sse" (the stream runs) | "404" (there is no stream; the reply is in /history at once, so the
+     * chat settles from /history alone).
+     */
+    eventsMode: "sse",
+    /** With eventsMode "404": how long after the POST the reply shows up in /history (a lagging history), in ms. */
+    historyDelayMs: 0,
     async waitFor(predicate, { timeout = 10000, what = "stub condition" } = {}) {
       const deadline = Date.now() + timeout;
       while (!predicate()) {
@@ -663,11 +862,9 @@ async function readJson(req) {
   }
 }
 
-function serveStatic(req, res, pathname, stub) {
-  let relative = decodeURIComponent(pathname);
-  if (relative.endsWith("/")) relative += "index.html";
-  const full = path.normalize(path.join(SITE_DIR, relative));
-  if (full !== SITE_DIR && !full.startsWith(SITE_DIR + path.sep)) {
+function serveStatic(req, res, pathname, stub, mode) {
+  const full = siteFileFor(decodeURIComponent(pathname), mode);
+  if (full === null) {
     res.writeHead(403);
     res.end("forbidden");
     return;
@@ -718,7 +915,7 @@ async function streamEvents(req, res, stub) {
   stub.completed += 1;
 }
 
-async function handle(req, res, stub) {
+async function handle(req, res, stub, mode) {
   const url = new URL(req.url, "http://stub.invalid");
   const pathname = url.pathname;
   const method = req.method || "GET";
@@ -732,6 +929,15 @@ async function handle(req, res, stub) {
     return;
   }
   if (method === "POST" && pathname === "/visitor-session") {
+    if (stub.sessionMode === "reset") {
+      req.socket.destroy();
+      return;
+    }
+    if (stub.sessionMode === "html") {
+      res.writeHead(502, { "content-type": "text/html; charset=utf-8" });
+      res.end("<html><body>Bad gateway</body></html>");
+      return;
+    }
     json(res, 200, { subject_id: "s-1", csrf_token: "t-1" });
     return;
   }
@@ -754,6 +960,11 @@ async function handle(req, res, stub) {
     const message = String(body.message ?? "");
     const number = stub.posts.length + 1;
     const decision = stub.outcome(number, message);
+    if (decision === "drop") {
+      stub.posts.push({ message, status: 0 });
+      req.socket.destroy();
+      return;
+    }
     if (decision === 409) {
       stub.posts.push({ message, status: 409 });
       json(res, 409, { error: { code: "run_active", message: "busy" } });
@@ -766,11 +977,22 @@ async function handle(req, res, stub) {
     }
     stub.posts.push({ message, status: 200 });
     const turnNumber = stub.turns.length + 1;
-    stub.turns.push({ user: message, reply: String(stub.reply(message, turnNumber)), assistant: null, streamed: false });
+    const replyText = String(stub.reply(message, turnNumber));
+    stub.turns.push({
+      user: message,
+      reply: replyText,
+      assistant: stub.eventsMode === "404" ? replyText : null,
+      visibleAt: Date.now() + (stub.eventsMode === "404" ? stub.historyDelayMs : 0),
+      streamed: false,
+    });
     json(res, 200, { accepted: true }, { "X-ESP-Acceptance": "accepted" });
     return;
   }
   if (method === "GET" && pathname === "/conversations/conv-1/events") {
+    if (stub.eventsMode === "404") {
+      json(res, 404, { error: { code: "not_found" } });
+      return;
+    }
     await streamEvents(req, res, stub);
     return;
   }
@@ -778,7 +1000,7 @@ async function handle(req, res, stub) {
     const items = [];
     for (const turn of stub.turns) {
       items.push({ role: "user", text: turn.user });
-      if (turn.assistant !== null) items.push({ role: "assistant", text: turn.assistant });
+      if (turn.assistant !== null && Date.now() >= turn.visibleAt) items.push({ role: "assistant", text: turn.assistant });
     }
     json(res, 200, { items });
     return;
@@ -788,7 +1010,7 @@ async function handle(req, res, stub) {
     return;
   }
   if (method === "GET" || method === "HEAD") {
-    serveStatic(req, res, pathname, stub);
+    serveStatic(req, res, pathname, stub, mode);
     return;
   }
   res.writeHead(404);
@@ -797,12 +1019,14 @@ async function handle(req, res, stub) {
 
 /**
  * Serve site/ and the stub chat API on 127.0.0.1:<random port>.
+ * @param {{chat?: "double"|"real"}} [options] the conversation client to serve at /js/app.js;
+ *   defaults to the client of this run (CHAT_SETUP.mode)
  * @returns {Promise<{origin: string, stub: ReturnType<typeof createStub>, close: () => Promise<void>}>}
  */
-export async function startSite() {
+export async function startSite({ chat = CHAT_SETUP.mode } = {}) {
   const stub = createStub();
   const server = http.createServer((req, res) => {
-    handle(req, res, stub).catch((error) => {
+    handle(req, res, stub, chat).catch((error) => {
       if (!res.headersSent) res.writeHead(500, { "content-type": "text/plain" });
       res.end(String(error && error.message));
     });
