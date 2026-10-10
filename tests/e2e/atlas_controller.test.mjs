@@ -4,14 +4,18 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
   ANNOUNCE_NAMES,
+  CHAT_IN_VIEW_PX,
   CLEAR_CONFIRM_LABEL,
   CLEAR_CONFIRM_MS,
   CLEAR_LABEL,
   NO_GLOSSARY_NOTICE,
+  TWO_COLUMNS_QUERY,
+  conversationInView,
   describeLit,
 } from "../../site/js/atlas.js";
 
@@ -50,5 +54,33 @@ describe("Clear map wording", () => {
 describe("the notice for a browser that cannot read answers", () => {
   it("is honest and says what still works", () => {
     assert.equal(NO_GLOSSARY_NOTICE, "This browser cannot read answers for the map; the list still works.");
+  });
+});
+
+describe("conversationInView: is the visitor reading the answer?", () => {
+  const VIEW = 800;
+
+  it("is false when the card is below the fold, as on a phone right after a chip tap", () => {
+    assert.equal(conversationInView({ top: 1774, bottom: 2331 }, VIEW), false);
+    assert.equal(conversationInView({ top: VIEW - 20, bottom: VIEW + 500 }, VIEW), false, "only the card's top edge peeks in");
+  });
+
+  it("is true when enough of the card is on screen, from below or from above", () => {
+    assert.equal(CHAT_IN_VIEW_PX, 120);
+    assert.equal(conversationInView({ top: 300, bottom: 900 }, VIEW), true);
+    assert.equal(conversationInView({ top: -400, bottom: 200 }, VIEW), true, "scrolled past its top");
+    assert.equal(conversationInView({ top: VIEW - 120, bottom: VIEW + 400 }, VIEW), true, "exactly the threshold");
+    assert.equal(conversationInView({ top: VIEW - 119, bottom: VIEW + 400 }, VIEW), false);
+  });
+
+  it("is false when the card is above the window or missing", () => {
+    assert.equal(conversationInView({ top: -900, bottom: -10 }, VIEW), false);
+    assert.equal(conversationInView(null, VIEW), false);
+  });
+
+  it("the two-column layout starts where the style sheet says it does", () => {
+    assert.equal(TWO_COLUMNS_QUERY, "(min-width: 1180px)");
+    const css = readFileSync(new URL("../../site/css/atlas.css", import.meta.url), "utf8");
+    assert.ok(css.includes(`@media ${TWO_COLUMNS_QUERY} {`), "atlas.css switches to two columns at the same width");
   });
 });

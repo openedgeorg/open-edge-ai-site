@@ -3,7 +3,7 @@ import { createChatBridge, createDomPort } from "./atlas-chat.js";
 import { createAtlasList } from "./atlas-list.js";
 import { createAtlasMap } from "./atlas-map.js";
 import { compileGlossary, glossarySize, matchReply, warmGlossary } from "./atlas-match.js";
-import { createInspector, createSuggestions, renderCount, suggestionItems } from "./atlas-panel.js";
+import { createInspector, createSuggestions, renderCount, suggestionPlan } from "./atlas-panel.js";
 import { deriveView, persistAtlas, reduceAtlas, restoreAtlas } from "./atlas-state.js";
 
 /** How far from the end (px) the history may be and still count as "reading the newest row". */
@@ -16,6 +16,22 @@ export const ANNOUNCE_NAMES = 5;
 export const NO_GLOSSARY_NOTICE = "This browser cannot read answers for the map; the list still works.";
 export const CLEAR_LABEL = "Clear map";
 export const CLEAR_CONFIRM_LABEL = "Confirm: clear map";
+/** The page is two columns (map left, chat right) from this width up; below it, one column. */
+export const TWO_COLUMNS_QUERY = "(min-width: 1180px)";
+/** At least this much of the conversation card (px) must be on screen to count as "the visitor is reading it". */
+export const CHAT_IN_VIEW_PX = 120;
+
+/**
+ * Whether the visitor is looking at the conversation card, which means they are reading an answer
+ * and the page must not be scrolled away from it.
+ * @param {{top: number, bottom: number}|null} box the card's rectangle in viewport pixels
+ * @param {number} viewHeight the window's height
+ * @param {number} [minVisible]
+ */
+export function conversationInView(box, viewHeight, minVisible = CHAT_IN_VIEW_PX) {
+  if (!box) return false;
+  return Math.min(box.bottom, viewHeight) - Math.max(box.top, 0) >= minVisible;
+}
 
 /**
  * The polite one-line summary of a reply for screen readers.
@@ -191,10 +207,10 @@ export function createAtlas({ document: doc = globalThis.document, storage = nul
     flare = [];
     list.render(view, { paused });
     if (mounts.count) renderCount(mounts.count, view);
-    if (suggestions) suggestions.render(suggestionItems(view), { paused });
+    if (suggestions) suggestions.render(suggestionPlan(view, { visited: state.visited, index }), { paused });
     inspector.refresh(view);
-    // The only place a pause is explained. Its box is always there (two lines high), so a message
-    // appearing or going moves nothing.
+    // The only place a pause is explained. The box takes no room of its own at 900px and wider (it lies
+    // beside the card's heading), so a message appearing or going moves nothing.
     const text = notice || standingNotice;
     if (mounts.notice && mounts.notice.textContent !== text) mounts.notice.textContent = text;
   }
@@ -211,16 +227,43 @@ export function createAtlas({ document: doc = globalThis.document, storage = nul
     return island ? send(island.teaser) : { sent: false, reason: "unknown" };
   }
 
+  function matches(query) {
+    try {
+      return typeof win.matchMedia === "function" && win.matchMedia(query).matches;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * After a reply, show where the map lit up: the map panel scrolls sideways to the first place
+   * the reply lit (the map is wider than the panel on a phone), and, in the one-column layout, the
+   * page scrolls to it unless the visitor is looking at the conversation card, in which case they are
+   * reading the answer and keep their place. Instant under reduced motion, smooth otherwise. Focus
+   * never moves.
+   * @param {string[]} fresh the places the reply lit for the first time, in graph order
+   */
+  function showLit(fresh) {
+    if (!fresh.length || mounts.map.hidden) return;
+    const behavior = matches("(prefers-reduced-motion: reduce)") ? "instant" : "smooth";
+    const chat = doc.querySelector("#conversation");
+    const reading = conversationInView(chat ? chat.getBoundingClientRect() : null, win.innerHeight || 0);
+    const vertical = !matches(TWO_COLUMNS_QUERY) && !reading;
+    map.reveal(fresh[0], { behavior, vertical });
+  }
+
   /** @param {string} text the final assistant reply */
   function applyReply(text) {
     const ids = matchReply(text, glossary);
     const before = new Set(state.visited);
     state = reduceAtlas(state, { type: "reply", ids }, index);
     flare = ids.filter((id) => !before.has(id));
+    const fresh = flare.slice();
     const lit = flare.map((id) => (index.byId.get(id) || { name: id }).name);
     persistAtlas(storage, state);
     render();
     history.toEnd();
+    showLit(fresh);
     say(describeLit(lit, view.visitedCount, view.total));
     return ids;
   }
@@ -288,7 +331,7 @@ export function createAtlas({ document: doc = globalThis.document, storage = nul
   // so a visitor without JavaScript sees the honesty note and the plain index only.
   if (mounts.toolbar) mounts.toolbar.hidden = false;
   if (mounts.notice) mounts.notice.hidden = false;
-  for (const el of doc.querySelectorAll(".atlas-intro, .atlas-legend, .hero-cta-note")) el.hidden = false;
+  for (const el of doc.querySelectorAll(".atlas-intro, .atlas-legend, .hero-cta-note, .atlas-to-chat")) el.hidden = false;
   showView("map");
   render();
 

@@ -9,7 +9,10 @@
  *   <!-- atlas-index:begin -->  and  <!-- atlas-index:end -->
  * and is built from site/js/atlas-graph.js: per region an <h3>, then a <ul> with one <li> per
  * island (name, section references, label, note, teaser). It is a bulleted list on purpose: a
- * numbered list would read the open (dragon) items as a ranked to-do list. Trace anchors are never written.
+ * numbered list would read the open (dragon) items as a ranked to-do list. Without JavaScript the
+ * legend is hidden, so the index says in place what the legend says: under the heading of a region
+ * that holds open items, that they are the designers' own open list and not a roadmap; on a contested
+ * item, the whole of its label. Trace anchors are never written.
  * An alternative page can be named with --html <path> (used by tests).
  */
 
@@ -22,6 +25,15 @@ import { formatSections, regionHeading } from "../site/js/atlas-panel.js";
 
 export const BEGIN_MARKER = "<!-- atlas-index:begin -->";
 export const END_MARKER = "<!-- atlas-index:end -->";
+
+/** Said under the heading of a region with open items: they are the designers' own list, not a plan. */
+export const OPEN_FRAMING = "Open, not ratified: the designers' own open list, not a roadmap.";
+
+/**
+ * The whole of the label of a contested item, as the summary words it. The graph's short
+ * CONTESTED_LABEL is "awaits incorporation"; when the graph exports CONTESTED_LABEL_FULL that wins.
+ */
+export const CONTESTED_FULL = "awaits incorporation into the authoritative design and message catalogue";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_HTML = resolve(ROOT, "site", "index.html");
@@ -38,16 +50,23 @@ export function escapeHtml(text) {
  */
 export function indexLines(source = graph) {
   const lines = [];
+  const contestedShort = source.CONTESTED_LABEL || "awaits incorporation";
+  const contestedFull = source.CONTESTED_LABEL_FULL || CONTESTED_FULL;
   for (const region of source.REGIONS) {
     const islands = source.ISLANDS.filter((island) => island.region === region.id);
     if (!islands.length) continue;
     lines.push(`<h3>${escapeHtml(regionHeading(region))}</h3>`);
+    if (islands.some((island) => island.status === "open")) lines.push(`<p>${escapeHtml(OPEN_FRAMING)}</p>`);
     lines.push("<ul>");
     for (const island of islands) {
       const parts = [`<strong>${escapeHtml(island.name)}</strong>`];
       const sections = formatSections(island);
       if (sections) parts.push(escapeHtml(sections));
-      if (island.label) parts.push(`<em>${escapeHtml(island.label)}</em>`);
+      if (island.label) {
+        // The short label of a contested item is spelled out where the legend is not shown.
+        const shown = island.status === "contested" && island.label === contestedShort ? contestedFull : island.label;
+        parts.push(`<em>${escapeHtml(shown)}</em>`);
+      }
       if (island.note) parts.push(escapeHtml(island.note));
       if (island.teaser) parts.push(escapeHtml(island.teaser));
       lines.push(`    <li>${parts.join(" · ")}</li>`);

@@ -72,23 +72,55 @@ export function renderCount(el, view) {
   setText(el, `${visited} of ${total} visited`);
 }
 
+let shippedIndex = null;
+
 /**
- * Suggestion chip texts. First load: the single first question. Afterwards up to `max` teasers
- * of next-to-explore places in graph order; places on the designers' open list come last.
+ * The suggestion chips: what each says and whether it is a place on the designers' open list.
+ *
+ * First load: the single first question. Afterwards up to `max` teasers of next-to-explore places.
+ * With `visited` (the ids in the order they were first reached, as the Atlas state keeps them) the
+ * places next to the NEWEST visited places come first, so the chips follow the last answer; without
+ * it they come in graph order. A place on the open list (a dragon) is never a next step: it is
+ * offered only when no ordinary place is next to explore, and then it carries `open: true` so the
+ * chip says "open, not ratified".
  * @param {{replies?: number, frontier?: string[]}} view
- * @param {{islands?: typeof ISLANDS, max?: number}} [options]
- * @returns {string[]}
+ * @param {{islands?: typeof ISLANDS, max?: number, visited?: string[]|null,
+ *   index?: ReturnType<typeof buildIndex>|null}} [options]
+ * @returns {Array<{text: string, open: boolean}>}
  */
-export function suggestionItems(view, { islands = ISLANDS, max = 3 } = {}) {
-  if (!view || !(view.replies > 0)) return [FIRST_SUGGESTION];
+export function suggestionPlan(view, { islands = ISLANDS, max = 3, visited = null, index = null } = {}) {
+  if (!view || !(view.replies > 0)) return [{ text: FIRST_SUGGESTION, open: false }];
   const frontier = new Set(Array.isArray(view.frontier) ? view.frontier : []);
+  const order = Array.isArray(visited) ? visited : null;
+  const graph = order ? index || (shippedIndex ||= buildIndex()) : null;
+  const newest = new Map(order ? order.map((id, at) => [id, at]) : []);
+  /** How recently a neighbour of this place was reached: the higher, the closer to the latest reply. */
+  const recency = (island) => {
+    let latest = -1;
+    for (const neighbour of (graph && graph.neighbours.get(island.id)) || []) {
+      if (newest.has(neighbour) && newest.get(neighbour) > latest) latest = newest.get(neighbour);
+    }
+    return latest;
+  };
   const ordinary = [];
   const open = [];
-  for (const island of islands) {
-    if (!frontier.has(island.id) || !island.teaser) continue;
-    (island.status === "open" ? open : ordinary).push(island.teaser);
-  }
-  return [...ordinary, ...open].slice(0, max);
+  islands.forEach((island, at) => {
+    if (!frontier.has(island.id) || !island.teaser) return;
+    (island.status === "open" ? open : ordinary).push({ island, at, recent: order ? recency(island) : 0 });
+  });
+  const ranked = (list) => list.sort((p, q) => q.recent - p.recent || p.at - q.at);
+  const chosen = ordinary.length ? ranked(ordinary) : ranked(open);
+  return chosen.slice(0, max).map(({ island }) => ({ text: island.teaser, open: island.status === "open" }));
+}
+
+/**
+ * Suggestion chip texts (see suggestionPlan).
+ * @param {{replies?: number, frontier?: string[]}} view
+ * @param {Parameters<typeof suggestionPlan>[1]} [options]
+ * @returns {string[]}
+ */
+export function suggestionItems(view, options = {}) {
+  return suggestionPlan(view, options).map((item) => item.text);
 }
 
 /**
@@ -253,14 +285,17 @@ export function createInspector({ document: doc, graph, index = buildIndex(), mo
  * is `aria-disabled="true"` (not `disabled`, which would drop focus) and points at the notice that
  * says why; its click does nothing. When the new list is shorter, the surplus chips are removed and
  * focus moves to the first chip that is left.
+ *
+ * An item is a question (string) or `{text, open}`; an `open` chip adds "open, not ratified" under
+ * its question. The question is what a tap sends: the label is never part of it.
  * @param {{document: Document, mount: HTMLElement, onPick?: (text: string) => void,
- *   describedBy?: string, fallbackFocus?: () => (HTMLElement|null|undefined)}} options
+ *   describedBy?: string, openLabel?: string, fallbackFocus?: () => (HTMLElement|null|undefined)}} options
  */
-export function createSuggestions({ document: doc, mount, onPick, describedBy = "atlas-notice", fallbackFocus }) {
+export function createSuggestions({ document: doc, mount, onPick, describedBy = "atlas-notice", openLabel = OPEN_LABEL, fallbackFocus }) {
   let lastSignature = null;
   let label = null;
   let list = null;
-  /** @type {HTMLButtonElement[]} */
+  /** One record per chip: its list item, its button and the two texts inside the button. */
   const chips = [];
   mount.setAttribute("role", "group");
   mount.setAttribute("aria-label", "Suggested questions");
@@ -275,36 +310,42 @@ export function createSuggestions({ document: doc, mount, onPick, describedBy = 
 
   function addChip() {
     const item = make(doc, "li", "atlas-suggest-item");
-    const chip = make(doc, "button", "atlas-chip", "");
-    chip.type = "button";
-    chip.addEventListener("click", () => {
-      if (chip.getAttribute("aria-disabled") === "true" || typeof onPick !== "function") return;
-      onPick(chip.textContent);
+    const button = make(doc, "button", "atlas-chip");
+    button.type = "button";
+    const question = make(doc, "span", "atlas-chip-text", "");
+    const tag = make(doc, "span", "atlas-chip-tag", "");
+    tag.hidden = true;
+    button.append(question, tag);
+    button.addEventListener("click", () => {
+      if (button.getAttribute("aria-disabled") === "true" || typeof onPick !== "function") return;
+      onPick(question.textContent);
     });
-    item.appendChild(chip);
+    item.appendChild(button);
     list.appendChild(item);
-    chips.push(chip);
+    chips.push({ item, button, question, tag });
   }
 
   return {
     /**
-     * @param {string[]} items
+     * @param {Array<string|{text: string, open?: boolean}>} items
      * @param {{paused?: boolean, pausedMessage?: string}} [options] pausedMessage is accepted for
      *   compatibility and ignored: the reason is shown in one place, the page's notice
      */
     render(items, { paused = false } = {}) {
-      const texts = (Array.isArray(items) ? items : []).filter((item) => typeof item === "string" && item);
-      const signature = JSON.stringify([texts, Boolean(paused)]);
+      const entries = (Array.isArray(items) ? items : [])
+        .map((item) => (typeof item === "string" ? { text: item, open: false } : { text: item && item.text, open: Boolean(item && item.open) }))
+        .filter((item) => typeof item.text === "string" && item.text);
+      const signature = JSON.stringify([entries, Boolean(paused)]);
       if (signature === lastSignature) return;
       lastSignature = signature;
 
       const active = doc.activeElement;
       const hadFocus = Boolean(active && mount.contains(active));
-      const focusedAt = hadFocus ? chips.indexOf(active) : -1;
+      const focusedAt = hadFocus ? chips.findIndex((chip) => chip.button === active) : -1;
 
-      mount.hidden = texts.length === 0;
-      if (!texts.length) {
-        for (const chip of chips.splice(0)) chip.parentNode.remove();
+      mount.hidden = entries.length === 0;
+      if (!entries.length) {
+        for (const chip of chips.splice(0)) chip.item.remove();
         if (hadFocus && typeof fallbackFocus === "function") {
           const target = fallbackFocus();
           if (target && typeof target.focus === "function") target.focus();
@@ -316,15 +357,17 @@ export function createSuggestions({ document: doc, mount, onPick, describedBy = 
         list = make(doc, "ul", "atlas-suggest-list");
         mount.replaceChildren(label, list);
       }
-      while (chips.length < texts.length) addChip();
-      while (chips.length > texts.length) chips.pop().parentNode.remove();
-      texts.forEach((text, at) => {
+      while (chips.length < entries.length) addChip();
+      while (chips.length > entries.length) chips.pop().item.remove();
+      entries.forEach((entry, at) => {
         const chip = chips[at];
-        if (chip.textContent !== text) chip.textContent = text;
-        setAttr(chip, "aria-disabled", paused ? "true" : null);
-        setAttr(chip, "aria-describedby", paused && describedBy ? describedBy : null);
+        setText(chip.question, entry.text);
+        setText(chip.tag, entry.open ? openLabel : "");
+        if (chip.tag.hidden === entry.open) chip.tag.hidden = !entry.open;
+        setAttr(chip.button, "aria-disabled", paused ? "true" : null);
+        setAttr(chip.button, "aria-describedby", paused && describedBy ? describedBy : null);
       });
-      if (hadFocus && focusedAt >= texts.length) chips[0].focus();
+      if (hadFocus && focusedAt >= entries.length) chips[0].button.focus();
     },
   };
 }
