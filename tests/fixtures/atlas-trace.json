@@ -1,0 +1,406 @@
+{
+  "summary_sha256": "61f8361d77db0657cdbb29132a5ebe6930d663d07ce01bc6157fda6ef1660c88",
+  "islands": {
+    "isp-counterparty": [
+      "ESP makes the ISP the household's financial counterparty for participating Internet services",
+      "apps earn through the protocol instead of establishing a separate billing relationship with every household"
+    ],
+    "app-set-prices": [
+      "ESP explicitly chooses app-set prices over Spotify-style fixed-pot sharing",
+      "each app sets its tariff, and evidenced consumption at accepted prices determines its claim",
+      "revenue is not a share of a fixed subscription pool"
+    ],
+    "internet-bill": [
+      "the household pays its ISP under one standing plan",
+      "only the agreed plan price and any separately priced add-on explicitly accepted by the household may be charged"
+    ],
+    "standing-plan": [
+      "The household buys predictable access rather than a sequence of isolated purchases",
+      "allowing light and heavy usage to vary without turning every online act into a separate household bill"
+    ],
+    "monthly-epochs": [
+      "The architecture runs in monthly epochs",
+      "disputes resolve inside a defined window, and settlement executes once"
+    ],
+    "funding-pressure": [
+      "App prices transmit rising service costs into ISP funding pressure",
+      "Price pressure does not bypass retail or funding limits",
+      "putting pressure on the ISP to raise future household plan prices"
+    ],
+    "price-feedback": [
+      "ESP chooses user experience as the household's immediate economic feedback",
+      "Economic feedback from app prices works through household user experience",
+      "Household analytics make the cost of app choices visible"
+    ],
+    "fup-faucet": [
+      "Fair-use policy is implemented as an allowance faucet",
+      "the request carries no amount and the ISP alone decides how much to grant",
+      "the protocol defines no remaining-grant-capacity field, grant-sizing formula or tail-reserve rule"
+    ],
+    "base-and-topups": [
+      "Every activated household has one fungible monthly allowance",
+      "The base allowance is guaranteed while top-ups are conditional"
+    ],
+    "retail-contract": [
+      "The ISP's subscriber contract defines the retail promise",
+      "The protocol deliberately leaves retail product design outside consensus"
+    ],
+    "signed-refusal": [
+      "the signed refusal gives the household evidence if the ISP instead breaks the retail promise it sold",
+      "a refusal during a hot month is legitimate when it follows the subscribed FUP"
+    ],
+    "common-fund": [
+      "ESP operates one common protocol-level fund",
+      "The total pots assigned across all ISPs cannot exceed the common fund's liquid backing",
+      "The common fund can lose money only through actual ISP default"
+    ],
+    "isp-commitment": [
+      "Each ISP prepays one aggregate monthly commitment",
+      "they are ISP-declared funding attributions, not household allowances"
+    ],
+    "the-pot": [
+      "The protocol assigns each ISP a monthly pot",
+      "the pot is spending authority, not money transferred to the ISP",
+      "The pot is the ISP's non-negotiable solvency boundary"
+    ],
+    "overdraft": [
+      "The pot may be larger than the ISP's commitments",
+      "the difference is the ISP overdraft allocation",
+      "New ISPs receive no unsecured overdraft by default"
+    ],
+    "isp-debt": [
+      "Debt arises only from executed consumption",
+      "Debt preserves financial accountability while allowing temporary support",
+      "Persistent heavy consumption must return to the ISP's own economics"
+    ],
+    "debt-update": [
+      "The ISP's debt is updated mechanically",
+      "New communal surplus is recognized only after the ISP's opening debt has been repaid",
+      "Every capital-account update is publicly reproducible",
+      "Debt-service payments create no new allowance or pot capacity"
+    ],
+    "price-catalogue": [
+      "Each app publishes one signed price catalogue for the epoch",
+      "Accepted prices remain fixed for the epoch",
+      "The epoch price-catalogue mechanism in section 4 awaits incorporation"
+    ],
+    "conrec": [
+      "Every billable act produces a Consumption Record (ConRec) signed by both economic parties",
+      "the household signs with its epoch key, the app countersigns and attests the time"
+    ],
+    "optimistic-serving": [
+      "Serving can remain optimistic",
+      "an app may accept the risk of serving against a household-signed ConRec that exceeds the allowance then in force"
+    ],
+    "evidence-kept": [
+      "Price agreements and fine-grained evidence remain off-chain during ordinary operation",
+      "Evidence retention outlives execution",
+      "apps retain accepted tariff agreements and ConRecs needed to prove their claims",
+      "the box retains its complete ConRec diary and each app retains the ConRecs it served"
+    ],
+    "hsatm": [
+      "Every allowance decision becomes a jointly signed historical fact",
+      "carrying the epoch, sequence number, timestamp, and new total, signed by both the ISP and the household's box",
+      "the highest-sequence HSATM carries the authoritative Household Signed Allowance Total (HSAT)"
+    ],
+    "box-hlaa": [
+      "The normal box enforces the allowance locally",
+      "it declines to sign consumption beyond the authorized total",
+      "the box's household-local allowance account combines that total with signed consumption"
+    ],
+    "heid": [
+      "The box creates the epoch identity before the ISP declares the household",
+      "the box generates a new keypair, the public key becomes the household epoch ID (HEID)"
+    ],
+    "epoch-opening": [
+      "Epoch opening follows one required dependency order",
+      "A rostered household defaults to zero allowance until it is activated",
+      "Incomplete household activation does not rewrite the funded epoch"
+    ],
+    "hpc": [
+      "The Household Participation Credential (HPC) is the required app-facing admission proof",
+      "an app verifies the ISP signature, matches the epoch and HEID, and verifies that the household controls the corresponding private key",
+      "The credential discloses neither the household's allowance nor its HCD contribution attribution"
+    ],
+    "identity-layers": [
+      "The identity model has three deliberate layers",
+      "Only the parent ISP can resolve a public claim to a household",
+      "the parent ISP normally sees only per-app household aggregates needed for reconciliation"
+    ],
+    "encrypted-heids": [
+      "Fresh encryption randomness prevents public basket reconstruction",
+      "two apps claiming against the same household produce unlinkable ciphertexts",
+      "each public claim row contains the household's HEID encrypted with the parent ISP's public key"
+    ],
+    "verification-tag": [
+      "The ISP and box also share one private verification secret",
+      "The AtS verification tag gives a household visibility without giving apps a lookup table",
+      "A tag-to-ciphertext substitution is detected and evidenced after the fact",
+      "the box detects a shaved amount through its verification tag and latest HSATM"
+    ],
+    "ats": [
+      "The public Allowance to Spend (AtS) is anonymous but self-verifiable",
+      "Each ISP posts one closing allowance list for the epoch",
+      "The AtS is a closing report rather than a live spending oracle"
+    ],
+    "ishec": [
+      "The household independently checks both sides of its monthly equation",
+      "The IsHEC must reach the household while payment can still be stopped"
+    ],
+    "epoch-timetable": [
+      "The epoch timetable prevents races and premature sweeps",
+      "App claims have a hard deadline",
+      "Blockchain load scales with participants and disputes rather than usage volume",
+      "The fixed epoch footprint is explicit"
+    ],
+    "hcd": [
+      "The HCD is the protocol-facing funding step inside epoch opening",
+      "the ISP-signed HCD is authoritative for roster membership and the protocol trusts the ISP's declaration",
+      "Roster authenticity is an explicit ISP trust boundary"
+    ],
+    "rtgp": [
+      "Each app converts many service requests into one monthly claim",
+      "Every app's Request to get Paid (RtgP) carries publicly checkable ISP subtotals"
+    ],
+    "reconcile-together": [
+      "The ISP reconciles all accepted app claims together rather than processing them in arrival order",
+      "cannot favor an early app by spending the allowance before later claims arrive"
+    ],
+    "heea": [
+      "A household escrow account is an accounting container, not a separate money transfer",
+      "the household epoch escrow account (HEEA) caps what may be paid for one household in one epoch"
+    ],
+    "iptd": [
+      "The IPtD publishes settlement outcomes without exposing household app baskets",
+      "Public verification checks arithmetic without repeating the ISP's private reconciliation",
+      "the ISP publishes each app's proposed payout, its flagged rows, the aggregate amount charged, and the remainder"
+    ],
+    "freeze-settle": [
+      "Clean households settle and flagged households freeze",
+      "an aggregate above the cap stops every row for that household and automatically opens an evidence round before any of those rows are paid",
+      "Freezing an overrun normally prevents fraudulent money from leaving the fund"
+    ],
+    "isp-epoch-failure": [
+      "Failure to open or close an ISP epoch has explicit consequences",
+      "a missed AtS, unpaid required debt service, or unfunded allowance correction establishes an ISP default",
+      "Collateral slashing and forced wind-down remain intended consequences, but the machinery that imposes them is deferred"
+    ],
+    "who-does-what": [
+      "The household box is an observer in ordinary operation",
+      "The ISP is trusted with private mapping and computation but not with payment discretion",
+      "Apps are both service providers and evidence custodians"
+    ],
+    "evidence-round": [
+      "An evidence round can arise from three provable triggers",
+      "A Call for Evidence turns the dispute into a bounded public proceeding",
+      "Evidence responses deliberately reveal one disputed household's epoch basket"
+    ],
+    "mechanical-resolution": [
+      "Resolution is designed to be mechanical rather than discretionary",
+      "The ISP supplies the authoritative witness list",
+      "False inclusion in an evidence call is self-correcting"
+    ],
+    "escalation-audit": [
+      "An unsupported row is voided, but missing evidence alone does not prove fabrication",
+      "that is app fraud and escalates into an audit of the app's entire epoch",
+      "An escalation audit follows the app across every retained claim it can still be required to prove"
+    ],
+    "silent-padding": [
+      "Silent padding hides a fabricated app charge below the household's HEEA",
+      "Ordinary silent padding is exposed through overlapping signals",
+      "Allowance lookup would enable targeted silent padding"
+    ],
+    "household-fraud": [
+      "Valid consumption beyond the closing allowance is household fraud",
+      "the household escrow is divided among the valid app claims in proportion to their amounts",
+      "A dishonest household cannot make the common fund exceed its funded exposure"
+    ],
+    "allowance-correction": [
+      "A false closing entry cannot be used to convict an honest household",
+      "An allowance correction first uses pot capacity already reserved for the ISP"
+    ],
+    "timing-states": [
+      "The ex-post audit separates two timing states",
+      "End-state FUP audits are arbitrated by the ESP protocol",
+      "Spend-ahead consumes future allowance before the ISP grants it",
+      "Those timestamps do not independently prove the actual signing order"
+    ],
+    "hoarding": [
+      "Allowance hoarding can distort the ISP's internal grant allocation",
+      "Hoarding and spend-ahead are contractual violations even if later events make the final arithmetic fit"
+    ],
+    "epoch-opening-handoff": [
+      "Epoch-opening handoff mechanics remain unsealed",
+      "the exact bilateral transport for the control proof remains unspecified"
+    ],
+    "ats-binding-challenge": [
+      "The AtS-binding challenge route and remedy remain unsealed",
+      "the submission route, adjudicating actor, challenge deadline, privacy boundary, correction or recovery remedy, and penalty consequence remain deferred"
+    ],
+    "pre-activation-conrec": [
+      "Pre-activation ConRec enforcement and auditability remain unsealed",
+      "The current evidence does not prove that admission preceded a ConRec"
+    ],
+    "tariff-format": [
+      "Epoch tariff agreements still need a format and evidence specification"
+    ],
+    "credit-calibration": [
+      "The ISP credit policy still needs numerical calibration",
+      "Unresolved debt-control rules may eventually raise an ISP's aggregate HCD requirement",
+      "The exact formula, thresholds and number of epochs remain TODO"
+    ],
+    "dishonest-isp": [
+      "Dishonest-ISP analysis remains incomplete"
+    ],
+    "collusion-padding": [
+      "ISP-and-app collusion still has an undefeated silent-padding form"
+    ],
+    "anti-collusion": [
+      "Several future anti-collusion mechanisms remain candidates"
+    ],
+    "borrow-and-default": [
+      "Borrow-and-default replaces consumption-weighted allocation farming as the central common-fund attack"
+    ],
+    "durable-second-instance": [
+      "The end state needs a durable second instance",
+      "the design still must define how household evidence reaches the protocol, how a dispute involving an ISP is decided"
+    ],
+    "finality-horizon": [
+      "Finality and post-execution recovery remain unsealed",
+      "Settlement finality after execution is deferred",
+      "The exact retention period is deferred with settlement finality and recovery"
+    ],
+    "penalty-enforcement": [
+      "Penalty enforcement remains unsealed",
+      "Collateral slashing and forced wind-down remain intended consequences, but the machinery that imposes them is deferred",
+      "proven app and ISP violations are intended to lead to slashing or expulsion under the deferred penalty-enforcement design",
+      "App registration collateral remains part of the intended end state"
+    ],
+    "isp-fronting": [
+      "The pro-rata household-shortfall rule may be reconsidered only in a future revision"
+    ],
+    "emergency-settlement": [
+      "A missing IPtD requires an emergency-settlement route",
+      "How a second instance reconstructs the required claim assignments, executes emergency settlement, and imposes those consequences remains undefined",
+      "how settlement is recovered when the ISP fails a required duty"
+    ],
+    "household-routes": [
+      "Household ingress, independent dispute resolution and emergency recovery remain separate end-state TODOs",
+      "The eventual household-to-protocol challenge route remains unsealed",
+      "The production-demand and escalation routes remain unresolved",
+      "future household transparency, whose mechanism remains undefined",
+      "Exceptional evidence submission remains an unresolved route"
+    ],
+    "audit-design": [
+      "The proof relation, committed policy inputs, proof-generation and protocol-verification interface, completeness guarantee and any fallback disclosure are not yet designed",
+      "The invocation route, standing, deadlines, result record and connection to ISP-household contractual remedies remain deferred",
+      "the audit mechanism, proof duties, disclosure boundary and authoritative result remain deferred"
+    ],
+    "detection-posture": [
+      "The fraud posture is detection plus consequences rather than universal real-time prevention",
+      "signed evidence makes later reconstruction possible, caps bound interim exposure"
+    ]
+  },
+  "edges": {
+    "internet-bill|isp-counterparty": "the household pays its ISP under one standing plan",
+    "internet-bill|standing-plan": "without turning every online act into a separate household bill",
+    "internet-bill|retail-contract": "The household's financial exposure remains bounded by its retail contract",
+    "funding-pressure|internet-bill": "higher app prices may exhaust allowances sooner, but do not automatically enlarge the pot, authorize top-ups, or increase a household's bill",
+    "app-set-prices|standing-plan": "The allowance reconciles flat-rate experience with usage-based provider economics",
+    "base-and-topups|standing-plan": "a fixed monthly plan finances general spending capacity",
+    "app-set-prices|funding-pressure": "if households keep consuming at higher accepted prices, payouts within funded allowances can exceed ISP contributions and create debt",
+    "app-set-prices|price-feedback": "higher prices consume allowance faster",
+    "fup-faucet|price-feedback": "when FUP limits further grants, expected app use can be interrupted",
+    "app-set-prices|monthly-epochs": "app price increases take effect through a new catalogue and household acceptance in the next epoch",
+    "base-and-topups|retail-contract": "the plan sets the base, top-up entitlements, rate limits, and contractual maximum",
+    "base-and-topups|fup-faucet": "the request carries no amount and the ISP alone decides how much to grant",
+    "base-and-topups|signed-refusal": "a refusal during a hot month is legitimate when it follows the subscribed FUP and the ISP's management of its pot",
+    "fup-faucet|hsatm": "epoch opening, grant, or refusal produces a Household Signed Allowance Message",
+    "common-fund|isp-counterparty": "ISP commitments and debt repayments enter it, app payouts leave it",
+    "base-and-topups|the-pot": "the sum of all household allowances may never exceed it",
+    "funding-pressure|isp-debt": "persistent debt requires larger commitments and repayment, putting pressure on the ISP to raise future household plan prices",
+    "common-fund|isp-commitment": "ISP commitments and debt repayments enter it",
+    "isp-commitment|the-pot": "The pot may be larger than the ISP's commitments",
+    "overdraft|the-pot": "the difference is the ISP overdraft allocation",
+    "common-fund|overdraft": "common-fund capacity reserved for that ISP",
+    "isp-debt|overdraft": "growing or ageing debt reduces future overdraft capacity",
+    "debt-update|isp-debt": "The ISP's debt is updated mechanically",
+    "isp-commitment|isp-debt": "Unresolved debt-control rules may eventually raise an ISP's aggregate HCD requirement",
+    "box-hlaa|hsatm": "combines that total with signed consumption to track the remaining balance",
+    "box-hlaa|conrec": "it declines to sign consumption beyond the authorized total",
+    "conrec|price-catalogue": "Each charge remains traceable to the accepted catalogue",
+    "app-set-prices|price-catalogue": "Each app publishes one signed price catalogue for the epoch",
+    "household-fraud|optimistic-serving": "the serving apps absorb the remaining shortfall as the consequence of their optimistic credit decisions",
+    "conrec|evidence-kept": "apps retain accepted tariff agreements and ConRecs needed to prove their claims",
+    "conrec|rtgp": "the RtgP rows from accepted claims remain in the public record, while serving apps and household boxes retain the underlying signed ConRecs",
+    "evidence-kept|evidence-round": "Apps disclose the records required by a CfEfA evidence round",
+    "heid|hsatm": "The epoch-opening allowance message binds private allowance state to an already generated epoch identity",
+    "ats|hsatm": "the highest-sequence HSATM is the authoritative allowance, while the AtS becomes the public settlement and arbitration baseline",
+    "heid|identity-layers": "the plaintext epoch ID is known to the household, ISP, and apps it used",
+    "encrypted-heids|identity-layers": "freshly randomized encryptions of that ID are the only form placed in ordinary public records",
+    "encrypted-heids|rtgp": "each row carries a freshly encrypted epoch ID",
+    "ats|verification-tag": "a rotating verification tag that only the ISP and the corresponding box can compute",
+    "silent-padding|verification-tag": "encrypted HEIDs and private verification tags deny the app that lookup",
+    "ats|heea": "partitions the ISP's pot into household epoch escrow accounts used for settlement",
+    "ats|ishec": "compares the public closing allowance against its signed allowance messages and compares the ISP-side Household Epoch Consumption (IsHEC), a private signed total, against its own diary",
+    "ishec|silent-padding": "the box's lower diary total exposes the mismatch",
+    "epoch-opening|heid": "(1) the box generates the fresh HEID and proves control to the ISP",
+    "epoch-opening|hcd": "HCD acceptance and the associated required funding and debt service precede pot activation, which in turn precedes the opening HSATM and HPC",
+    "epoch-opening|hpc": "(6) the ISP issues the matching HPC; and only then (7) may the first ESP-billable service begin",
+    "epoch-timetable|hcd": "each ISP has one HCD, commitment payment, allocation, AtS, IPtD, and capital-account update",
+    "hcd|isp-commitment": "contribution attribution per household; the attributions sum to aggregate",
+    "epoch-timetable|monthly-epochs": "commitments, debt service, and pots precede serving",
+    "epoch-timetable|rtgp": "an RtgP received after the deadline is rejected and excluded from that epoch",
+    "reconcile-together|rtgp": "The ISP reconciles all accepted app claims together",
+    "heea|reconcile-together": "compares each household's combined claims against its escrow cap",
+    "freeze-settle|heea": "an aggregate above the cap stops every row for that household",
+    "iptd|reconcile-together": "after privately grouping all accepted RtgP rows by household",
+    "freeze-settle|iptd": "each app's proposed payout, its flagged rows, the aggregate amount charged",
+    "evidence-round|freeze-settle": "automatically opens an evidence round before any of those rows are paid",
+    "isp-commitment|isp-epoch-failure": "an ISP that does not fund its commitments has no participating epoch",
+    "debt-update|isp-epoch-failure": "unpaid required debt service, or unfunded allowance correction establishes an ISP default",
+    "box-hlaa|who-does-what": "never has to post a routine protocol transaction",
+    "evidence-kept|who-does-what": "Apps are both service providers and evidence custodians",
+    "evidence-round|mechanical-resolution": "Resolution is designed to be mechanical rather than discretionary",
+    "escalation-audit|silent-padding": "one proven false row expands the inquiry from a single household to the app's complete retained activity",
+    "hoarding|timing-states": "Hoarding and spend-ahead are contractual violations even if later events make the final arithmetic fit",
+    "hsatm|timing-states": "allowing a later FUP audit to reconstruct the parties' asserted ordering between HSATM allowance decisions and consumption",
+    "fup-faucet|hoarding": "Allowance hoarding can distort the ISP's internal grant allocation",
+    "heea|silent-padding": "keeps the household's aggregate claims below its closing allowance, so no automatic overrun fires",
+    "heea|household-fraud": "the household escrow is divided among the valid app claims in proportion to their amounts",
+    "allowance-correction|verification-tag": "the box detects a shaved amount through its verification tag and latest HSATM",
+    "allowance-correction|ats": "The signed evidence establishes the correct adjudication baseline",
+    "epoch-opening|epoch-opening-handoff": "the exact bilateral transport, delivery, timeout, and retry mechanics remain unspecified",
+    "epoch-opening-handoff|heid": "the exact bilateral transport for the control proof remains unspecified",
+    "ats-binding-challenge|verification-tag": "the retained artifacts needed to prove tag-to-ciphertext substitution are defined, but the submission route",
+    "hpc|pre-activation-conrec": "The current evidence does not prove that admission preceded a ConRec",
+    "price-catalogue|tariff-format": "catalogue identifiers, signatures, acceptance binding, and evidence-round disclosure must be specified consistently",
+    "dishonest-isp|signed-refusal": "the design must test allowance shaving, dishonest refusals motivated by debt",
+    "collusion-padding|silent-padding": "ISP-and-app collusion still has an undefeated silent-padding form",
+    "anti-collusion|collusion-padding": "Several future anti-collusion mechanisms remain candidates",
+    "borrow-and-default|overdraft": "a wash app can turn an ISP overdraft into cash, but the extraction becomes profitable only if the ISP can evade the resulting debt",
+    "durable-second-instance|evidence-round": "disputes in which the ISP is a party cannot be judged by that ISP. The independent actor or mechanism, authority, interface and finality rules remain unsealed",
+    "durable-second-instance|who-does-what": "how household evidence reaches the protocol, how a dispute involving an ISP is decided",
+    "finality-horizon|freeze-settle": "Settlement finality after execution is deferred",
+    "isp-epoch-failure|penalty-enforcement": "Collateral slashing and forced wind-down remain intended consequences, but the machinery that imposes them is deferred",
+    "escalation-audit|penalty-enforcement": "Both a missed duty and proven misconduct enter the deferred penalty-enforcement path",
+    "household-fraud|isp-fronting": "ISP fronting could pay apps in full and recover from the household, but it is not part of the current settlement path",
+    "emergency-settlement|iptd": "A missing IPtD requires an emergency-settlement route",
+    "emergency-settlement|isp-epoch-failure": "missing the deadline establishes an ISP violation for which slashing and possible expulsion are intended consequences",
+    "household-routes|ishec": "The production-demand and escalation routes remain unresolved",
+    "evidence-round|household-routes": "a household diary mismatch reaches the protocol through the unresolved household-report route",
+    "hcd|household-routes": "future household visibility into its own HCD attribution remains undefined",
+    "audit-design|timing-states": "The invocation route, standing, deadlines, result record and connection to ISP-household contractual remedies remain deferred",
+    "audit-design|escalation-audit": "the audit mechanism, proof duties, disclosure boundary and authoritative result remain deferred",
+    "conrec|optimistic-serving": "an app may accept the risk of serving against a household-signed ConRec that exceeds the allowance then in force",
+    "escalation-audit|finality-horizon": "The monetary and non-monetary consequences of a conviction concerning an already executed epoch depend on the deferred finality and post-execution-recovery design",
+    "credit-calibration|isp-debt": "The exact formula, thresholds and number of epochs remain TODO",
+    "allowance-correction|household-routes": "The eventual household-to-protocol challenge route remains unsealed",
+    "ats|epoch-opening": "or zero if no sequence-zero opening HSATM ever became effective",
+    "hcd|hpc": "the protocol trusts the ISP's declaration that this HCD-to-HPC correspondence is correct",
+    "evidence-kept|finality-horizon": "The exact retention period is deferred with settlement finality and recovery",
+    "finality-horizon|ishec": "Remedies for a mismatch established only after execution belong to the deferred finality",
+    "detection-posture|freeze-settle": "signed evidence makes later reconstruction possible, caps bound interim exposure",
+    "detection-posture|penalty-enforcement": "intended collateral-backed penalties, possible expulsion, and legal recovery"
+  }
+}

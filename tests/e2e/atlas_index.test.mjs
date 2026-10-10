@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { BEGIN_MARKER, END_MARKER, applyIndex, isInSync } from "../../scripts/atlas_index.mjs";
+import { BEGIN_MARKER, END_MARKER, OPEN_FRAMING, applyIndex, indexLines, isInSync } from "../../scripts/atlas_index.mjs";
 import * as graph from "../../site/js/atlas-graph.js";
 import { formatSections, renderCount, suggestionItems } from "../../site/js/atlas-panel.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCRIPT = join(ROOT, "scripts", "atlas_index.mjs");
 const HTML_PATH = join(ROOT, "site", "index.html");
+const SITE = join(ROOT, "site");
+const TRACE_FIXTURE = join(ROOT, "tests", "fixtures", "atlas-trace.json");
 const html = readFileSync(HTML_PATH, "utf8");
 
 function noscriptIndex() {
@@ -36,7 +38,8 @@ test("the generator --check exits non-zero when the index is stale, and --write 
   const dir = mkdtempSync(join(tmpdir(), "atlas-index-"));
   try {
     const file = join(dir, "index.html");
-    const stale = html.replace("<strong>Overdraft</strong>", "<strong>Overdraught</strong>");
+    const name = graph.ISLANDS.map((island) => island.name).find((candidate) => /^[A-Za-z ]+$/.test(candidate));
+    const stale = html.replace(`<strong>${name}</strong>`, `<strong>${name}s</strong>`);
     assert.notEqual(stale, html);
     writeFileSync(file, stale);
     const check = spawnSync(process.execPath, [SCRIPT, "--check", "--html", file], { cwd: ROOT, encoding: "utf8" });
@@ -149,49 +152,92 @@ test("every island appears in the no-JS index, in graph order, with its sections
   assert.ok(html.lastIndexOf("<noscript>", html.indexOf(BEGIN_MARKER)) > html.indexOf('id="atlas"'));
 });
 
+/**
+ * The one phrase of the summary the page is allowed to print: the label of the contested item, in the
+ * proposal's own words. An anchor that is part of it is not a leak.
+ */
+const PUBLIC_LABEL = "awaits incorporation into the authoritative design and message catalogue";
+
+/** Every anchor of the unserved trace fixture (island traces and edge traces), and the ones a graph might still carry. */
+function allAnchors() {
+  const anchors = new Set();
+  if (existsSync(TRACE_FIXTURE)) {
+    const fixture = JSON.parse(readFileSync(TRACE_FIXTURE, "utf8"));
+    for (const list of Object.values(fixture.islands || {})) for (const anchor of list) anchors.add(anchor);
+    for (const anchor of Object.values(fixture.edges || {})) anchors.add(anchor);
+  }
+  for (const island of graph.ISLANDS) for (const entry of island.trace) if (entry.anchor) anchors.add(entry.anchor);
+  for (const edge of graph.EDGES) if (edge.trace && edge.trace.anchor) anchors.add(edge.trace.anchor);
+  return [...anchors].filter((anchor) => !PUBLIC_LABEL.includes(anchor));
+}
+
 test("no trace anchor text leaks into the page", () => {
   const page = decodeEntities(html);
-  const anchors = new Set();
-  for (const island of graph.ISLANDS) for (const entry of island.trace) anchors.add(entry.anchor);
-  for (const edge of graph.EDGES) anchors.add(edge.trace.anchor);
+  const anchors = allAnchors();
+  assert.ok(anchors.length > 0, "there are anchors to look for (tests/fixtures/atlas-trace.json)");
   for (const anchor of anchors) {
     assert.ok(!page.includes(anchor), `anchor leaked: ${anchor}`);
   }
 });
 
+/** Every file under site/ that a browser can be sent: html, js, css, json, svg, text. */
+function servedFiles(dir = SITE) {
+  const files = [];
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) files.push(...servedFiles(full));
+    else if (/\.(html|js|mjs|css|json|svg|txt)$/i.test(name)) files.push(full);
+  }
+  return files;
+}
+
+test("no verbatim anchor is served from site/ at all: they live in the unserved fixture", () => {
+  const anchors = allAnchors();
+  assert.ok(anchors.length > 0, "there are anchors to look for");
+  const squash = (text) => text.replace(/\s+/g, " ");
+  const leaks = [];
+  for (const file of servedFiles()) {
+    const text = squash(decodeEntities(readFileSync(file, "utf8")));
+    for (const anchor of anchors) if (text.includes(squash(anchor))) leaks.push(`${file.slice(SITE.length + 1)}: ${anchor}`);
+  }
+  assert.deepEqual(leaks.slice(0, 5), [], `${leaks.length} anchors are served`);
+});
+
 test("formatSections gives unique sorted section marks and never anchor text", () => {
   assert.equal(formatSections({ trace: [{ section: 3, anchor: "x" }, { section: 1, anchor: "y" }, { section: 3, anchor: "z" }] }), "§1, §3");
-  assert.equal(
-    formatSections(graph.ISLANDS.find((island) => island.id === "price-catalogue")),
-    "§ status note, §4",
-  );
+  assert.equal(formatSections({ trace: [{ section: 3 }, { section: 1 }, { section: 3 }] }), "§1, §3", "the section is all an entry needs");
+  assert.equal(formatSections({ trace: [{ section: "preamble" }, { section: 4 }] }), "§ status note, §4");
+  assert.equal(formatSections({ trace: [{ section: 4 }, { section: "preamble" }] }), "§ status note, §4", "the status note sorts first");
   assert.equal(formatSections({ trace: [{ section: 10, anchor: "a" }, { section: 2, anchor: "b" }] }), "§2, §10");
   assert.equal(formatSections({ trace: { section: 6, anchor: "secret words" } }), "§6");
+  assert.equal(formatSections({ trace: { section: 6 } }), "§6", "an edge has one entry, not a list");
   assert.equal(formatSections({ trace: [] }), "");
   assert.equal(formatSections(null), "");
   for (const island of graph.ISLANDS) {
-    for (const entry of island.trace) assert.ok(!formatSections(island).includes(entry.anchor));
     assert.match(formatSections(island), /^(§ status note|§\d+)(, §\d+)*$/);
+    for (const entry of island.trace) if (entry.anchor) assert.ok(!formatSections(island).includes(entry.anchor));
   }
+  for (const edge of graph.EDGES) assert.match(formatSections(edge), /^(§ status note|§\d+)$/, `${edge.a} <-> ${edge.b}`);
 });
 
 test("renderCount and suggestionItems follow the contract", () => {
   const el = { textContent: "" };
   renderCount(el, { visitedCount: 1, total: 60 });
   assert.equal(el.textContent, "1 of 60 visited");
+  renderCount(el, { visitedCount: 7, total: graph.ISLANDS.length });
+  assert.equal(el.textContent, `7 of ${graph.ISLANDS.length} visited`);
   assert.deepEqual(suggestionItems({ replies: 0, frontier: [] }), [graph.FIRST_SUGGESTION]);
-  const items = suggestionItems({
+
+  const dragons = graph.ISLANDS.filter((island) => island.status === "open");
+  const ordinary = graph.ISLANDS.filter((island) => island.status !== "open" && island.id !== graph.START_ID);
+  assert.ok(dragons.length >= 1 && ordinary.length >= 4);
+  const mixed = suggestionItems({
     replies: 2,
-    frontier: ["tariff-format", "isp-counterparty", "standing-plan", "funding-pressure", "overdraft"],
+    frontier: [dragons[0].id, ...ordinary.slice(0, 5).map((island) => island.id)],
   });
-  assert.equal(items.length, 3);
-  assert.deepEqual(items, [
-    "Why do I pay my ISP instead of billing each app separately?",
-    "Why a fixed monthly plan instead of paying per app?",
-    "Can app price rises end up in my plan price?",
-  ]);
-  const dragonsLast = suggestionItems({ replies: 1, frontier: ["tariff-format", "overdraft"] });
-  assert.equal(dragonsLast[0], graph.ISLANDS.find((island) => island.id === "overdraft").teaser);
+  assert.deepEqual(mixed, ordinary.slice(0, 3).map((island) => island.teaser), "three ordinary teasers in graph order, no dragon among them");
+  const dragonsAlone = suggestionItems({ replies: 1, frontier: dragons.map((island) => island.id) });
+  assert.deepEqual(dragonsAlone, dragons.slice(0, 3).map((island) => island.teaser), "dragons only when nothing else is left");
   assert.deepEqual(suggestionItems({ replies: 3, frontier: [] }), []);
 });
 
@@ -224,7 +270,7 @@ test("the suggestion chips live in the Atlas card, under the honesty note and ab
 });
 
 test("without JavaScript only the honesty note and the plain index describe the Atlas", () => {
-  for (const pattern of [/<p class="atlas-intro"[^>]*>/, /<ul class="atlas-legend"[^>]*>/, /<p id="atlas-notice"[^>]*>/, /<div class="atlas-toolbar"[^>]*>/, /<span class="hero-cta-note"[^>]*>/]) {
+  for (const pattern of [/<p class="atlas-intro"[^>]*>/, /<ul class="atlas-legend"[^>]*>/, /<p id="atlas-notice"[^>]*>/, /<div class="atlas-toolbar"[^>]*>/, /<span class="hero-cta-note"[^>]*>/, /<a class="atlas-to-chat"[^>]*>/]) {
     assert.match(tagOf(pattern), /\shidden[\s>]/, `${pattern} is hidden until the script runs`);
   }
   assert.doesNotMatch(tagOf(/<p class="atlas-honesty"[^>]*>/), /hidden/, "the honesty note is always shown");
@@ -249,4 +295,65 @@ test("the generated no-JS index is made of bulleted lists, never numbered ones",
   assert.doesNotMatch(index, /<ol[\s>]/, "a numbered list would read the dragons as a ranked to-do list");
   assert.equal((index.match(/<ul>/g) || []).length, graph.REGIONS.filter((region) => graph.ISLANDS.some((island) => island.region === region.id)).length);
   assert.doesNotMatch(decodeEntities(index), /next to explore|not reached yet/i, "no goal wording in the plain index");
+});
+
+// ---------------------------------------------------------------------------------------------
+// the plain index says in place what the (hidden) legend says
+// ---------------------------------------------------------------------------------------------
+
+/** The generated index as plain text: tags dropped, entities decoded. */
+const plainIndex = () => decodeEntities(noscriptIndex());
+
+test("the generated index frames the open list under the heading of every region that holds open items", () => {
+  assert.equal(OPEN_FRAMING, "Open, not ratified: the designers' own open list, not a roadmap.");
+  const index = plainIndex();
+  const holders = graph.REGIONS.filter((region) => graph.ISLANDS.some((island) => island.region === region.id && island.status === "open"));
+  assert.ok(holders.length >= 1, "the graph has a region of open items");
+  for (const region of graph.REGIONS) {
+    const heading = `<h3>${region.name} · ${region.level} · ${region.subtitle}</h3>`;
+    const at = index.indexOf(heading);
+    if (!graph.ISLANDS.some((island) => island.region === region.id)) continue;
+    assert.ok(at >= 0, `heading of ${region.id}`);
+    const next = index.indexOf("</ul>", at);
+    const section = index.slice(at, next);
+    const framed = holders.includes(region);
+    assert.equal(section.includes("<p>Open, not ratified: the designers' own open list, not a roadmap.</p>"), framed, `${region.id}: framing ${framed ? "present" : "absent"}`);
+    if (framed) {
+      assert.ok(index.indexOf("<p>", at) < index.indexOf("<ul>", at), "the sentence comes before the list, right under the heading");
+      assert.equal(index.slice(at + heading.length).trimStart().startsWith("<p>Open, not ratified"), true, "directly under the heading");
+    }
+  }
+});
+
+test("the dragons' index never reads as a plan: it says open and not ratified, never next, goal or roadmap-as-promise", () => {
+  const index = plainIndex();
+  const open = index.slice(index.indexOf("Open, not ratified: the designers'"));
+  assert.match(open, /not a roadmap/);
+  assert.doesNotMatch(open.replace(OPEN_FRAMING, ""), /roadmap|next step|will be|planned/i);
+  for (const island of graph.ISLANDS.filter((candidate) => candidate.status === "open")) {
+    const line = index.slice(index.indexOf(`<strong>${island.name}</strong>`));
+    assert.ok(line.slice(0, line.indexOf("</li>")).includes("<em>open, not ratified</em>"), `${island.name} carries its label`);
+  }
+});
+
+test("the contested item shows its whole label in the plain index, not only the short one", () => {
+  const index = plainIndex();
+  const contested = graph.ISLANDS.filter((island) => island.status === "contested");
+  assert.ok(contested.length >= 1);
+  for (const island of contested) {
+    const line = index.slice(index.indexOf(`<strong>${island.name}</strong>`));
+    const item = line.slice(0, line.indexOf("</li>"));
+    assert.ok(
+      item.includes("<em>awaits incorporation into the authoritative design and message catalogue</em>"),
+      `${island.name}: ${item}`,
+    );
+  }
+  assert.equal(indexLines().filter((line) => line.includes("awaits incorporation")).length, contested.length, "only the contested items say it");
+});
+
+test("the page keeps the legend wording the plain index mirrors, and the way back to the conversation", () => {
+  assert.match(html, /<strong>open, not ratified<\/strong>: the designers&rsquo; own open list, not a roadmap/);
+  const toolbar = html.slice(html.indexOf('<div class="atlas-toolbar"'), html.indexOf('<div id="atlas-map"'));
+  assert.match(toolbar, /<a class="atlas-to-chat" href="#conversation" hidden>Go to the conversation<\/a>/, "a way down to the conversation for the one-column layout");
+  assert.ok(html.includes('id="conversation"'), "its target exists");
 });
