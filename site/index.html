@@ -57,6 +57,11 @@
                     <p>Conversation controls need JavaScript. The rest of this page remains available.</p>
                 </noscript>
                 <form id="composer" class="composer">
+                    <div id="history-state" class="history-state" role="status" aria-live="polite" hidden>
+                        <span id="history-state-text" class="history-state-text"></span>
+                        <button type="button" id="history-retry" class="history-retry" hidden>Try again</button>
+                    </div>
+                    <ol id="history" aria-label="History" tabindex="0"></ol>
                     <label for="provider">Provider for a new conversation</label>
                     <select id="provider" name="provider">
                         <option value="openai">OpenAI</option>
@@ -66,10 +71,15 @@
                     <textarea id="draft" name="draft" rows="4"></textarea>
                     <div class="composer-actions">
                         <button type="submit" id="send">Send</button>
-                        <button type="button" id="cancel" disabled>Cancel</button>
                     </div>
-                    <p id="phase" role="status" aria-live="polite"></p>
-                    <ol id="history" aria-label="History"></ol>
+                    <div class="chat-actions">
+                        <button type="button" id="cancel" hidden>Cancel</button>
+                        <button type="button" id="check-status" hidden>Check status</button>
+                        <button type="button" id="retry" hidden>Send again</button>
+                        <button type="button" id="new-conversation" hidden>New conversation</button>
+                    </div>
+                    <p id="chat-status" class="chat-status" role="status" aria-live="polite" hidden></p>
+                    <p id="phase" class="chat-phase"></p>
                 </form>
             </div>
         </section>

@@ -1,11 +1,44 @@
 /** Render history with text nodes. Model HTML is never parsed. */
 
+/**
+ * Who a history row belongs to, and the word that says so. The label is real text in the row (not only
+ * a colour), so a reader and a screen reader can tell a question from an answer from a problem report.
+ */
+export const SPEAKER_LABELS = Object.freeze({
+  user: "You",
+  assistant: "Answer",
+  error: "Problem",
+});
+
+/** The role of a history item when it is one of the three above, else "". */
+export function speakerRole(role) {
+  return typeof role === "string" && Object.hasOwn(SPEAKER_LABELS, role) ? role : "";
+}
+
+/**
+ * Adds one row: li[data-role] > span.speaker + p (+ one button per citation). The message text goes into
+ * the p as a text node, byte for byte: its line breaks and spaces are kept by the page's CSS
+ * (white-space: pre-wrap), never by markup. A row whose role is none of the three is added without a
+ * label rather than under a guessed one.
+ * @param {{text?: unknown, role?: string, citations?: Array<{title?: string, source_id?: string}>}} item
+ * @param {Element} container the ol#history
+ * @returns {HTMLLIElement}
+ */
 export function renderHistoryItem(item, container) {
+  const source = item || {};
   const row = document.createElement("li");
+  const role = speakerRole(source.role);
+  if (role) {
+    row.setAttribute("data-role", role);
+    const label = document.createElement("span");
+    label.className = "speaker";
+    label.textContent = SPEAKER_LABELS[role];
+    row.appendChild(label);
+  }
   const text = document.createElement("p");
-  text.textContent = String(item.text ?? "");
+  text.textContent = String(source.text ?? "");
   row.appendChild(text);
-  for (const citation of item.citations || []) {
+  for (const citation of source.citations || []) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = citation.title || citation.source_id;
