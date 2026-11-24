@@ -1,0 +1,367 @@
+/* The conversation card: the history of questions and answers, its speaker labels, the status area
+   and the buttons under it. It is loaded after atlas.css and atlas-panel.css and takes over the
+   history rules those files carry (same specificity, later in the cascade), so the card is tuned in
+   one place. No inline styles are used anywhere: every look below is a class or an id.
+
+   What the card is for: reading an answer. The model's text sits in one <p> per row as plain text;
+   its paragraph and list breaks are kept by white-space: pre-wrap, not by markup. */
+
+/* ---- balance of the two columns ----
+   The conversation gets a wider column than the map's side panel used to leave it (about 400px of
+   1440px instead of 317px); the map keeps its 900px drawing width up to there. */
+@media (min-width: 1180px) {
+    .container.atlas-layout {
+        grid-template-columns: minmax(0, 1fr) clamp(17.5rem, 28vw, 30rem);
+    }
+}
+
+/* Air between the introduction and the form (the page's reset leaves none). */
+.atlas-chat > .composer {
+    margin-top: 0.6rem;
+}
+
+/* ---- the history ----
+   A scroll region of its own (keyboard reachable, tabindex="0" in the page). In one column it is
+   tall enough to read from, and a swipe that reaches its end carries on to the page instead of
+   stopping dead. With two columns it takes all the height the sticky card leaves. */
+.atlas-chat #history {
+    list-style: none;
+    max-height: min(36rem, 62vh);
+    padding: 0.5rem 0.6rem;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: auto;
+    scroll-behavior: auto;
+    font-size: 0.9375rem;
+    line-height: 1.55;
+}
+
+.atlas-chat #history > li {
+    padding: 0.45rem 0.65rem 0.55rem;
+    background: #fff;
+    border: 1px solid #cbd5e0;
+    border-left: 4px solid #718096;
+    border-radius: 6px;
+}
+
+.atlas-chat #history > li + li {
+    margin-top: 0.6rem;
+}
+
+.atlas-chat #history > li[data-role="user"] {
+    background: #ebf4ff;
+    border-color: #bee3f8;
+    border-left-color: #2b6cb0;
+}
+
+.atlas-chat #history > li[data-role="assistant"] {
+    background: #fff;
+    border-left-color: #2c7a7b;
+}
+
+.atlas-chat #history > li[data-role="error"] {
+    background: #fff5f5;
+    border-color: #feb2b2;
+    border-left-color: #c53030;
+}
+
+/* Who is speaking: a word, not only a colour. */
+.atlas-chat #history .speaker {
+    display: block;
+    margin-bottom: 0.1rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    line-height: 1.4;
+    letter-spacing: 0.03em;
+    color: #4a5568;
+}
+
+.atlas-chat #history > li[data-role="user"] .speaker {
+    color: #1a365d;
+}
+
+.atlas-chat #history > li[data-role="assistant"] .speaker {
+    color: #285e61;
+}
+
+.atlas-chat #history > li[data-role="error"] .speaker {
+    color: #9b2c2c;
+}
+
+/* The message itself. pre-wrap keeps the model's paragraph breaks, blank lines and list lines as they
+   were written; anywhere lets a long term, a path or a piece of code break at the edge instead of
+   widening the card or the page. */
+.atlas-section .atlas-chat #history > li > p {
+    margin: 0;
+    max-width: none;
+    color: var(--color-text, #2d3748);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    tab-size: 4;
+}
+
+/* Source buttons under an answer wrap rather than push the row wider. */
+.atlas-chat #history > li > button {
+    max-width: 100%;
+    margin-top: 0.35rem;
+    font: inherit;
+    font-size: 0.8125rem;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+/* ---- a narrow screen: less card around the text, more text ---- */
+@media (max-width: 640px) {
+    .atlas-chat {
+        padding: 0.9rem 0.75rem;
+    }
+
+    .atlas-chat #history {
+        padding: 0.4rem 0.35rem;
+    }
+
+    .atlas-chat #history > li {
+        padding: 0.4rem 0.5rem 0.5rem;
+        border-left-width: 3px;
+    }
+}
+
+/* ---- Back to start of answer / Jump to latest ----
+   Built by atlas.js under the history; shown only while one of them is of use. */
+.atlas-chat .history-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.atlas-chat .history-nav button {
+    flex: 1 1 8rem;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0.3rem 0.8rem;
+    font: inherit;
+    font-size: 0.875rem;
+    color: var(--color-primary, #1a365d);
+    background: #ebf4ff;
+    border: 2px solid var(--color-secondary, #2b6cb0);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.atlas-chat .history-nav button:focus-visible {
+    outline: 3px solid var(--color-secondary, #2b6cb0);
+    outline-offset: 2px;
+}
+
+/* ---- the status area, the action buttons and the history line (painted by the conversation client) ----
+   #chat-status says in words what became of the last question (data-kind: working, waiting, warning, long,
+   error, gone, info, done); #history-state says that the history is loading or could not be loaded, with its
+   own "try again". Both are empty or hidden when there is nothing to say. The wording carries the meaning;
+   the colour only helps. */
+.atlas-chat .chat-status,
+.atlas-chat #history-state {
+    max-width: none;
+    padding: 0.45rem 0.7rem;
+    font-size: 0.875rem;
+    line-height: 1.45;
+    color: #2d3748;
+    background: #f7fafc;
+    border: 1px solid #cbd5e0;
+    border-left: 4px solid #718096;
+    border-radius: 6px;
+    overflow-wrap: anywhere;
+}
+
+.atlas-chat .chat-status:empty {
+    display: none;
+}
+
+.atlas-chat .chat-status[data-kind="working"],
+.atlas-chat .chat-status[data-kind="waiting"],
+.atlas-chat #history-state[data-kind="loading"] {
+    color: #2a4365;
+    background: #ebf8ff;
+    border-color: #bee3f8;
+    border-left-color: #2b6cb0;
+}
+
+.atlas-chat .chat-status[data-kind="warning"],
+.atlas-chat .chat-status[data-kind="long"],
+.atlas-chat #history-state[data-kind="failed"] {
+    color: #5f370e;
+    background: #fffaf0;
+    border-color: #fbd38d;
+    border-left-color: #c05621;
+}
+
+.atlas-chat .chat-status[data-kind="error"],
+.atlas-chat .chat-status[data-kind="gone"] {
+    color: #742a2a;
+    background: #fff5f5;
+    border-color: #feb2b2;
+    border-left-color: #c53030;
+}
+
+.atlas-chat .chat-status[data-kind="info"],
+.atlas-chat .chat-status[data-kind="done"] {
+    color: #22543d;
+    background: #f0fff4;
+    border-color: #c6f6d5;
+    border-left-color: #2f855a;
+}
+
+/* The history line: the sentence and its "Try again" side by side, the button under the sentence on a narrow card. */
+.atlas-chat #history-state {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.7rem;
+}
+
+.atlas-chat #history-state-text,
+.atlas-chat .history-state-text {
+    flex: 1 1 10rem;
+    min-width: 0;
+}
+
+/* The action buttons (Cancel, Check status, Send again, New conversation): only the ones that apply are
+   shown, and with none shown the row takes no room at all. */
+.atlas-chat .chat-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.atlas-chat .chat-actions:not(:has(> :not([hidden]))) {
+    display: none;
+}
+
+.atlas-chat .chat-actions button,
+.atlas-chat #history-state button {
+    flex: 1 1 7rem;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0.3rem 1rem;
+    font: inherit;
+    color: var(--color-primary, #1a365d);
+    background: var(--color-bg, #fff);
+    border: 2px solid var(--color-secondary, #2b6cb0);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.atlas-chat .chat-actions button:focus-visible,
+.atlas-chat #history-state button:focus-visible {
+    outline: 3px solid var(--color-secondary, #2b6cb0);
+    outline-offset: 2px;
+}
+
+.atlas-chat .chat-actions button:disabled {
+    color: var(--color-text-light, #718096);
+    background: transparent;
+    border-style: dashed;
+    border-color: var(--color-text-light, #718096);
+    cursor: not-allowed;
+}
+
+/* The machine word (ready, running ...) is a footnote, not a headline. */
+.atlas-section .atlas-chat #phase {
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.3;
+    color: #4a5568;
+}
+
+/* ---- two columns: the history takes all the height the sticky card leaves ---- */
+@media (min-width: 1180px) {
+    .atlas-chat #history {
+        max-height: none;
+        overscroll-behavior: contain;
+    }
+
+    .atlas-chat .composer > #history {
+        flex: 1 1 auto;
+        min-height: 12rem;
+    }
+
+    .atlas-chat .history-nav button {
+        min-height: 2rem;
+    }
+
+    /* Room for the history: the rest of the card is kept compact. */
+    .atlas-chat {
+        padding: 0.75rem 1rem;
+    }
+
+    .atlas-section .atlas-chat > p {
+        font-size: 0.75rem;
+        line-height: 1.35;
+    }
+
+    .atlas-chat > .composer {
+        margin-top: 0.4rem;
+    }
+
+    .atlas-chat .composer {
+        gap: 0.3rem;
+    }
+
+    .atlas-chat .composer textarea {
+        height: 3.25rem;
+    }
+
+    .atlas-chat .chat-status,
+    .atlas-chat #history-state {
+        padding: 0.3rem 0.6rem;
+    }
+}
+
+/* ---- short desktop windows (a laptop at 800 px): the controls under the history are kept compact so the answer
+   keeps its room. Touch targets go back to 44px for a coarse pointer (see the rule after this block). ---- */
+@media (min-width: 1180px) and (max-height: 860px) {
+    .atlas-chat .chat-actions button,
+    .atlas-chat #history-state button {
+        min-height: 2.25rem;
+        padding-block: 0.1rem;
+    }
+
+    .atlas-chat .atlas-dev-note {
+        font-size: 0.75rem;
+        line-height: 1.2;
+    }
+
+    .atlas-chat .atlas-dev-note {
+        margin: 0.2rem 0;
+    }
+
+    .atlas-chat .atlas-dev-note summary {
+        min-height: 1.5rem;
+        padding-block: 0.1rem;
+    }
+
+    .atlas-chat .atlas-dev-note[open] p {
+        margin: 0.2rem 0 0;
+    }
+}
+
+@media (min-width: 1180px) and (max-height: 860px) and (pointer: coarse) {
+    .atlas-chat .chat-actions button,
+    .atlas-chat #history-state button,
+    .atlas-chat .atlas-dev-note summary {
+        min-height: 44px;
+    }
+}
+
+/* ---- forced colours: borders carry the roles ---- */
+@media (forced-colors: active) {
+    .atlas-chat #history > li {
+        border-color: CanvasText;
+    }
+
+    .atlas-chat .history-nav button,
+    .atlas-chat .chat-actions button,
+    .atlas-chat #history-state button {
+        border-color: ButtonText;
+    }
+}

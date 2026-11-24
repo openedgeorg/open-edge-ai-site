@@ -187,6 +187,8 @@ async function launchBrowserOnce(binary) {
       "--no-pings",
       "--metrics-recording-only",
       "--disable-features=Translate,MediaRouter,OptimizationHints",
+      // Extra flags for live runs against the local HTTPS stack, e.g. ATLAS_CHROME_ARGS="--ignore-certificate-errors".
+      ...(process.env.ATLAS_CHROME_ARGS || "").split(/\s+/).filter(Boolean),
       "about:blank",
     ],
     { stdio: ["ignore", "ignore", "pipe"], detached: true },
@@ -947,6 +949,13 @@ async function handle(req, res, stub, mode) {
       return;
     }
     json(res, 200, { subject_id: "s-1", csrf_token: "t-1" });
+    return;
+  }
+  if (method === "GET" && pathname === "/providers") {
+    json(res, 200, { providers: [
+      { provider: "openai", harness: "codex", display_model: "m", eligible: true, available: true },
+      { provider: "xai", harness: "grok-build", display_model: "m", eligible: true, available: true },
+    ] });
     return;
   }
   if (method === "POST" && pathname === "/conversations") {

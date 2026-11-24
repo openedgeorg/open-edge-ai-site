@@ -85,7 +85,7 @@ body {
 .hero {
     background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
     color: white;
-    padding: calc(var(--spacing-unit) * 8) 0;
+    padding: calc(var(--spacing-unit) * 3) 0 calc(var(--spacing-unit) * 3.5);
     text-align: center;
 }
 
@@ -96,20 +96,90 @@ body {
 }
 
 .hero h1 {
-    font-size: 3rem;
-    margin-bottom: var(--spacing-unit);
+    font-size: 2.5rem;
+    line-height: 1.15;
+    margin-bottom: 0.75rem;
     font-weight: 700;
 }
 
+/* A line of context above the headline: whose draft this is. Full-strength white, not faded: the
+   gradient's light end only gives white text 5.4:1, and fading it would drop below 4.5:1. */
+.hero-kicker {
+    margin-bottom: 0.6rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
 .hero-tagline {
-    font-size: 1.25rem;
-    opacity: 0.9;
+    max-width: 42rem;
+    margin: 0 auto;
+    font-size: 1.125rem;
+    line-height: 1.5;
+}
+
+/* The first question, on the first screen: the one thing to do. Hidden until the page's script runs
+   (without JavaScript it could not ask anything). The same gold as a visited place on the map. */
+.hero-ask-wrap {
+    max-width: 34rem;
+    margin: 1.25rem auto 0;
+}
+
+.hero-ask-label {
+    margin-bottom: 0.4rem;
+    font-size: 0.875rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.hero-ask {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 3.5rem;
+    padding: 0.55rem 1.25rem;
+    font: inherit;
+    font-size: 1.2rem;
+    font-weight: 700;
+    line-height: 1.3;
+    color: var(--color-primary);
+    background: #f5c542;
+    border: 0;
+    border-radius: 14px;
+    box-shadow: 0 0 0 3px rgba(245, 197, 66, 0.4), 0 6px 18px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.hero-ask:hover {
+    background: #ffd45f;
+}
+
+.hero-ask:focus-visible {
+    outline: 3px solid #fff;
+    outline-offset: 3px;
+}
+
+/* Paused (a question is running, or the chat asked for a pause): still focusable, still leads to the Atlas. */
+.hero-ask[aria-disabled="true"] {
+    background: #e7d9a6;
+    box-shadow: none;
+    cursor: default;
+}
+
+.hero-start {
+    max-width: 30rem;
+    margin: 0.6rem auto 0;
+    font-size: 0.875rem;
+    line-height: 1.45;
 }
 
 /* The way into the Atlas, on the first screen. The note under the link is hidden until the page's
    script runs: without JavaScript the link leads to a plain index, not to a conversation. */
 .hero-cta {
-    margin-top: calc(var(--spacing-unit) * 1.5);
+    margin-top: var(--spacing-unit);
 }
 
 .hero-cta-link {
@@ -134,9 +204,8 @@ body {
 
 .hero-cta-note {
     display: block;
-    margin-top: 0.6rem;
+    margin-top: 0.5rem;
     font-size: 1rem;
-    opacity: 0.95;
 }
 
 .hero-cta-note[hidden] {
@@ -201,6 +270,53 @@ body {
     .nav-links a {
         font-size: 0.875rem;
         white-space: nowrap;
+    }
+
+    /* The first screen of a phone has to hold the premise, the first question and the way into the Atlas. */
+    .hero {
+        padding: 1.25rem 0 1.5rem;
+    }
+
+    .hero-content {
+        padding: 0 var(--spacing-unit);
+    }
+
+    .hero-kicker {
+        margin-bottom: 0.4rem;
+        font-size: 0.8125rem;
+    }
+
+    .hero h1 {
+        margin-bottom: 0.5rem;
+        font-size: 1.6rem;
+    }
+
+    .hero-tagline {
+        font-size: 1rem;
+        line-height: 1.45;
+    }
+
+    .hero-ask-wrap {
+        margin-top: 1rem;
+    }
+
+    .hero-ask {
+        min-height: 3.25rem;
+        font-size: 1.1rem;
+    }
+
+    .hero-start {
+        font-size: 0.8125rem;
+        line-height: 1.4;
+    }
+
+    .hero-cta {
+        margin-top: 0.75rem;
+    }
+
+    /* The question above says the same; the sentence stays for a wider window. */
+    .hero-cta-note {
+        display: none;
     }
 }
 

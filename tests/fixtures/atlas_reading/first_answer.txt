@@ -1,0 +1,14 @@
+You pay your ISP. The protocol pays the apps, using money your ISP committed.
+
+Under ESP, your ISP is your financial counterparty for participating services. You pay that ISP under one standing monthly plan. Apps do not bill you separately. They earn through the protocol, from evidenced use at the prices you accepted for that epoch.
+
+The money path works like this:
+
+- Your ISP prepays one aggregate monthly commitment into a single common protocol fund. That commitment is funding for its whole household roster, not a per-app payment and not the same thing as your allowance.
+- The protocol assigns that ISP a monthly pot. The pot is the hard ceiling on the allowances the ISP may authorize. It can be larger than the commitment. The difference is reserved common-fund credit, not money handed to the ISP and not debt by itself.
+- During the month, each app keeps signed consumption records. At epoch close it submits one claim. The ISP reconciles those claims against each household's closing allowance.
+- The protocol then pays each app once for the epoch, out of the common fund, up to the household escrow inside the ISP's pot.
+
+If apps are paid more than your ISP funded, the difference becomes your ISP's debt to the common fund. The ISP must repay that debt. Your bill does not rise automatically because an app was expensive, because you received a top-up, or because your ISP owes the fund. Only the agreed plan price, and any separately priced add-on you explicitly accepted, may be charged to you.
+
+If valid use exceeds your closing allowance, the protocol still pays only up to that funded allowance. The serving apps split that amount in proportion to their valid claims and absorb the rest. That shortfall stays with the apps. It does not come out of the common fund.

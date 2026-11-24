@@ -1,29 +1,33 @@
 /**
- * The test double of the conversation client against the working tree's own client, in Chrome.
+ * The test double of the conversation client next to the working tree's own client, in Chrome.
  *
- * atlas_chat_double.test.mjs compares the two controllers without a document. This file compares
- * what they PAINT: the same scripted scenario is played against a page that serves the double at
- * /js/app.js and against a page that serves the working tree's site/js/app.js, and everything a
- * visitor (or the Atlas, which only watches the page) can see is compared: the sequence of
- * #phase texts, the sequence of #history lists, the message box, the Send and provider controls,
- * what is kept in sessionStorage, and every request the page made.
+ * The double (tests/fixtures/atlas_chat_double/app.js) is a port of the OLD conversation client. The
+ * working tree's client has since been fixed (F01 to F03: every question has a visible outcome, a
+ * pending turn is only completed by its OWN answer, a refresh restores the history, the draft and the
+ * pending request, a failing service is told in words). So the two no longer paint the same thing, and
+ * this file no longer asserts that they do. It plays the same scripted scenarios against a page that
+ * serves the double at /js/app.js and against a page that serves the working tree's site/js/app.js, and
+ * for each side it states what a visitor (or the Atlas, which only watches the page) sees at each
+ * snapshot: #phase, the message box, the rows of the list, Send, and the sequence of phases painted:
+ *  - `double`: what the old client paints (the browser suites run on it by default, so this pins what
+ *    they are testing the Atlas against, quirks included);
+ *  - `real`: what the working tree's client paints now.
+ * Where the two differ, the difference is the fix. Where a browser suite only passes on the double
+ * because the double lacks the new behaviour, that is said in the suite (REAL branches in
+ * atlas_browser_late.test.mjs and atlas_browser_reload.test.mjs); the double is not edited.
  *
  * Two scenarios play TWO turns: turn 1 over the event stream, turn 2 with /events answering 404
  * and /history lagging for a while. They differ in what the lagging /history lists:
  *  - [Q1, A1, Q2]: the older turns and the new question, but not the new reply;
  *  - [Q1, A1]: the older turns only, not even the new question (stub.historyHidesNewQuestion).
- * That is where the working tree's acceptance of /history shows: a client that waits for the NEW
- * reply, one that waits for the new QUESTION to be listed, and one that takes any earlier assistant
- * row paint different lists and reach "ready" at different times. A double that is wrong there
- * fails this file (see the scenarios): one that waits for the sent question passes the first shape
- * and only the second one catches it.
+ * The old client takes any earlier assistant row for the answer and paints `ready` on the older list; the
+ * working tree's client keeps the turn pending until its own answer is listed.
  *
- * It exists so that the browser suites can run on the double (and pass on a clean checkout)
- * without the double being allowed to drift away from the client it stands in for. Needs a Chrome
- * and a working tree whose own chat client can follow a stream, fill the history, settle and send
- * the CSRF header; without them the file is skipped with the reason printed.
+ * Needs a Chrome and a working tree whose own chat client can follow a stream, fill the history, settle and
+ * send the CSRF header; without them the file is skipped with the reason printed.
  *
- * Not covered: the live client's source rendering (citations, the source panel) and the live API.
+ * Not covered: the live client's source rendering (citations, the source panel) and the live API
+ * (tests/e2e/chat_client_*.test.mjs run the real client against a fake backend that follows the API contract).
  *
  * Run: node --test --test-concurrency=1 tests/e2e/atlas_browser_double.test.mjs
  */
@@ -139,9 +143,15 @@ const FIRST_TURN_READ = ["user: first question", "assistant: First answer, strea
  */
 function twoTurns({ hideNewQuestion }) {
   const listing = hideNewQuestion ? "does not list the new question yet" : "already lists the new question";
-  return [
-    `a second question with no event stream while /history lags and ${listing}: the lists, the phases and the requests agree`,
-    async ({ page, stub, url, take }) => {
+  const TURN_ONE = ["first question", "First answer, streamed."];
+  const TURN_TWO = [...TURN_ONE, "second question", "Second answer, late in the history."];
+  const oldPhases = ["ready", "running", "ready", "running", "ready"];
+  const realPhases = ["ready", "submitting", "running", "ready", "submitting", "running", "ready"];
+  // The old client paints `ready` on the older list; which list it is depends on what the lag lists.
+  const oldList = hideNewQuestion ? TURN_ONE : [...TURN_ONE, "second question"];
+  return {
+    name: `a second question with no event stream while /history lags and ${listing}`,
+    scenario: async ({ page, stub, url, take }) => {
       stub.reply = (message, n) => (n === 1 ? "First answer, streamed." : "Second answer, late in the history.");
       await ready(page, url);
       await page.click("#draft");
@@ -170,7 +180,7 @@ function twoTurns({ hideNewQuestion }) {
       await sleep(stub.historyDelayMs + 800);
       await take("turn 2 later");
     },
-    (real, historyReads) => {
+    verify: (real, historyReads) => {
       // The scenario really played two turns (two identical but wrong runs would prove nothing).
       const messages = real.requests.filter((request) => request.method === "POST" && request.url.endsWith("/messages"));
       assert.deepEqual(
@@ -198,18 +208,44 @@ function twoTurns({ hideNewQuestion }) {
         assert.ok(real["turn 2 settled"].rows.includes("second question"), "the second question is in the list");
       }
     },
-  ];
+    double: {
+      "turn 1": { phase: "ready", draft: "", rows: TURN_ONE, sendDisabled: false, phases: ["ready", "running", "ready"] },
+      "turn 2 settled": { phase: "ready", draft: "", rows: oldList, sendDisabled: false, phases: oldPhases },
+      "turn 2 later": { phase: "ready", draft: "", rows: oldList, sendDisabled: false, phases: oldPhases },
+    },
+    real: {
+      "turn 1": { phase: "ready", draft: "", rows: TURN_ONE, sendDisabled: false, phases: ["ready", "submitting", "running", "ready"] },
+      // The working tree's client waits for its own answer, however long /history lags.
+      "turn 2 settled": { phase: "ready", draft: "", rows: TURN_TWO, sendDisabled: false, phases: realPhases },
+      "turn 2 later": { phase: "ready", draft: "", rows: TURN_TWO, sendDisabled: false, phases: realPhases },
+    },
+  };
 }
 
+const FIRST = "hello there";
+
+/** What a snapshot comes down to for the Atlas and the visitor. */
+function summary(observed) {
+  const out = {};
+  for (const [name, snapshot] of Object.entries(observed)) {
+    if (name === "requests") continue;
+    out[name] = { phase: snapshot.phase, draft: snapshot.draft, rows: snapshot.rows, sendDisabled: snapshot.sendDisabled, phases: snapshot.trace.phase };
+  }
+  return out;
+}
+
+/** The ids of the questions the page POSTed, in order, without repeats (the browser may repeat a request whose connection dropped). */
+const questionIds = (requests) => [...new Set(requests.filter((request) => request.method === "POST" && request.url.endsWith("/messages")).map((request) => request.body.client_request_id))];
+
 const SCENARIOS = [
-  [
-    "a question is accepted and its reply streams into the list",
-    async ({ page, stub, url, take }) => {
+  {
+    name: "a question is accepted and its reply streams into the list",
+    scenario: async ({ page, stub, url, take }) => {
       stub.reply = () => "Alpha beta gamma delta epsilon.";
       await ready(page, url);
       await take("booted");
       await page.click("#draft");
-      await page.type("hello there");
+      await page.type(FIRST);
       await page.click("#send");
       await page.waitFor(`document.querySelector("#phase").textContent === "ready" && document.querySelectorAll("#history li").length === 2`, {
         timeout: 15000,
@@ -217,15 +253,23 @@ const SCENARIOS = [
       });
       await take("answered");
     },
-  ],
-  [
-    "no event stream: the chat settles from /history alone",
-    async ({ page, stub, url, take }) => {
+    double: {
+      booted: { phase: "ready", draft: "", rows: [], sendDisabled: false, phases: ["ready"] },
+      answered: { phase: "ready", draft: "", rows: [FIRST, "Alpha beta gamma delta epsilon."], sendDisabled: false, phases: ["ready", "running", "ready"] },
+    },
+    real: {
+      booted: { phase: "ready", draft: "", rows: [], sendDisabled: false, phases: ["ready"] },
+      answered: { phase: "ready", draft: "", rows: [FIRST, "Alpha beta gamma delta epsilon."], sendDisabled: false, phases: ["ready", "submitting", "running", "ready"] },
+    },
+  },
+  {
+    name: "no event stream: the chat settles from /history alone",
+    scenario: async ({ page, stub, url, take }) => {
       stub.eventsMode = "404";
       stub.reply = () => "Only in the history.";
       await ready(page, url);
       await page.click("#draft");
-      await page.type("hello there");
+      await page.type(FIRST);
       await page.click("#send");
       await page.waitFor(`document.querySelector("#phase").textContent === "ready" && document.querySelectorAll("#history li").length === 2`, {
         timeout: 15000,
@@ -233,10 +277,12 @@ const SCENARIOS = [
       });
       await take("answered");
     },
-  ],
-  [
-    "a refusal keeps the text, the same request id is used for the retry",
-    async ({ page, stub, url, take }) => {
+    double: { answered: { phase: "ready", draft: "", rows: [FIRST, "Only in the history."], sendDisabled: false, phases: ["ready", "running", "ready"] } },
+    real: { answered: { phase: "ready", draft: "", rows: [FIRST, "Only in the history."], sendDisabled: false, phases: ["ready", "submitting", "running", "ready"] } },
+  },
+  {
+    name: "a refusal puts the text back in the box; the visitor sends it again",
+    scenario: async ({ page, stub, url, take }) => {
       stub.outcome = (n) => (n === 1 ? 429 : "accept");
       stub.reply = () => "Second time lucky.";
       await ready(page, url);
@@ -253,10 +299,23 @@ const SCENARIOS = [
       });
       await take("retried");
     },
-  ],
-  [
-    "a lost acceptance is reconciled, also after a reload",
-    async ({ page, stub, url, take }) => {
+    verify: (real) => {
+      // The refused question was never sent, so the second one is a new logical question with a new id.
+      assert.equal(questionIds(real.requests).length, 2);
+    },
+    double: {
+      refused: { phase: "rejected", draft: "please answer", rows: ["please answer"], sendDisabled: false, phases: ["ready", "rejected"] },
+      retried: { phase: "ready", draft: "", rows: ["please answer", "Second time lucky."], sendDisabled: false, phases: ["ready", "rejected", "running", "ready"] },
+    },
+    real: {
+      // A question that was refused is not shown as sent; its text is back in the box.
+      refused: { phase: "rejected", draft: "please answer", rows: [], sendDisabled: false, phases: ["ready", "submitting", "rejected"] },
+      retried: { phase: "ready", draft: "", rows: ["please answer", "Second time lucky."], sendDisabled: false, phases: ["ready", "submitting", "rejected", "submitting", "running", "ready"] },
+    },
+  },
+  {
+    name: "a lost acceptance is checked, never resent, also after a reload",
+    scenario: async ({ page, stub, url, take }) => {
       stub.outcome = () => "drop";
       await ready(page, url);
       await page.click("#draft");
@@ -270,10 +329,25 @@ const SCENARIOS = [
       await sleep(200);
       await take("reloaded");
     },
-  ],
-  [
-    "the session endpoint is down: nothing is ever painted and nothing is posted",
-    async ({ page, stub, url, take }) => {
+    verify: (real) => {
+      // (The browser itself may repeat a POST whose connection was dropped; the page asked once.)
+      assert.equal(questionIds(real.requests).length, 1, "one logical question");
+      assert.ok(real.requests.filter((request) => request.url.includes("/status?client_request_id=")).length >= 2, "its status was asked, before and after the reload");
+    },
+    double: {
+      lost: { phase: "reconciling", draft: "did it go?", rows: ["did it go?"], sendDisabled: true, phases: ["ready", "reconciling"] },
+      // The old client forgets the pending question on a reload: ready, an empty list, the text as a draft.
+      reloaded: { phase: "ready", draft: "did it go?", rows: [], sendDisabled: false, phases: ["ready"] },
+    },
+    real: {
+      lost: { phase: "reconciling", draft: "", rows: ["did it go?"], sendDisabled: true, phases: ["ready", "submitting", "reconciling"] },
+      // The working tree's client keeps it: still checking, the question still listed, Send still off.
+      reloaded: { phase: "reconciling", draft: "", rows: ["did it go?"], sendDisabled: true, phases: ["reconciling"] },
+    },
+  },
+  {
+    name: "the session endpoint is down: nothing is posted but the session",
+    scenario: async ({ page, stub, url, take }) => {
       stub.sessionMode = "html";
       await page.goto(url);
       await sleep(400);
@@ -284,10 +358,22 @@ const SCENARIOS = [
       await sleep(500);
       await take("tried");
     },
-  ],
-  [
-    "the message box gets focus while /history lags: a premature ready is painted",
-    async ({ page, stub, url, take }) => {
+    verify: (real) => {
+      assert.equal(real.requests.filter((request) => request.url.endsWith("/messages") || request.url.endsWith("/conversations")).length, 0, "no conversation, no question");
+    },
+    double: {
+      // Nothing is ever painted by the old client until the box gets focus; the typed text is listed as if sent.
+      booted: { phase: "", draft: "", rows: [], sendDisabled: false, phases: [] },
+      tried: { phase: "ready", draft: "anyone there?", rows: ["anyone there?"], sendDisabled: false, phases: ["ready"] },
+    },
+    real: {
+      booted: { phase: "unavailable", draft: "", rows: [], sendDisabled: false, phases: ["unavailable"] },
+      tried: { phase: "rejected", draft: "anyone there?", rows: [], sendDisabled: false, phases: ["unavailable", "submitting", "rejected"] },
+    },
+  },
+  {
+    name: "the message box gets focus while /history lags",
+    scenario: async ({ page, stub, url, take }) => {
       stub.eventsMode = "404";
       stub.historyDelayMs = 2600;
       stub.reply = () => "Late, but there.";
@@ -297,18 +383,28 @@ const SCENARIOS = [
       await page.click("#send");
       await page.waitFor(`document.querySelector("#phase").textContent === "running"`, { what: "running to be painted" });
       await page.click("#draft");
-      await page.waitFor(`document.querySelector("#phase").textContent === "ready"`, { what: "the premature ready" });
+      await page.waitFor(`document.querySelector("#phase").textContent === "ready"`, { timeout: 15000, what: "ready" });
       await take("focused");
       await page.waitFor(`document.querySelectorAll("#history li").length === 2`, { timeout: 15000, what: "the history to catch up" });
       await sleep(200);
       await take("caught up");
     },
-  ],
+    double: {
+      // The focus handler paints `ready` while the run goes on: the premature ready the Atlas has to cope with.
+      focused: { phase: "ready", draft: "", rows: ["slow one"], sendDisabled: false, phases: ["ready", "running", "ready"] },
+      "caught up": { phase: "ready", draft: "", rows: ["slow one", "Late, but there."], sendDisabled: false, phases: ["ready", "running", "ready"] },
+    },
+    real: {
+      // Focusing the box paints nothing: `ready` comes with the answer.
+      focused: { phase: "ready", draft: "", rows: ["slow one", "Late, but there."], sendDisabled: false, phases: ["ready", "submitting", "running", "ready"] },
+      "caught up": { phase: "ready", draft: "", rows: ["slow one", "Late, but there."], sendDisabled: false, phases: ["ready", "submitting", "running", "ready"] },
+    },
+  },
   twoTurns({ hideNewQuestion: false }),
   twoTurns({ hideNewQuestion: true }),
 ];
 
-describe("the chat double paints like the working tree's chat client (browser level)", { skip: SKIP, timeout: 240000 }, () => {
+describe("the chat double (the old client) and the working tree's client, in Chrome", { skip: SKIP, timeout: 240000 }, () => {
   before(async () => {
     browser = await launchBrowser(CHROME.path);
   });
@@ -317,15 +413,16 @@ describe("the chat double paints like the working tree's chat client (browser le
     if (browser) await browser.close();
   });
 
-  for (const [name, scenario, verify] of SCENARIOS) {
+  for (const { name, scenario, verify, double: expectedDouble, real: expectedReal } of SCENARIOS) {
     it(name, async () => {
       const { observed: real, historyReads } = await play("real", name, scenario);
       const { observed: double } = await play("double", name, scenario);
-      // Sanity: the scenario really happened (a comparison of two empty runs proves nothing).
+      // Sanity: the scenario really happened (a run that did nothing proves nothing).
       assert.ok(Object.keys(real).length >= 2, "the scenario took at least one snapshot");
       assert.ok(real.requests.length >= 1, "the page talked to the stub");
       if (verify) verify(real, historyReads);
-      assert.deepEqual(double, real);
+      assert.deepEqual(summary(double), expectedDouble, "the double paints what the old client painted");
+      assert.deepEqual(summary(real), expectedReal, "the working tree's client paints what it should now");
     });
   }
 });

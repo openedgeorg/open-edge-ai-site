@@ -1,19 +1,25 @@
 /**
- * The test double of the conversation client (tests/fixtures/atlas_chat_double/app.js) against the
- * working tree's own client (site/js/app.js), without a browser.
+ * The test double of the conversation client (tests/fixtures/atlas_chat_double/app.js) and the working
+ * tree's own client (site/js/app.js), without a browser.
  *
- * The browser suites run on the double by default so that they pass on a clean checkout. That is
- * only worth anything while the double behaves like the client it stands in for. This file feeds
- * the same scripted server answers to both controllers, step by step, and compares everything a
- * caller can observe: the view after each step, what was kept in sessionStorage, and every request
- * (method, path, the headers that matter, the body, with the random request id made comparable).
+ * The double is a port of the OLD client. This file used to prove that the two paint the same; it cannot any
+ * more, because the working tree's client has been fixed on purpose (F01 to F03). So it plays the same
+ * scripted server answers, step by step, against both controllers and states what each one shows after every
+ * step: [step, phase, message box, Send disabled, provider fixed]. The `double` rows are what the old client
+ * does (the browser suites run on it by default); the `real` rows are what the working tree's client does now.
+ * Where they differ the difference is one of the fixes, and the reason is written next to it. Where they agree
+ * the scenario says so by giving no `real` rows.
  *
- * Needs a working tree whose own client can follow a stream, fill the history, settle and send the
- * CSRF header (see realChatCapability in atlas_browser_support.mjs); without that the comparison
- * is skipped with the reason printed, and the double's own behaviour is still checked.
+ * The working tree's client is tested on its own, against a fake backend that follows the API contract, in
+ * chat_client_*.test.mjs. The fake `healthy()` server below only has what the old scenarios need: no
+ * /providers and a status that says nothing, so the working tree's client treats every status as unreadable.
  *
- * Not covered here (no document in Node): painting into #phase, #history and #draft, and the
- * stream follow. atlas_browser_double.test.mjs covers those in Chrome.
+ * Needs a working tree whose own client can follow a stream, fill the history, settle and send the CSRF
+ * header (see realChatCapability in atlas_browser_support.mjs); without that the comparison is skipped with
+ * the reason printed, and the double's own behaviour is still checked.
+ *
+ * Not covered here (no document in Node): painting into #phase, #history and #draft, and the stream
+ * follow. atlas_browser_double.test.mjs covers those in Chrome.
  *
  * Run: node --test tests/e2e/atlas_chat_double.test.mjs
  */
@@ -204,15 +210,202 @@ const SCENARIOS = {
   },
 };
 
-describe("the chat double behaves like the working tree's chat client (controller level)", () => {
+/**
+ * What each client shows after each step: [step, phase, message box, Send disabled, provider fixed].
+ * `real` absent: the working tree's client does exactly what the double does.
+ * @type {Record<string, {why: string, double: Array<Array<unknown>>, real?: Array<Array<unknown>>}>}
+ */
+const EXPECTED = {
+  "a question is accepted": {
+    why: "the pending question survives a reload (the old client forgot it: ready, nothing to check), so it is checked again, never sent again",
+    double: [
+      ["boot", "ready", "", false, false],
+      ["focus", "ready", "", false, false],
+      ["send What is the pot?", "running", "", true, true],
+      ["focus", "running", "", true, true],
+      ["send a second one while running", "running", "", true, true],
+      ["reload", "ready", "", false, true],
+    ],
+    real: [
+      ["boot", "ready", "", false, false],
+      ["focus", "ready", "", false, false],
+      ["send What is the pot?", "running", "", true, true],
+      ["focus", "running", "", true, true],
+      ["send a second one while running", "running", "", true, true],
+      ["reload", "reconciling", "", true, true],
+    ],
+  },
+  "a rate-limited question is refused, kept, and retried with the same request id": {
+    why: "a refusal sent nothing, so a refused retry stays a refusal and a reload keeps the text and the refusal; the old client sent the retry without asking again and lost the refusal on a reload",
+    double: [
+      ["boot", "ready", "", false, false],
+      ["send first try", "rejected", "first try", false, true],
+      ["focus", "rejected", "first try", false, true],
+      ["send first try", "running", "", true, true],
+      ["reload", "ready", "", false, true],
+      ["send first try", "running", "", true, true],
+    ],
+    real: [
+      ["boot", "ready", "", false, false],
+      ["send first try", "rejected", "first try", false, true],
+      ["focus", "rejected", "first try", false, true],
+      ["send first try", "rejected", "first try", false, true],
+      ["reload", "rejected", "first try", false, true],
+      ["send first try", "running", "", true, true],
+    ],
+  },
+  "a 409 other than submission_unconfirmed and a 503 are refusals": {
+    why: "same view",
+    double: [
+      ["boot", "ready", "", false, false],
+      ["send busy?", "rejected", "busy?", false, true],
+      ["reload", "rejected", "busy?", false, true],
+    ],
+  },
+  "a 503 is a refusal": {
+    why: "same view",
+    double: [
+      ["boot", "ready", "", false, false],
+      ["send busy?", "rejected", "busy?", false, true],
+      ["reload", "rejected", "busy?", false, true],
+    ],
+  },
+  "409 submission_unconfirmed means the answer was lost: reconcile": {
+    why: "the pending question is not turned into a draft (it would invite a second send): it is listed as asked, its request is checked",
+    double: [
+      ["boot", "ready", "", false, false],
+      ["send did it go?", "reconciling", "did it go?", true, true],
+      ["focus", "reconciling", "did it go?", true, true],
+      ["reload", "reconciling", "did it go?", true, true],
+      ["reload", "reconciling", "did it go?", true, true],
+    ],
+    real: [
+      ["boot", "ready", "", false, false],
+      ["send did it go?", "reconciling", "", true, true],
+      ["focus", "reconciling", "", true, true],
+      ["reload", "reconciling", "", true, true],
+      ["reload", "reconciling", "", true, true],
+    ],
+  },
+  "a lost answer (network error) is reconciled, also after a reload": {
+    why: "the pending question is not turned into a draft",
+    double: [
+      ["boot", "ready", "", false, false],
+      ["send did it go?", "reconciling", "did it go?", true, true],
+      ["focus", "reconciling", "did it go?", true, true],
+      ["reload", "reconciling", "did it go?", true, true],
+    ],
+    real: [
+      ["boot", "ready", "", false, false],
+      ["send did it go?", "reconciling", "", true, true],
+      ["focus", "reconciling", "", true, true],
+      ["reload", "reconciling", "", true, true],
+    ],
+  },
+  "a 200 without the acceptance header counts as lost": {
+    why: "the pending question is not turned into a draft",
+    double: [
+      ["boot", "ready", "", false, false],
+      ["send no header", "reconciling", "no header", true, true],
+      ["reload", "reconciling", "no header", true, true],
+    ],
+    real: [
+      ["boot", "ready", "", false, false],
+      ["send no header", "reconciling", "", true, true],
+      ["reload", "reconciling", "", true, true],
+    ],
+  },
+  "any other status makes the chat unavailable for good": {
+    why: "a 500 may have reached the service, so it is an unknown outcome that is checked, not a dead end; the old client switched Send off for good",
+    double: [
+      ["boot", "ready", "", false, false],
+      ["send boom", "unavailable", "boom", true, true],
+      ["focus", "unavailable", "boom", true, true],
+      ["send again", "unavailable", "boom", true, true],
+      ["reload", "reconciling", "boom", true, true],
+    ],
+    real: [
+      ["boot", "ready", "", false, false],
+      ["send boom", "reconciling", "", true, true],
+      ["focus", "reconciling", "", true, true],
+      ["send again", "reconciling", "", true, true],
+      ["reload", "reconciling", "", true, true],
+    ],
+  },
+  "a conversation that cannot be opened makes the chat unavailable": {
+    why: "nothing was sent, so the text goes back in the box and Send stays usable; the old client switched Send off for good",
+    double: [
+      ["boot", "ready", "", false, false],
+      ["send hello", "unavailable", "", true, true],
+      ["send hello again", "unavailable", "", true, true],
+    ],
+    real: [
+      ["boot", "ready", "", false, false],
+      ["send hello", "rejected", "hello", false, false],
+      ["send hello again", "rejected", "hello", false, false],
+    ],
+  },
+  "the session endpoint answers with something that is not JSON": {
+    why: "the old client threw out of boot and send (no phase, no message); the working tree's client says it is unavailable and keeps the text",
+    double: [
+      ["boot", "ready", "", false, false, "SyntaxError"],
+      ["send hello", "ready", "", false, false, "SyntaxError"],
+    ],
+    real: [
+      ["boot", "unavailable", "", false, false],
+      ["send hello", "rejected", "hello", false, false],
+    ],
+  },
+  "a saved rejected phase and draft come back": {
+    why: "same view",
+    double: [
+      ["boot", "rejected", "kept text", false, true],
+      ["send kept text", "running", "", true, true],
+    ],
+  },
+  "a saved pending request id comes back as reconciling": {
+    why: "same view",
+    double: [
+      ["boot", "reconciling", "", true, true],
+      ["focus", "reconciling", "", true, true],
+      ["reload", "reconciling", "", true, true],
+    ],
+  },
+  "a saved running phase without a pending id comes back as ready": {
+    why: "same view",
+    double: [
+      ["boot", "ready", "", false, true],
+      ["send go on", "running", "", true, true],
+    ],
+  },
+};
+
+const viewOf = (trace) => trace.map((step) => [step.label, step.view.phase, step.view.draft, step.view.sendDisabled, step.view.providerFixed, ...(step.failure ? [step.failure] : [])]);
+
+describe("the chat double (the old client) and the working tree's client, controller level", () => {
   for (const [name, scenario] of Object.entries(SCENARIOS)) {
+    const expected = EXPECTED[name];
     it(name, { skip: REAL_SKIP }, async () => {
+      assert.ok(expected, `the scenario "${name}" has an expectation`);
       const real = await run(realModule.createController, scenario);
       const double = await run(createDouble, scenario);
-      assert.deepEqual(double.trace, real.trace, "the view and the saved state after every step");
-      assert.deepEqual(double.calls, real.calls, "every request, in order");
+      assert.deepEqual(viewOf(double.trace), expected.double, "the double does what the old client did");
+      assert.deepEqual(viewOf(real.trace), expected.real || expected.double, `the working tree's client (${expected.why})`);
     });
   }
+
+  it("every scenario has an expectation and every expectation a scenario", () => {
+    assert.deepEqual(Object.keys(EXPECTED).sort(), Object.keys(SCENARIOS).sort());
+  });
+
+  it("the working tree's client never sends a question twice on its own: one POST per scenario step that sends", { skip: REAL_SKIP }, async () => {
+    for (const [name, scenario] of Object.entries(SCENARIOS)) {
+      const real = await run(realModule.createController, scenario);
+      const posts = real.calls.filter((call) => call.method === "POST" && call.path.endsWith("/messages"));
+      const sends = scenario.steps.filter(([label]) => label.startsWith("send")).length;
+      assert.ok(posts.length <= sends, `${name}: ${posts.length} POSTs for ${sends} sends`);
+    }
+  });
 
   it("sends the CSRF token on every POST after the session, and on no GET", async () => {
     const net = recordedFetch(healthy());
@@ -232,6 +425,13 @@ describe("the chat double behaves like the working tree's chat client (controlle
   it("exposes the methods the tests import", () => {
     const controller = createDouble({ fetchImpl: async () => reply(200, {}), storage: memoryStorage() });
     for (const name of ["boot", "send", "reload", "focus", "stream", "showHistory", "follow"]) {
+      assert.equal(typeof controller[name], "function", name);
+    }
+  });
+
+  it("the working tree's controller keeps those methods and adds the ones the outcome contract needs", { skip: REAL_SKIP }, () => {
+    const controller = realModule.createController({ fetchImpl: async () => reply(200, {}), storage: memoryStorage() });
+    for (const name of ["boot", "send", "reload", "focus", "stream", "showHistory", "follow", "editDraft", "cancel", "checkStatus", "newConversation", "retryHistory", "selectProvider"]) {
       assert.equal(typeof controller[name], "function", name);
     }
   });

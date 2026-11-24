@@ -10,9 +10,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import * as graph from "../../site/js/atlas-graph.js";
-import { createAtlasList } from "../../site/js/atlas-list.js";
+import { LIST_EMPTY, LIST_FILTERS, createAtlasList, matchesFilter, regionCountsText } from "../../site/js/atlas-list.js";
 import {
   OPEN_STATUS_WORD,
+  START_NOTE,
   STATUS_WORDS,
   createInspector,
   createSuggestions,
@@ -639,5 +640,475 @@ describe("chips for the open list say so, and the label is never part of the que
     assert.equal(chip.getAttribute("aria-disabled"), "true");
     chip.click();
     assert.deepEqual(picked, []);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// the inspector keeps what was looked at (F06)
+// ---------------------------------------------------------------------------------------------
+
+describe("inspector: the card is the place being read, not a tooltip (F06)", () => {
+  const edgeOf = (a, b) => index.byKey.get([a, b].sort().join("|"));
+
+  function inspectorWith(visited, options = {}) {
+    const doc = makeDoc();
+    const mount = mountIn(doc);
+    const log = { asked: [], paths: [], shown: [] };
+    const inspector = createInspector({
+      document: doc,
+      graph,
+      index,
+      mount,
+      onAsk: (id) => log.asked.push(id),
+      onPath: (key) => log.paths.push(key),
+      onShow: (id) => log.shown.push(id),
+      ...options,
+    });
+    const view = deriveView({ visited, replies: 2 }, index);
+    return { doc, mount, inspector, view, log };
+  }
+  const buttons = (mount, className) => mount.all(className);
+
+  it("keeps the place it shows when the page refreshes it (a reply, a pause, a scroll): only showIsland(null) puts the hint back", () => {
+    const { inspector, mount, view } = inspectorWith([graph.START_ID, NEXT_TO_START]);
+    inspector.showIsland(graph.START_ID, view);
+    assert.equal(mount.all("atlas-inspector-name")[0].textContent, index.byId.get(graph.START_ID).name);
+    inspector.refresh(view, { paused: true });
+    inspector.refresh(deriveView({ visited: [graph.START_ID, NEXT_TO_START, NOT_NEXT], replies: 3 }, index), { paused: false });
+    assert.equal(mount.all("atlas-inspector-name")[0].textContent, index.byId.get(graph.START_ID).name, "still the same place");
+    assert.equal(mount.all("is-hint").length, 0);
+    assert.deepEqual(inspector.current(), { island: graph.START_ID, edge: null });
+    inspector.showIsland(null, view);
+    assert.equal(mount.all("is-hint").length, 1, "told to let go, it shows the hint");
+    assert.deepEqual(inspector.current(), { island: null, edge: null });
+  });
+
+  it("the hint says that the card stays", () => {
+    const { mount } = inspectorWith([graph.START_ID]);
+    assert.match(mount.all("atlas-inspector-hint")[0].textContent, /stays here until you pick another/);
+  });
+
+  it("the start place says it is only a starting marker, and no other place does", () => {
+    const { inspector, mount, view } = inspectorWith([graph.START_ID]);
+    inspector.showIsland(graph.START_ID, view);
+    assert.equal(mount.all("atlas-inspector-start")[0].textContent, START_NOTE);
+    assert.match(START_NOTE, /starting point/i);
+    assert.match(START_NOTE, /whether or not an answer has mentioned it/);
+    assert.doesNotMatch(START_NOTE, /learned|understood|verified|mastered|ratified/i, "never as something known");
+    inspector.showIsland(NEXT_TO_START, view);
+    assert.equal(mount.all("atlas-inspector-start").length, 0);
+  });
+
+  it("offers to ask about a visited place again and to ask a place that is next to explore, and about no other", () => {
+    const { inspector, mount, view, log } = inspectorWith([graph.START_ID]);
+    const start = index.byId.get(graph.START_ID);
+    inspector.showIsland(graph.START_ID, view);
+    const again = buttons(mount, "atlas-inspector-ask")[0];
+    assert.equal(again.textContent, "Ask about this again");
+    assert.equal(again.getAttribute("aria-label"), `Ask about this again: ${start.teaser}`);
+    assert.equal(again.type, "button");
+    again.click();
+    assert.deepEqual(log.asked, [graph.START_ID]);
+
+    inspector.showIsland(NEXT_TO_START, view);
+    const ask = buttons(mount, "atlas-inspector-ask")[0];
+    assert.equal(ask.textContent, "Ask this question");
+    ask.click();
+    assert.deepEqual(log.asked, [graph.START_ID, NEXT_TO_START]);
+
+    inspector.showIsland(NOT_NEXT, view);
+    assert.equal(mount.all("is-hint").length, 1, "a place in the fog is not described at all");
+    assert.equal(buttons(mount, "atlas-inspector-ask").length, 0);
+  });
+
+  it("draws no Ask button when no handler is given (the card is then only a reading)", () => {
+    const { inspector, mount, view } = inspectorWith([graph.START_ID], { onAsk: undefined });
+    inspector.showIsland(graph.START_ID, view);
+    assert.equal(buttons(mount, "atlas-inspector-ask").length, 0);
+    assert.match(mount.all("atlas-inspector-teaser")[0].textContent, /^Ask: /, "the question itself is still shown");
+  });
+
+  it("locks the Ask button while a question runs with aria-disabled, in place, so focus survives", () => {
+    const { doc, inspector, mount, view, log } = inspectorWith([graph.START_ID]);
+    inspector.showIsland(graph.START_ID, view);
+    const button = buttons(mount, "atlas-inspector-ask")[0];
+    button.focus();
+    inspector.refresh(view, { paused: true });
+    assert.equal(buttons(mount, "atlas-inspector-ask")[0], button, "the same element");
+    assert.equal(doc.activeElement, button, "still focused");
+    assert.equal(button.getAttribute("aria-disabled"), "true");
+    assert.equal(button.getAttribute("aria-describedby"), "atlas-notice");
+    assert.equal(button.hasAttribute("disabled"), false, "never the disabled attribute: it would drop focus");
+    button.click();
+    assert.deepEqual(log.asked, [], "a paused button asks nothing");
+    inspector.refresh(view, { paused: false });
+    assert.equal(button.getAttribute("aria-disabled"), null);
+    assert.equal(button.getAttribute("aria-describedby"), null);
+    button.click();
+    assert.deepEqual(log.asked, [graph.START_ID]);
+    // A card shown while paused is locked from the start.
+    inspector.refresh(view, { paused: true });
+    inspector.showIsland(NEXT_TO_START, view);
+    assert.equal(buttons(mount, "atlas-inspector-ask")[0].getAttribute("aria-disabled"), "true");
+  });
+
+  it("hands the focus on when the card it holds is rebuilt (the place asked about has just been visited)", () => {
+    const { doc, inspector, mount } = inspectorWith([graph.START_ID]);
+    const before = deriveView({ visited: [graph.START_ID], replies: 1 }, index);
+    inspector.showIsland(NEXT_TO_START, before);
+    const ask = buttons(mount, "atlas-inspector-ask")[0];
+    ask.focus();
+    assert.equal(doc.activeElement, ask);
+    inspector.refresh(deriveView({ visited: [graph.START_ID, NEXT_TO_START], replies: 2 }, index));
+    const now = buttons(mount, "atlas-inspector-ask")[0];
+    assert.notEqual(now, ask, "the card was rebuilt");
+    assert.equal(now.textContent, "Ask about this again", "as a visited place");
+    assert.equal(doc.activeElement, now, "and focus is on the new Ask button, not dropped to the page");
+  });
+
+  it("makes every lit path of a visited place a button that names the path, and tells the owner which was chosen", () => {
+    const { inspector, mount, log } = inspectorWith([graph.START_ID, NEXT_TO_START]);
+    const view = deriveView({ visited: [graph.START_ID, NEXT_TO_START], replies: 2 }, index);
+    inspector.showIsland(graph.START_ID, view);
+    const edge = edgeOf(graph.START_ID, NEXT_TO_START);
+    const found = buttons(mount, "atlas-inspector-path-button");
+    assert.ok(found.length >= 1);
+    const wanted = `→ ${index.byId.get(NEXT_TO_START).name}: ${edge.label}`;
+    const mine = found.find((node) => node.textContent === wanted);
+    assert.ok(mine, `a button reads "${wanted}"`);
+    assert.equal(mine.type, "button");
+    mine.click();
+    assert.deepEqual(log.paths, [[graph.START_ID, NEXT_TO_START].sort().join("|")]);
+  });
+
+  it("keeps the paths as plain lines when nobody listens", () => {
+    const { inspector, mount } = inspectorWith([graph.START_ID, NEXT_TO_START], { onPath: undefined });
+    const view = deriveView({ visited: [graph.START_ID, NEXT_TO_START], replies: 2 }, index);
+    inspector.showIsland(graph.START_ID, view);
+    assert.equal(buttons(mount, "atlas-inspector-path-button").length, 0);
+    assert.match(mount.all("atlas-inspector-path")[0].textContent, /^→ /);
+  });
+
+  it("describes a lit path with both of its places as buttons, and not a path that is not lit", () => {
+    const { inspector, mount, view, log } = inspectorWith([graph.START_ID, NEXT_TO_START]);
+    const edge = edgeOf(graph.START_ID, NEXT_TO_START);
+    const key = [graph.START_ID, NEXT_TO_START].sort().join("|");
+    inspector.showEdge(key, view);
+    assert.equal(mount.all("atlas-inspector-name")[0].textContent, `${index.byId.get(edge.a).name} ↔ ${index.byId.get(edge.b).name}`);
+    assert.equal(mount.all("atlas-inspector-label-path")[0].textContent, edge.label);
+    const ends = buttons(mount, "atlas-inspector-end");
+    assert.deepEqual(ends.map((node) => node.textContent), [`Show ${index.byId.get(edge.a).name}`, `Show ${index.byId.get(edge.b).name}`]);
+    ends[1].click();
+    assert.deepEqual(log.shown, [edge.b]);
+    assert.deepEqual(inspector.current(), { island: null, edge: key });
+    // Letting go of the path falls back to the place that was showing before it.
+    inspector.showIsland(graph.START_ID, view);
+    inspector.showEdge(key, view);
+    inspector.showEdge(null, view);
+    assert.equal(mount.all("atlas-inspector-name")[0].textContent, index.byId.get(graph.START_ID).name);
+    // A path with an unvisited end is not lit and is not described.
+    const dim = deriveView({ visited: [graph.START_ID], replies: 1 }, index);
+    inspector.showEdge(key, dim);
+    assert.equal(mount.all("is-hint").length === 1 || mount.all("atlas-inspector-label-path").length === 0, true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// the list is steered, not read top to bottom (F05)
+// ---------------------------------------------------------------------------------------------
+
+describe("list view: regions, filters and a jump (F05)", () => {
+  function steered(visited, options = {}) {
+    const doc = makeDoc();
+    const asked = [];
+    const said = [];
+    const list = createAtlasList({
+      document: doc,
+      graph,
+      index,
+      onActivate: (id) => asked.push(id),
+      onAnnounce: (text) => said.push(text),
+      ...options,
+    });
+    doc.root.appendChild(list.element);
+    const view = deriveView({ visited, replies: visited.length > 1 ? 2 : 0 }, index);
+    return { doc, list, view, asked, said };
+  }
+  const rowOf = (list, id) => {
+    const island = index.byId.get(id);
+    return list.element.find((node) => node.classList.contains("atlas-list-item") && node.all("atlas-list-name")[0].textContent === island.name)[0];
+  };
+  const shownRows = (list) => list.element.find((node) => node.classList.contains("atlas-list-item") && !node.hidden && list.isShown(nameToId(node.all("atlas-list-name")[0].textContent)));
+  const nameToId = (name) => graph.ISLANDS.find((island) => island.name === name).id;
+  const toggleOf = (list, regionId) => list.element.find((node) => node.tag === "button" && node.getAttribute("aria-controls") === `atlas-list-items-${regionId}`)[0];
+  const regionIds = graph.REGIONS.map((region) => region.id);
+  const regionOf = (id) => index.byId.get(id).region;
+  const ordinaryFrontier = (view) => view.frontier.filter((id) => index.byId.get(id).status !== "open");
+
+  it("matchesFilter: all lets everything through, visited only visited, next to explore only an ordinary place on the frontier", () => {
+    const ordinaryPlace = { status: undefined };
+    const dragon = { status: "open" };
+    for (const status of ["visited", "frontier", "fogged"]) assert.equal(matchesFilter("all", status, ordinaryPlace), true);
+    assert.deepEqual(["visited", "frontier", "fogged"].map((status) => matchesFilter("visited", status, ordinaryPlace)), [true, false, false]);
+    assert.deepEqual(["visited", "frontier", "fogged"].map((status) => matchesFilter("frontier", status, ordinaryPlace)), [false, true, false]);
+    assert.equal(matchesFilter("frontier", "frontier", dragon), false, "a dragon is never a next step, even on the frontier");
+    assert.equal(matchesFilter("visited", "visited", dragon), true, "a visited dragon is visited like any other place");
+    assert.deepEqual(LIST_FILTERS.map((entry) => entry.id), ["all", "visited", "frontier"]);
+    assert.deepEqual(LIST_FILTERS.map((entry) => entry.label), ["All places", "Visited", "Next to explore"]);
+    assert.match(LIST_EMPTY.frontier, /Here be dragons/);
+    assert.equal(regionCountsText({ visited: 2, total: 5, next: 0 }), "2 of 5 visited");
+    assert.equal(regionCountsText({ visited: 2, total: 5, next: 3 }), "2 of 5 visited · 3 next to explore");
+  });
+
+  it("keeps all 65 rows in the page, one disclosure per region, whatever is open", () => {
+    const { list, view } = steered([graph.START_ID]);
+    list.render(view, { focus: [graph.START_ID] });
+    assert.equal(list.element.all("atlas-list-item").length, graph.ISLANDS.length);
+    assert.equal(list.element.find((node) => node.tag === "h3").length, graph.REGIONS.length);
+    for (const region of graph.REGIONS) {
+      const h3 = list.element.find((node) => node.tag === "h3" && node.id === `atlas-list-region-${region.id}`)[0];
+      assert.equal(h3.textContent, `${region.name} · ${region.level} · ${region.subtitle}`, "the heading holds only its own words");
+      assert.equal(h3.children[0].tag, "button", "and the button that opens the region");
+    }
+  });
+
+  it("opens by itself the regions around the places the visitor was last told about, and closes the rest", () => {
+    const { list, view } = steered([graph.START_ID]);
+    list.render(view, { focus: [graph.START_ID] });
+    const around = new Set([regionOf(graph.START_ID), ...ordinaryFrontier(view).map(regionOf), ...view.frontier.map(regionOf)]);
+    for (const id of regionIds) assert.equal(list.isOpen(id), around.has(id), `${id} is ${around.has(id) ? "open" : "closed"}`);
+    assert.ok(regionIds.some((id) => !list.isOpen(id)), "some region is closed");
+    for (const id of regionIds) {
+      const open = list.isOpen(id);
+      assert.equal(toggleOf(list, id).getAttribute("aria-expanded"), String(open));
+      const items = list.element.find((node) => node.id === `atlas-list-items-${id}`)[0];
+      assert.equal(items.hidden, !open);
+    }
+    // A frontier row of an open region is on show: its Ask button can be used.
+    const next = ordinaryFrontier(view)[0];
+    assert.equal(list.isShown(next), true);
+    assert.equal(rowOf(list, next).all("atlas-list-ask")[0].hidden, false);
+  });
+
+  it("follows the latest reply: new places are marked 'new' and their regions are open", () => {
+    const { list } = steered([graph.START_ID]);
+    const far = graph.ISLANDS.find((island) => island.region === "badlands" && island.status !== "open");
+    const near = graph.START_ID;
+    const view = deriveView({ visited: [near, far.id], replies: 2 }, index);
+    list.render(view, { fresh: [far.id], focus: [far.id] });
+    assert.equal(list.isOpen("badlands"), true);
+    const row = rowOf(list, far.id);
+    assert.equal(row.all("atlas-list-new")[0].hidden, false);
+    assert.equal(row.classList.contains("is-new"), true);
+    assert.equal(rowOf(list, near).all("atlas-list-new")[0].hidden, true);
+    list.render(view, { fresh: [], focus: [far.id] });
+    assert.equal(row.all("atlas-list-new")[0].hidden, true, "the mark goes with the next reply");
+    assert.equal(list.isOpen("badlands"), true, "the region stays while the focus is the same");
+  });
+
+  it("the visitor's own choice beats the automatic rule, and a toggle button opens and closes", () => {
+    const { list, view } = steered([graph.START_ID]);
+    list.render(view, { focus: [graph.START_ID] });
+    const home = regionOf(graph.START_ID);
+    const far = regionIds.find((id) => !list.isOpen(id));
+    toggleOf(list, far).click();
+    assert.equal(list.isOpen(far), true);
+    assert.equal(toggleOf(list, far).getAttribute("aria-expanded"), "true");
+    toggleOf(list, home).click();
+    assert.equal(list.isOpen(home), false);
+    // A new render with the same focus leaves both choices alone; a new focus does not undo them either.
+    list.render(view, { focus: [graph.START_ID] });
+    assert.equal(list.isOpen(far), true);
+    assert.equal(list.isOpen(home), false);
+    list.render(deriveView({ visited: [graph.START_ID, NEXT_TO_START], replies: 2 }, index), { focus: [NEXT_TO_START] });
+    assert.equal(list.isOpen(far), true, "a region the visitor opened stays open");
+    assert.equal(list.isOpen(home), false, "and one they closed stays closed");
+  });
+
+  it("a region the visitor is working in is not closed by a new reply", () => {
+    const { doc, list, view } = steered([graph.START_ID]);
+    list.render(view, { focus: [graph.START_ID] });
+    const next = ordinaryFrontier(view)[0];
+    const row = rowOf(list, next);
+    row.all("atlas-list-ask")[0].focus();
+    const farPlace = graph.ISLANDS.find((island) => island.region === "valley" && island.status !== "open");
+    list.render(deriveView({ visited: [graph.START_ID, farPlace.id], replies: 2 }, index), { fresh: [farPlace.id], focus: [farPlace.id] });
+    assert.equal(list.isOpen(regionOf(next)), true, "the region that holds the focused button stays");
+    assert.ok(list.element.contains(doc.activeElement));
+  });
+
+  it("filters: Visited and Next to explore hide the rest, hide regions with nothing in them, open the rest and count honestly", () => {
+    const { list, view, said } = steered([graph.START_ID, NEXT_TO_START]);
+    const full = deriveView({ visited: [graph.START_ID, NEXT_TO_START], replies: 2 }, index);
+    list.render(full, { focus: [NEXT_TO_START] });
+    const labels = list.element.all("atlas-list-filter").map((node) => node.textContent);
+    assert.deepEqual(labels, [`All places (${graph.ISLANDS.length})`, "Visited (2)", `Next to explore (${ordinaryFrontier(full).length})`]);
+    assert.equal(list.filter(), "all");
+
+    list.setFilter("visited");
+    assert.equal(list.filter(), "visited");
+    assert.deepEqual(new Set(list.element.all("atlas-list-item").filter((node) => !node.hidden).map((node) => node.all("atlas-list-name")[0].textContent)), new Set([graph.START_ID, NEXT_TO_START].map((id) => index.byId.get(id).name)));
+    const sections = list.element.find((node) => node.tag === "section");
+    assert.equal(sections.filter((node) => !node.hidden).length, new Set([regionOf(graph.START_ID), regionOf(NEXT_TO_START)]).size, "only regions with a visited place stay");
+    assert.equal(list.element.all("atlas-list-filter")[1].getAttribute("aria-pressed"), "true");
+    assert.equal(list.element.all("atlas-list-filter")[0].getAttribute("aria-pressed"), "false");
+    assert.match(said.at(-1), /Visited: 2 of 65 places/);
+
+    list.setFilter("frontier");
+    const shown = list.element.all("atlas-list-item").filter((node) => !node.hidden).map((node) => node.all("atlas-list-name")[0].textContent);
+    assert.deepEqual(new Set(shown), new Set(ordinaryFrontier(full).map((id) => index.byId.get(id).name)));
+    for (const name of shown) assert.equal(rowOf(list, nameToId(name)).all("atlas-list-ask")[0].hidden, false, `${name} can be asked`);
+    for (const id of new Set(ordinaryFrontier(full).map(regionOf))) assert.equal(list.isOpen(id), true, `${id} is open under the filter`);
+
+    assert.equal(list.setFilter("nonsense"), false, "an unknown filter is refused");
+    assert.equal(list.filter(), "frontier");
+    list.setFilter("all");
+    assert.equal(list.element.all("atlas-list-item").filter((node) => node.hidden).length, 0, "All shows every row again");
+  });
+
+  it("Next to explore never lists a dragon; with nothing else left it says where the open list is", () => {
+    const { list } = steered([]);
+    const everythingButDragons = deriveView({ visited: ORDINARY, replies: 3 }, index);
+    list.render(everythingButDragons, {});
+    assert.equal(ordinaryFrontier(everythingButDragons).length, 0);
+    assert.ok(everythingButDragons.frontier.length >= 1, "dragons are on the frontier");
+    list.setFilter("frontier");
+    assert.equal(list.element.all("atlas-list-item").filter((node) => !node.hidden).length, 0);
+    const message = list.element.all("atlas-list-empty")[0];
+    assert.equal(message.hidden, false);
+    assert.equal(message.textContent, LIST_EMPTY.frontier);
+    assert.equal(list.element.all("atlas-list-filter")[2].textContent, "Next to explore (0)");
+    list.setFilter("visited");
+    assert.equal(list.element.all("atlas-list-empty")[0].hidden, true, "Visited has rows");
+  });
+
+  it("jumps to a region: it opens, the heading is brought up, the menu is for the visitor to choose again, and it is said", () => {
+    const { list, view, said } = steered([graph.START_ID]);
+    list.render(view, { focus: [graph.START_ID] });
+    const select = list.element.find((node) => node.tag === "select")[0];
+    assert.deepEqual(select.children.map((option) => option.value), ["", ...regionIds], "every region is offered, after a prompt");
+    assert.match(select.children[1].textContent, /^The Coast · L0 · The promise \(1 of 5 visited/);
+    assert.equal(list.element.find((node) => node.tag === "label")[0].getAttribute("for"), select.id);
+    const scrolled = [];
+    const heading = list.element.find((node) => node.id === "atlas-list-region-dragons")[0];
+    heading.scrollIntoView = (options) => scrolled.push(options);
+    assert.equal(list.isOpen("dragons"), false);
+    select.value = "dragons";
+    select.fire("change");
+    assert.equal(list.isOpen("dragons"), true, "the region opened");
+    assert.deepEqual(scrolled, [{ block: "start", behavior: "auto" }], "and its heading was brought to the top");
+    assert.equal(select.value, "", "the menu is ready for the next jump");
+    assert.match(said.at(-1), /^Here be dragons · L7 · Open, not ratified: 0 of 16 visited\.$/);
+    assert.equal(list.jumpToRegion("nowhere"), false);
+  });
+
+  it("the jump menu only offers regions that show something under the current filter, and a jump out of the filter goes back to all places", () => {
+    const { list, view } = steered([graph.START_ID]);
+    list.render(view, { focus: [graph.START_ID] });
+    const select = list.element.find((node) => node.tag === "select")[0];
+    list.setFilter("visited");
+    assert.deepEqual(select.children.map((option) => option.value), ["", regionOf(graph.START_ID)]);
+    assert.equal(list.jumpToRegion("valley"), true, "a region the filter hides can still be asked for");
+    assert.equal(list.filter(), "all", "which shows all places again");
+    assert.equal(list.isOpen("valley"), true);
+  });
+
+  it("Expand all opens every region and becomes Collapse all, and back; every row stays in the page", () => {
+    const { list, view, said } = steered([graph.START_ID]);
+    list.render(view, { focus: [graph.START_ID] });
+    const bulk = list.element.all("atlas-list-bulk")[0];
+    assert.equal(bulk.textContent, "Expand all");
+    bulk.click();
+    for (const id of regionIds) assert.equal(list.isOpen(id), true, id);
+    assert.equal(bulk.textContent, "Collapse all");
+    assert.equal(graph.ISLANDS.filter((island) => list.isShown(island.id)).length, graph.ISLANDS.length, "all 65 places are on show");
+    assert.match(said.at(-1), /expanded/);
+    bulk.click();
+    for (const id of regionIds) assert.equal(list.isOpen(id), false, id);
+    assert.equal(bulk.textContent, "Expand all");
+    assert.equal(list.element.all("atlas-list-item").length, graph.ISLANDS.length, "collapsed rows are hidden, never removed");
+    list.render(view, { focus: [graph.START_ID] });
+    for (const id of regionIds) assert.equal(list.isOpen(id), false, "a new render does not undo the visitor's collapse");
+  });
+
+  it("reveal opens the region, drops a filter that hides the place, and centres the row", () => {
+    const { list, view } = steered([graph.START_ID]);
+    list.render(view, { focus: [graph.START_ID] });
+    const target = graph.ISLANDS.find((island) => island.region === "mountains");
+    const row = rowOf(list, target.id);
+    const scrolled = [];
+    row.scrollIntoView = (options) => scrolled.push(options);
+    list.setFilter("visited");
+    assert.equal(list.reveal(target.id, { behavior: "smooth" }), true);
+    assert.equal(list.filter(), "all", "the filter that hid it is dropped");
+    assert.equal(list.isOpen("mountains"), true);
+    assert.deepEqual(scrolled, [{ block: "center", behavior: "smooth" }]);
+    assert.equal(list.reveal("nowhere"), false);
+    assert.equal(list.box("nowhere"), null);
+  });
+
+  it("offers Ask again on a visited place, Ask on a place next to explore, and neither in the fog; both lock while paused", () => {
+    const { list, asked } = steered([graph.START_ID]);
+    const view = deriveView({ visited: [graph.START_ID], replies: 1 }, index);
+    list.render(view, { focus: [graph.START_ID] });
+    const startRow = rowOf(list, graph.START_ID);
+    const nextRow = rowOf(list, NEXT_TO_START);
+    const fogRow = rowOf(list, NOT_NEXT);
+    const again = startRow.all("atlas-list-again")[0];
+    assert.equal(again.hidden, false);
+    assert.equal(again.textContent, index.byId.get(graph.START_ID).teaser, "the question itself (the label is drawn by the style sheet)");
+    assert.equal(startRow.all("atlas-list-ask")[0].hidden, true, "a visited place has no Ask button, only the quieter one");
+    assert.equal(nextRow.all("atlas-list-again")[0].hidden, true);
+    assert.equal(nextRow.all("atlas-list-ask")[0].hidden, false);
+    for (const className of ["atlas-list-ask", "atlas-list-again"]) assert.equal(fogRow.all(className)[0].hidden, true, `${className} in the fog`);
+    again.click();
+    assert.deepEqual(asked, [graph.START_ID]);
+
+    list.render(view, { paused: true, focus: [graph.START_ID] });
+    assert.equal(again.getAttribute("aria-disabled"), "true");
+    assert.equal(again.getAttribute("aria-describedby"), "atlas-notice");
+    assert.equal(again.hasAttribute("disabled"), false);
+    again.click();
+    assert.deepEqual(asked, [graph.START_ID], "paused: nothing is asked");
+    list.render(view, { paused: false, focus: [graph.START_ID] });
+    assert.equal(again.getAttribute("aria-disabled"), null);
+  });
+
+  it("moves focus to the row, not to the page, when the place a focused Ask again button belongs to goes back into the fog", () => {
+    const { doc, list } = steered([graph.START_ID]);
+    list.render(deriveView({ visited: [graph.START_ID], replies: 1 }, index), { focus: [graph.START_ID] });
+    const row = rowOf(list, graph.START_ID);
+    const again = row.all("atlas-list-again")[0];
+    again.focus();
+    assert.equal(doc.activeElement, again);
+    list.render(deriveView({ visited: [], replies: 0 }, index), { focus: [] });
+    assert.equal(again.hidden, true);
+    assert.equal(doc.activeElement, row);
+  });
+
+  it("hands focus to the filter when the row that holds it leaves a filtered list (the place asked about was visited)", () => {
+    const { doc, list } = steered([graph.START_ID]);
+    list.render(deriveView({ visited: [graph.START_ID], replies: 1 }, index), { focus: [graph.START_ID] });
+    list.setFilter("frontier");
+    const ask = rowOf(list, NEXT_TO_START).all("atlas-list-ask")[0];
+    ask.focus();
+    assert.equal(doc.activeElement, ask);
+    list.render(deriveView({ visited: [graph.START_ID, NEXT_TO_START], replies: 2 }, index), { focus: [NEXT_TO_START] });
+    assert.equal(rowOf(list, NEXT_TO_START).hidden, true, "a visited place is not next to explore");
+    assert.equal(doc.activeElement, list.element.all("atlas-list-filter")[2], "focus is on the filter, not on the page");
+  });
+
+  it("never calls a dragon next to explore in the filters either", () => {
+    const { list } = steered([]);
+    list.render(deriveView({ visited: ORDINARY, replies: 3 }, index), {});
+    for (const filter of ["all", "visited", "frontier"]) {
+      list.setFilter(filter);
+      for (const node of list.element.all("atlas-list-item").filter((row) => !row.hidden && row.classList.contains("is-open"))) {
+        assert.doesNotMatch(node.textContent, FORBIDDEN_FOR_DRAGONS, `${filter}: ${node.all("atlas-list-name")[0].textContent}`);
+      }
+      assert.doesNotMatch(list.element.all("atlas-list-counts").map((node) => node.textContent).join(" | ").replace(/\d+ next to explore/g, ""), FORBIDDEN_FOR_DRAGONS);
+    }
+    const dragonRegionCounts = list.element.all("atlas-list-counts").at(-1).textContent;
+    assert.doesNotMatch(dragonRegionCounts, /next to explore/, "the open list's region does not count next steps");
   });
 });

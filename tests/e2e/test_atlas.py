@@ -1,4 +1,4 @@
-"""Atlas Node tests. Every tests/e2e/atlas_*.test.mjs file runs under `node --test`.
+"""Atlas and chat-client Node tests. Every tests/e2e/atlas_*.test.mjs and chat_*.test.mjs file runs under `node --test`.
 
 The browser files (atlas_browser*.test.mjs) drive headless Chrome against the real site/index.html
 and the real site/js/atlas*.js. The conversation client in their page is chosen by ATLAS_CHAT
@@ -54,13 +54,13 @@ LOCK_PATH = Path(tempfile.gettempdir()) / "atlas-browser-tests.lock"
 
 
 def discover() -> list[Path]:
-    return sorted(E2E.glob("atlas_*.test.mjs"))
+    return sorted([*E2E.glob("atlas_*.test.mjs"), *E2E.glob("chat_*.test.mjs")])
 
 
 ATLAS_TESTS = discover()
-BROWSER_TESTS = [path for path in ATLAS_TESTS if path.name.startswith("atlas_browser")]
+BROWSER_TESTS = [path for path in ATLAS_TESTS if path.name.startswith(("atlas_browser", "chat_client_browser"))]
 # This file serves BOTH clients itself, whatever ATLAS_CHAT says, so a second run with ATLAS_CHAT=real adds nothing.
-BOTH_CLIENTS_ITSELF = {"atlas_browser_double.test.mjs"}
+BOTH_CLIENTS_ITSELF = {"atlas_browser_double.test.mjs", "chat_client_browser.test.mjs"}
 REAL_CLIENT_TESTS = [path for path in BROWSER_TESTS if path.name not in BOTH_CLIENTS_ITSELF]
 
 

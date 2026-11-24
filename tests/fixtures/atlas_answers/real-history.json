@@ -1,0 +1,165 @@
+{
+  "about": "History payloads (GET /conversations/{id}/history) captured from the live application on 10 October 2026, reduced to the fields the client reads: items[].native_item_id, role, text, provisional, and the status object. 'desktop-xai' and 'mobile-xai' are complete turns (one assistant item per user item, ids ending :2, :5, :10 ...). 'user-only-unknown' and 'user-only-running' are histories of requests that never produced an answer. 'errors' are the response bodies of requests that failed.",
+  "histories": {
+    "desktop-xai": {
+      "items": [
+        {
+          "native_item_id": "01a12568-b374-7c21-a168-098757331473:0",
+          "role": "user",
+          "text": "Who actually pays the apps I use?",
+          "provisional": false
+        },
+        {
+          "native_item_id": "01a12568-b374-7c21-a168-098757331473:2",
+          "role": "assistant",
+          "text": "You pay your ISP. The protocol pays the apps, using money your ISP committed.\n\nUnder ESP, your ISP is your financial counterparty for participating services. You pay that ISP under one standing monthly plan. Apps do not bill you separately. They earn through the protocol, from evidenced use at the prices you accepted for that epoch.\n\nThe money path works like this:\n\n- Your ISP prepays one aggregate monthly commitment into a single common protocol fund. That commitment is funding for its whole household roster, not a per-app payment and not the same thing as your allowance.\n- The protocol assigns that ISP a monthly pot. The pot is the hard ceiling on the allowances the ISP may authorize. It can be larger than the commitment. The difference is reserved common-fund credit, not money handed to the ISP and not debt by itself.\n- During the month, each app keeps signed consumption records. At epoch close it submits one claim. The ISP reconciles those claims against each household's closing allowance.\n- The protocol then pays each app once for the epoch, out of the common fund, up to the household escrow inside the ISP's pot.\n\nIf apps are paid more than your ISP funded, the difference becomes your ISP's debt to the common fund. The ISP must repay that debt. Your bill does not rise automatically because an app was expensive, because you received a top-up, or because your ISP owes the fund. Only the agreed plan price, and any separately priced add-on you explicitly accepted, may be charged to you.\n\nIf valid use exceeds your closing allowance, the protocol still pays only up to that funded allowance. The serving apps split that amount in proportion to their valid claims and absorb the rest. That shortfall stays with the apps. It does not come out of the common fund.",
+          "provisional": false
+        },
+        {
+          "native_item_id": "01a12568-b374-7c21-a168-098757331473:3",
+          "role": "user",
+          "text": "Hello, did my question go through?",
+          "provisional": false
+        },
+        {
+          "native_item_id": "01a12568-b374-7c21-a168-098757331473:5",
+          "role": "assistant",
+          "text": "Yes. Your question arrived, and it was answered.\n\nYou asked who pays the apps you use. You pay your ISP under one standing monthly plan. The protocol pays the apps from the common fund, using the money your ISP committed for the epoch.",
+          "provisional": false
+        },
+        {
+          "native_item_id": "01a12568-b374-7c21-a168-098757331473:8",
+          "role": "user",
+          "text": "Can the pot be bigger than what the ISP committed?",
+          "provisional": false
+        },
+        {
+          "native_item_id": "01a12568-b374-7c21-a168-098757331473:10",
+          "role": "assistant",
+          "text": "Yes. The protocol may assign an ISP a monthly pot larger than that ISP’s prepaid commitment.\n\nThe difference is the ISP’s overdraft allocation `L`: common-fund capacity reserved for that ISP. Assigning it is spending authority. It is neither a transfer to the ISP nor a debt draw. Debt appears only if apps are actually paid more than the ISP funded.\n\nThat extra room is an underwritten credit layer, `P - C`. A new ISP gets no unsecured overdraft by default: its initial pot equals its commitments unless additional exposure is protected by adequate collateral. Across all ISPs, assigned pots cannot exceed the common fund’s liquid backing, so every authorized allowance is fully funded before execution.",
+          "provisional": false
+        }
+      ],
+      "status": {
+        "status": "completed",
+        "native_work_ref": "445f395c-472e-5ad7-844a-cd3d4594d32e",
+        "request_id": null,
+        "saved_input_available": false
+      }
+    },
+    "mobile-xai": {
+      "items": [
+        {
+          "native_item_id": "01a12568-18cb-7770-b09a-c51d77691093:0",
+          "role": "user",
+          "text": "Who actually pays the apps I use?",
+          "provisional": false
+        },
+        {
+          "native_item_id": "01a12568-18cb-7770-b09a-c51d77691093:2",
+          "role": "assistant",
+          "text": "The apps are paid by the common protocol fund, which is funded by your ISP.\n\nYou pay your ISP under one standing monthly plan. You do not open a separate bill with each app. Your ISP prepays one aggregate monthly commitment into the common fund and attributes that commitment across its household roster. App payouts leave that fund. Each app sets its own prices, and a claim is paid only for evidenced consumption at prices you accepted for that epoch.\n\nIf those payouts exceed what your ISP put in, the difference becomes your ISP’s debt to the common fund. The fund can still pay the apps by drawing on reserved liquidity, and your ISP must repay that debt. That debt does not automatically raise your current bill. Only the agreed plan price, and any add-on you explicitly accept, may be charged to you.\n\nPayment is also capped by your funded allowance for the epoch. If valid claims exceed that closing allowance, the allowance is split pro rata among those claims and the serving apps absorb the shortfall. The common fund does not pay beyond that funded allowance.",
+          "provisional": false
+        },
+        {
+          "native_item_id": "01a12568-18cb-7770-b09a-c51d77691093:3",
+          "role": "user",
+          "text": "What is the pot an ISP gets each month?",
+          "provisional": false
+        },
+        {
+          "native_item_id": "01a12568-18cb-7770-b09a-c51d77691093:5",
+          "role": "assistant",
+          "text": "The monthly pot is a protocol-held spending envelope assigned to each ISP. It is the hard ceiling on the total household allowances that ISP may authorize for the epoch.\n\nThe pot is spending authority held by the protocol. Granting allowance from it does not transfer money to the ISP and does not by itself create ISP debt. Debt arises only if executed consumption pays apps more than the ISP funded.\n\nThe pot can be larger than the ISP’s prepaid commitment `C`. The difference is the overdraft allocation `L`, common-fund capacity reserved for that ISP. Reserving that capacity is neither a transfer nor a debt draw. `C` is the prepaid funding layer and `P - C` is the underwritten credit layer. The protocol does not assign either layer to particular households. It enforces only the pot’s overall ceiling. The ISP decides how to spread grants across opening allowances and later top-ups, within that ceiling and its retail contracts.\n\nAcross all ISPs, assigned pots cannot exceed the common fund’s liquid backing, so every authorized allowance is fully funded before execution. A new ISP’s initial pot equals its commitments unless extra exposure is protected by adequate collateral.\n\nDebt-service payments do not create new allowance or pot capacity. Unused pot capacity is not ISP revenue and is not new surplus contributed by the ISP. An unused overdraft was never drawn. After execution and the capital-account update, unused capacity is released back into the common fund.",
+          "provisional": false
+        },
+        {
+          "native_item_id": "01a12568-18cb-7770-b09a-c51d77691093:8",
+          "role": "user",
+          "text": "If I run out, can I ask for more? Please explain simply.",
+          "provisional": false
+        },
+        {
+          "native_item_id": "01a12568-18cb-7770-b09a-c51d77691093:10",
+          "role": "assistant",
+          "text": "Yes. You can ask your ISP for a top-up at any time.\n\nThe request does not name an amount. Your ISP decides whether to grant more, and how much, within your plan and the pot it has for all its households that month.\n\nA top-up does not raise your bill by itself. Only your agreed plan price, and any add-on you explicitly accept, can be charged to you.\n\nIf the month is busy and your plan’s fair-use rules say no, the ISP can refuse. That refusal is valid when it follows the plan you subscribed to and the ISP’s management of its pot. The signed refusal is evidence if the ISP instead breaks the promise it sold you.\n\nAsking does not itself authorize more spending. Only a signed grant raises your allowance. Spending before that grant is still spend-ahead, even if a later grant makes the month’s numbers fit. Asking for more while you still have plenty left can also count as hoarding under your contract.",
+          "provisional": false
+        },
+        {
+          "native_item_id": "01a12568-18cb-7770-b09a-c51d77691093:13",
+          "role": "user",
+          "text": "What parts of this design are still unsolved? Explain the biggest issue in simple language.",
+          "provisional": false
+        }
+      ],
+      "status": {
+        "status": "unknown",
+        "native_work_ref": "91adadba-e30a-563b-9a81-81528b90e4d9",
+        "request_id": null,
+        "saved_input_available": false
+      }
+    },
+    "user-only-running": {
+      "items": [
+        {
+          "native_item_id": "01a12567-7727-7570-a219-d2c6a7f4e138",
+          "role": "user",
+          "text": "Who actually pays the apps I use?",
+          "provisional": false
+        },
+        {
+          "native_item_id": "01a12569-1f57-7300-b8cb-5139f9701fe4",
+          "role": "user",
+          "text": "What is ESP, in one simple sentence?",
+          "provisional": false
+        }
+      ],
+      "status": {
+        "status": "running",
+        "native_work_ref": "01a12569-1f3e-7620-9e3a-5dd2d16e5f60",
+        "request_id": null,
+        "saved_input_available": true
+      }
+    },
+    "user-only-unknown": {
+      "items": [
+        {
+          "native_item_id": "01a12587-dc9c-7263-9a65-5a3a9c35c0a4:0",
+          "role": "user",
+          "text": "Who actually pays the apps I use? Please keep your answers in this conversation to two or three sentences.",
+          "provisional": false
+        }
+      ],
+      "status": {
+        "status": "unknown",
+        "native_work_ref": "1f6fef55-6cfb-575b-8e16-d9424a3bff10",
+        "request_id": null,
+        "saved_input_available": false
+      }
+    }
+  },
+  "errors": {
+    "message-409": {
+      "http": 409,
+      "body": {
+        "error": {
+          "code": "submission_unconfirmed",
+          "message": "Your message may have been received. Check its status before sending it again.",
+          "retryable": false
+        },
+        "submitted": null,
+        "resubmission_allowed": false
+      }
+    },
+    "status-unconfirmed": {
+      "http": 200,
+      "body": {
+        "outcome": "submission_unconfirmed",
+        "active_agent_run_id": null,
+        "native_work_ref": null,
+        "resubmission_allowed": false,
+        "runtime_state": "warm_idle"
+      }
+    }
+  }
+}

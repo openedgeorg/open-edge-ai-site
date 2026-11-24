@@ -1,0 +1,2057 @@
+{
+  "about": "One entry per concept of the shipped graph. 'positive' are answer fragments in the style of the captured answers (written from the brain's section content, not from the islands' own teasers) that must light the concept; 'negative' are fragments that look close but must not. 'lights' is the full, reviewed set of places the fragment lights today, in graph order, so a term that starts lighting more is caught too.",
+  "concepts": {
+    "isp-counterparty": {
+      "positive": [
+        {
+          "text": "You pay your ISP, not each app. Apps do not bill you separately; they are paid through the protocol instead.",
+          "lights": [
+            "isp-counterparty"
+          ]
+        },
+        {
+          "text": "Under ESP your ISP is your counterparty for the participating services. The apps earn through the protocol, so none of them has to open a billing relationship with your household.",
+          "lights": [
+            "isp-counterparty"
+          ]
+        },
+        {
+          "text": "**The short version:** the household pays its ISP under one plan, and the protocol takes care of paying the apps.",
+          "lights": [
+            "isp-counterparty"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The protocol pays the apps out of the fund. The ISP and the box both sign the allowance message, so each is a party to it.",
+          "lights": [
+            "hsatm"
+          ]
+        },
+        {
+          "text": "Each app keeps its own records of what you consumed, and nothing is billed to you by the app.",
+          "lights": []
+        }
+      ]
+    },
+    "app-set-prices": {
+      "positive": [
+        {
+          "text": "Each app sets its own prices. A claim is paid for evidenced consumption at the prices you accepted for that epoch, so it is not a slice of a shared pool.",
+          "lights": [
+            "app-set-prices"
+          ]
+        },
+        {
+          "text": "No. ESP deliberately does not copy the Spotify model, where one subscription pot is split between providers by share.",
+          "lights": [
+            "app-set-prices"
+          ]
+        },
+        {
+          "text": "Apps choose their own tariffs; revenue follows evidenced use at those tariffs rather than a share of a fixed pot.",
+          "lights": [
+            "app-set-prices"
+          ]
+        },
+        {
+          "text": "No. Each app sets its own tariff, and evidenced consumption at the prices the household accepted determines that app's claim.",
+          "lights": [
+            "app-set-prices"
+          ]
+        },
+        {
+          "text": "Each app publishes one signed price catalogue for the epoch, naming its billable services, units, and rates. At first use, the household’s box signs acceptance once, and every charge from that app during the epoch uses those agreed prices.",
+          "lights": [
+            "app-set-prices",
+            "price-catalogue"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The ISP sets its own retail prices for its plans, and the protocol never reads them.",
+          "lights": []
+        },
+        {
+          "text": "Prices are fixed for the epoch, and a price rise only takes effect in the next one.",
+          "lights": []
+        },
+        {
+          "text": "The shop sets its own opening hours.",
+          "lights": []
+        }
+      ]
+    },
+    "internet-bill": {
+      "positive": [
+        {
+          "text": "Your internet bill stays predictable: only the agreed plan price, and any add-on you explicitly accept, can be charged to you.",
+          "lights": [
+            "internet-bill"
+          ]
+        },
+        {
+          "text": "No app can raise your monthly bill by itself. The ISP bill changes only if you and your ISP agree on a new plan.",
+          "lights": [
+            "internet-bill"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The debt grows. The bill is large. The plan is old.",
+          "lights": []
+        },
+        {
+          "text": "Billing for electricity works differently, and so does the water plan.",
+          "lights": []
+        }
+      ]
+    },
+    "standing-plan": {
+      "positive": [
+        {
+          "text": "You pay that ISP under one standing monthly plan, and the apps do not charge you separately.",
+          "lights": [
+            "standing-plan"
+          ]
+        },
+        {
+          "text": "Think of it as a fixed monthly plan: you buy predictable access instead of a string of separate purchases.",
+          "lights": [
+            "standing-plan"
+          ]
+        },
+        {
+          "text": "It is flat-rate for you: light months and heavy months cost the same, and no single online act becomes its own household bill.",
+          "lights": [
+            "standing-plan"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "Only the agreed plan price may be charged to you.",
+          "lights": [
+            "internet-bill"
+          ]
+        },
+        {
+          "text": "A plan B and a plan C were drawn up, and the standing committee approved neither.",
+          "lights": []
+        }
+      ]
+    },
+    "monthly-epochs": {
+      "positive": [
+        {
+          "text": "ESP runs in monthly epochs. Commitments and pots are set before serving, consumption builds up during the month, and settlement executes once at the end.",
+          "lights": [
+            "monthly-epochs"
+          ]
+        },
+        {
+          "text": "Everything in ESP is organised by a unit called an epoch, which is one month long.",
+          "lights": [
+            "monthly-epochs"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The epoch ID is fresh each time.",
+          "lights": [
+            "heid"
+          ]
+        },
+        {
+          "text": "Every month I get a statement, and in the epoch of steam engines it was quarterly.",
+          "lights": []
+        }
+      ]
+    },
+    "funding-pressure": {
+      "positive": [
+        {
+          "text": "If households keep using apps at higher accepted prices, payouts can exceed what the ISP contributed. That creates debt, and persistent debt puts pressure on the ISP to raise its future plan prices.",
+          "lights": [
+            "funding-pressure"
+          ]
+        },
+        {
+          "text": "Rising service costs flow back to the ISP as funding pressure, but they do not bypass the retail contract.",
+          "lights": [
+            "funding-pressure",
+            "retail-contract"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "There was pressure to finish the plan on time, and the price of coffee rose.",
+          "lights": []
+        },
+        {
+          "text": "Higher prices may exhaust your allowance sooner, but they do not change your bill.",
+          "lights": []
+        }
+      ]
+    },
+    "price-feedback": {
+      "positive": [
+        {
+          "text": "Because your bill stays flat, ESP gives you price feedback another way: higher tariffs consume allowance faster, and the box's analytics show which app is using it up.",
+          "lights": [
+            "price-feedback"
+          ]
+        },
+        {
+          "text": "The signal is a worse service experience that households can trace to a costly app, so they may cut back on it.",
+          "lights": [
+            "price-feedback"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The price of the plan is fixed.",
+          "lights": []
+        },
+        {
+          "text": "Feedback on the draft would help, and so would a better user interface.",
+          "lights": []
+        }
+      ]
+    },
+    "fup-faucet": {
+      "positive": [
+        {
+          "text": "You can request a top-up at any time, but the request carries no amount. Your ISP alone decides how much to grant, within your contract and its pot.",
+          "lights": [
+            "fup-faucet",
+            "base-and-topups",
+            "the-pot"
+          ]
+        },
+        {
+          "text": "Fair-use rules are enforced like a faucet: the ISP doses the allowance out in grants, and sizing and pacing them is its own business.",
+          "lights": [
+            "fup-faucet"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The FUP applies to every household.",
+          "lights": []
+        },
+        {
+          "text": "Fair use of a quotation is allowed in some countries, and the kitchen tap drips.",
+          "lights": []
+        },
+        {
+          "text": "End-state fair-use policy (FUP) audits are arbitrated by the protocol.",
+          "lights": []
+        }
+      ]
+    },
+    "base-and-topups": {
+      "positive": [
+        {
+          "text": "Your allowance starts with a base set by your ISP contract and can grow through top-ups, but it stays one amount you can spend across every participating app.",
+          "lights": [
+            "base-and-topups"
+          ]
+        },
+        {
+          "text": "The base is guaranteed, while additional grants are conditional.",
+          "lights": [
+            "base-and-topups"
+          ]
+        },
+        {
+          "text": "Think of one fungible monthly allowance that any participating app can draw on.",
+          "lights": [
+            "base-and-topups"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "Your allowance is the amount you may spend this month.",
+          "lights": []
+        },
+        {
+          "text": "The base of the argument was a base camp, and the allowance of the team was small.",
+          "lights": []
+        }
+      ]
+    },
+    "retail-contract": {
+      "positive": [
+        {
+          "text": "How big your allowance is depends on your contract: the ISP's subscriber contract fixes the base, the top-up entitlements, rate limits and the contractual maximum.",
+          "lights": [
+            "base-and-topups",
+            "retail-contract"
+          ]
+        },
+        {
+          "text": "ESP leaves retail product design to ISPs and their customers; the protocol never reads those terms.",
+          "lights": [
+            "retail-contract"
+          ]
+        },
+        {
+          "text": "That is part of the retail relationship between you and your ISP.",
+          "lights": [
+            "retail-contract"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "A contract was signed in the lobby, and the retailer closed early.",
+          "lights": []
+        },
+        {
+          "text": "The protocol enforces signatures, deadlines and aggregate arithmetic.",
+          "lights": []
+        }
+      ]
+    },
+    "signed-refusal": {
+      "positive": [
+        {
+          "text": "The ISP can refuse a top-up in a hot month if that follows the FUP and the pot. The refusal is signed, so you hold evidence if the ISP breaks the retail promise it sold you.",
+          "lights": [
+            "base-and-topups",
+            "retail-contract",
+            "signed-refusal",
+            "the-pot"
+          ]
+        },
+        {
+          "text": "A legitimate refusal is allowed; an illegitimate one leaves a signed record behind.",
+          "lights": [
+            "signed-refusal"
+          ]
+        },
+        {
+          "text": "The refusal itself becomes your evidence. A grant or a refusal produces a Household Signed Allowance Message (HSATM), signed by both your ISP and your box.",
+          "lights": [
+            "signed-refusal",
+            "hsatm"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "Her refusal to answer was noted in the minutes.",
+          "lights": []
+        },
+        {
+          "text": "The household can ask for more at any time; the request alone does not authorise anything.",
+          "lights": []
+        }
+      ]
+    },
+    "common-fund": {
+      "positive": [
+        {
+          "text": "All the money sits in one common protocol-level fund: ISP commitments and debt repayments go in, app payouts come out.",
+          "lights": [
+            "common-fund",
+            "isp-commitment"
+          ]
+        },
+        {
+          "text": "The apps are paid from the common protocol fund, which every ISP prepays into.",
+          "lights": [
+            "common-fund",
+            "isp-commitment"
+          ]
+        },
+        {
+          "text": "Unused money stays communal, so the fund's liquid backing is what limits the pots.",
+          "lights": [
+            "common-fund",
+            "the-pot"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "A fund raiser was held. Fund the base camp.",
+          "lights": []
+        },
+        {
+          "text": "The protocol pays each app once for the epoch, up to the household escrow.",
+          "lights": [
+            "heea"
+          ]
+        }
+      ]
+    },
+    "isp-commitment": {
+      "positive": [
+        {
+          "text": "Each ISP prepays one aggregate monthly commitment and attributes it across its households.",
+          "lights": [
+            "isp-commitment"
+          ]
+        },
+        {
+          "text": "The pot can be larger than the ISP's prepaid commitment; the difference is reserved capacity.",
+          "lights": [
+            "isp-commitment",
+            "the-pot"
+          ]
+        },
+        {
+          "text": "The ISP's commitment is paid in before the month starts; it funds the whole roster and is not the same thing as your allowance.",
+          "lights": [
+            "isp-commitment"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "She made a commitment to quality, and the plan commitment form was blank.",
+          "lights": []
+        },
+        {
+          "text": "The ISP decides how much to grant a household within its pot.",
+          "lights": [
+            "fup-faucet",
+            "the-pot"
+          ]
+        }
+      ]
+    },
+    "the-pot": {
+      "positive": [
+        {
+          "text": "The monthly pot is a spending envelope held by the protocol, and it is the hard ceiling on all the allowances an ISP can authorise.",
+          "lights": [
+            "the-pot"
+          ]
+        },
+        {
+          "text": "The pot is spending authority, not money handed to the ISP.",
+          "lights": [
+            "the-pot"
+          ]
+        },
+        {
+          "text": "The sum of every household allowance may never exceed the ISP's pot.",
+          "lights": [
+            "the-pot"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "She put a pot of tea on, and he lost the point at a poker table.",
+          "lights": []
+        },
+        {
+          "text": "Every pot needs a lid, and a flowerpot is another thing.",
+          "lights": []
+        }
+      ]
+    },
+    "overdraft": {
+      "positive": [
+        {
+          "text": "The pot may be larger than the commitment. The extra room is the overdraft allocation, common-fund capacity reserved for that ISP.",
+          "lights": [
+            "common-fund",
+            "the-pot",
+            "overdraft"
+          ]
+        },
+        {
+          "text": "The difference is reserved common-fund credit, an underwritten credit layer on top of what was prepaid.",
+          "lights": [
+            "common-fund",
+            "overdraft"
+          ]
+        },
+        {
+          "text": "A new ISP gets no unsecured overdraft by default.",
+          "lights": [
+            "overdraft"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "Your bank credit is limited, and the credit rating agency is closed.",
+          "lights": []
+        },
+        {
+          "text": "The pot can be larger than the commitment only if exposure is protected by collateral.",
+          "lights": [
+            "the-pot"
+          ]
+        }
+      ]
+    },
+    "isp-debt": {
+      "positive": [
+        {
+          "text": "Debt appears only if apps are actually paid more than the ISP funded. The difference becomes the ISP's debt to the common fund, and it must be repaid.",
+          "lights": [
+            "common-fund",
+            "isp-debt"
+          ]
+        },
+        {
+          "text": "Receiving a grant from the pot does not create debt; executed consumption does.",
+          "lights": [
+            "the-pot",
+            "isp-debt"
+          ]
+        },
+        {
+          "text": "That liability to the common fund is what an ISP owes after a heavy month.",
+          "lights": [
+            "common-fund",
+            "isp-debt"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "He owes a debt of gratitude, and the debt grows slowly.",
+          "lights": []
+        },
+        {
+          "text": "A top-up does not raise your bill, even if your ISP owes nothing.",
+          "lights": [
+            "base-and-topups"
+          ]
+        }
+      ]
+    },
+    "debt-update": {
+      "positive": [
+        {
+          "text": "After each month the protocol updates the ISP's debt by a fixed rule: opening debt plus executed consumption, minus commitments, debt service and correction funding.",
+          "lights": [
+            "isp-debt",
+            "debt-update"
+          ]
+        },
+        {
+          "text": "Every capital-account update is public, so the closing debt can be reproduced by anyone.",
+          "lights": [
+            "debt-update"
+          ]
+        },
+        {
+          "text": "Debt-service payments create no new allowance, and extra money only becomes communal surplus after the old debt is repaid.",
+          "lights": [
+            "isp-debt",
+            "debt-update"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The debt grows. A debt of gratitude is not repaid.",
+          "lights": []
+        },
+        {
+          "text": "A service update arrived for the box.",
+          "lights": []
+        }
+      ]
+    },
+    "price-catalogue": {
+      "positive": [
+        {
+          "text": "Each app publishes one signed price catalogue per epoch listing its billable services, units and rates; your box signs acceptance the first time you use it.",
+          "lights": [
+            "app-set-prices",
+            "price-catalogue"
+          ]
+        },
+        {
+          "text": "A price rise takes effect through a new catalogue that is accepted in the next epoch; past consumption is never repriced.",
+          "lights": [
+            "price-catalogue"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "A catalogue of books arrived, and the price tag was missing.",
+          "lights": []
+        },
+        {
+          "text": "Prices stay fixed for the epoch.",
+          "lights": []
+        }
+      ]
+    },
+    "conrec": {
+      "positive": [
+        {
+          "text": "Every billable act produces a signed consumption record: the household signs with its epoch key and the app countersigns with the time.",
+          "lights": [
+            "conrec"
+          ]
+        },
+        {
+          "text": "A ConRec proves the app, the amount, the household pseudonym and when it happened.",
+          "lights": [
+            "conrec"
+          ]
+        },
+        {
+          "text": "During the month each app keeps signed consumption records for the claim it will make.",
+          "lights": [
+            "conrec",
+            "evidence-kept"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "Her consumption of tea was recorded in a ledger, and the record of the meeting was lost.",
+          "lights": []
+        },
+        {
+          "text": "Consumption is compliant while it stays within the allowance.",
+          "lights": []
+        }
+      ]
+    },
+    "optimistic-serving": {
+      "positive": [
+        {
+          "text": "An app may take the risk of serving a request beyond your current allowance, hoping a later grant will make it payable.",
+          "lights": [
+            "optimistic-serving"
+          ]
+        },
+        {
+          "text": "Serving can be optimistic: the app accepts the credit risk itself, and the fund never pays beyond the funded allowance.",
+          "lights": [
+            "optimistic-serving"
+          ]
+        },
+        {
+          "text": "An app may serve against a household-signed Consumption Record that exceeds the allowance then in force. That is the app’s own credit decision. A pending top-up request creates no authorization.",
+          "lights": [
+            "base-and-topups",
+            "conrec",
+            "optimistic-serving"
+          ],
+          "source": "the live answer of 10 October 2026 to this island's own teaser (journey turn 8), which did not light the island before its terms were widened"
+        }
+      ],
+      "negative": [
+        {
+          "text": "She is optimistic about the dinner she is serving tonight.",
+          "lights": []
+        },
+        {
+          "text": "A pending top-up request creates no authorisation.",
+          "lights": [
+            "base-and-topups"
+          ]
+        }
+      ]
+    },
+    "evidence-kept": {
+      "positive": [
+        {
+          "text": "In normal use the detailed records stay off-chain: apps keep the ConRecs they need to prove their claims, and your box keeps an independent local diary.",
+          "lights": [
+            "conrec",
+            "evidence-kept"
+          ]
+        },
+        {
+          "text": "Evidence is retained after payment, for a retention period that is still undecided.",
+          "lights": [
+            "evidence-kept"
+          ]
+        },
+        {
+          "text": "Nothing request-by-request is published during an ordinary month; the fine-grained evidence stays with the app and the box.",
+          "lights": [
+            "evidence-kept"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "I keep a diary of my holidays, and the chain of events is unclear.",
+          "lights": []
+        },
+        {
+          "text": "Detailed records become public only during an evidence round.",
+          "lights": [
+            "evidence-round"
+          ]
+        }
+      ]
+    },
+    "hsatm": {
+      "positive": [
+        {
+          "text": "Every allowance decision is a jointly signed message, the HSATM, carrying the epoch, a sequence number, a timestamp and the new total.",
+          "lights": [
+            "hsatm"
+          ]
+        },
+        {
+          "text": "The household's latest signed allowance message defines your live allowance.",
+          "lights": [
+            "hsatm"
+          ]
+        },
+        {
+          "text": "The highest-sequence HSAT is the authoritative total.",
+          "lights": [
+            "hsatm"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "She signed the card, and the message arrived late.",
+          "lights": []
+        },
+        {
+          "text": "The ISP decides how much to grant.",
+          "lights": [
+            "fup-faucet"
+          ]
+        }
+      ]
+    },
+    "box-hlaa": {
+      "positive": [
+        {
+          "text": "Your box keeps a household-local allowance account and declines to sign consumption beyond the authorised total, so no protocol query is needed for each request.",
+          "lights": [
+            "box-hlaa"
+          ]
+        },
+        {
+          "text": "A normal box enforces the allowance locally: it refuses to sign consumption that would exceed what is left.",
+          "lights": [
+            "box-hlaa"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The household box is an observer: it signs and retains evidence, tracks the allowance, and alerts the household.",
+          "lights": [
+            "who-does-what"
+          ]
+        },
+        {
+          "text": "The ISP does not sign anything it has not seen.",
+          "lights": []
+        }
+      ]
+    },
+    "heid": {
+      "positive": [
+        {
+          "text": "Each month your box generates a brand-new keypair, and the public key becomes your household epoch ID, the HEID.",
+          "lights": [
+            "heid"
+          ]
+        },
+        {
+          "text": "Your household's identifier is fresh every epoch, so one month's ID cannot be linked to the next.",
+          "lights": [
+            "heid"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "Show your ID card at the door, and keep the key safe.",
+          "lights": []
+        },
+        {
+          "text": "The epoch begins at midnight.",
+          "lights": []
+        }
+      ]
+    },
+    "epoch-opening": {
+      "positive": [
+        {
+          "text": "An epoch opens in a fixed order: the box makes its fresh ID, the funding is accepted, the pot is activated, and only then is the household activated and billable service allowed.",
+          "lights": [
+            "the-pot",
+            "epoch-opening"
+          ]
+        },
+        {
+          "text": "A rostered household that never activates keeps a zero allowance, and its apps cannot treat service as ESP-billable.",
+          "lights": [
+            "epoch-opening"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The shop's opening hours are posted on the door.",
+          "lights": []
+        },
+        {
+          "text": "The epoch of the empire ended in a siege.",
+          "lights": []
+        }
+      ]
+    },
+    "hpc": {
+      "positive": [
+        {
+          "text": "Before treating service as billable, an app checks the Household Participation Credential, the HPC, issued by your ISP.",
+          "lights": [
+            "hpc"
+          ]
+        },
+        {
+          "text": "A signed credential proves to apps that you are admitted for the epoch, and it discloses neither your allowance nor your HCD attribution.",
+          "lights": [
+            "hpc",
+            "hcd"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "Please enter your login credential and a password.",
+          "lights": []
+        },
+        {
+          "text": "The household participates in the study.",
+          "lights": []
+        }
+      ]
+    },
+    "identity-layers": {
+      "positive": [
+        {
+          "text": "The identity model has three deliberate layers: the real household is known to its ISP, the plaintext epoch ID to the household, the ISP and apps it used, and only randomised encryptions of that ID go into public records.",
+          "lights": [
+            "heid",
+            "identity-layers",
+            "encrypted-heids"
+          ]
+        },
+        {
+          "text": "Only the ISP can resolve a public claim back to a household; apps and outside observers cannot.",
+          "lights": [
+            "identity-layers"
+          ]
+        },
+        {
+          "text": "Your real identity is known to your ISP. The plaintext epoch ID is known to you, your ISP, and the apps you used that epoch. Ordinary public records carry only freshly randomized encryptions of that ID.",
+          "lights": [
+            "heid",
+            "identity-layers",
+            "encrypted-heids"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "`C` is the prepaid funding layer and `P - C` is the underwritten credit layer; neither layer is assigned to particular households.",
+          "lights": [
+            "isp-commitment",
+            "overdraft"
+          ]
+        },
+        {
+          "text": "Everyone knows who you are in a small town.",
+          "lights": []
+        }
+      ]
+    },
+    "encrypted-heids": {
+      "positive": [
+        {
+          "text": "Each public claim row carries your HEID encrypted under the ISP's public key, and every encryption uses fresh randomness, so two apps cannot tell that they share a customer.",
+          "lights": [
+            "heid",
+            "encrypted-heids"
+          ]
+        },
+        {
+          "text": "Because the ciphertexts are unlinkable, even an app that knows its own customer's epoch ID cannot recognise them in another app's claim.",
+          "lights": [
+            "heid",
+            "encrypted-heids"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The encrypted message was sent over a secure channel.",
+          "lights": []
+        },
+        {
+          "text": "The box generates a new keypair every epoch.",
+          "lights": [
+            "heid"
+          ]
+        }
+      ]
+    },
+    "verification-tag": {
+      "positive": [
+        {
+          "text": "Your box computes a one-way verification tag that only it and the ISP can compute, and uses it to find its own entry in the public list.",
+          "lights": [
+            "verification-tag"
+          ]
+        },
+        {
+          "text": "A rotating tag lets you recognise your own closing allowance without giving apps a lookup table.",
+          "lights": [
+            "verification-tag"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The price tag fell off, and a hashtag trended.",
+          "lights": []
+        },
+        {
+          "text": "The public list is anonymous.",
+          "lights": []
+        },
+        {
+          "text": "That message carries the binding digest.",
+          "lights": []
+        }
+      ]
+    },
+    "ats": {
+      "positive": [
+        {
+          "text": "The Allowance to Spend, or AtS, is the public list of every household's closing allowance for the epoch.",
+          "lights": [
+            "ats"
+          ]
+        },
+        {
+          "text": "After the epoch closes, the ISP posts a closing report that serves as the settlement baseline.",
+          "lights": [
+            "ats"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "Each month your household gets an allowance to spend across apps, and the apps spend against it.",
+          "lights": []
+        },
+        {
+          "text": "The allowance is checked against the latest signed message.",
+          "lights": [
+            "hsatm"
+          ]
+        }
+      ]
+    },
+    "ishec": {
+      "positive": [
+        {
+          "text": "The ISP sends your box a signed total of what it charged you, the IsHEC, and the box compares it with its own diary.",
+          "lights": [
+            "ishec"
+          ]
+        },
+        {
+          "text": "Your box compares the ISP's charged total with its own diary and alerts you to a mismatch.",
+          "lights": [
+            "ishec"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "I keep a diary, and I was charged a fee for the late return.",
+          "lights": []
+        },
+        {
+          "text": "The ISP knows which rows belong to which household.",
+          "lights": [
+            "who-does-what"
+          ]
+        },
+        {
+          "text": "A public charged-total annex that uses household verification tags is a candidate only.",
+          "lights": ["verification-tag", "anti-collusion"]
+        },
+        {
+          "text": "The shop reported a charged total of ten euros.",
+          "lights": []
+        }
+      ]
+    },
+    "epoch-timetable": {
+      "positive": [
+        {
+          "text": "The month's machinery runs in a fixed sequence: commitments, debt service and pots come first, claims and closing allowances close in parallel, reconciliation comes before the challenge window, and execution comes before the debt update.",
+          "lights": [
+            "debt-update",
+            "epoch-timetable"
+          ]
+        },
+        {
+          "text": "Claims have a hard deadline; a claim received late is rejected and not carried forward.",
+          "lights": [
+            "epoch-timetable"
+          ]
+        },
+        {
+          "text": "Blockchain load scales with participants and disputes, not with usage volume.",
+          "lights": [
+            "epoch-timetable"
+          ]
+        },
+        {
+          "text": "The month runs in one fixed order so later steps cannot race ahead of funding, claims, or payment.",
+          "lights": [
+            "epoch-timetable"
+          ]
+        },
+        {
+          "text": "The epoch timetable is the fixed order that keeps funding, serving, claims, and payment from racing each other or sweeping money too early.",
+          "lights": [
+            "epoch-timetable"
+          ]
+        },
+        {
+          "text": "The month is one epoch. The protocol fixes this order so serving cannot start before funding, and money cannot be swept before disputes and the debt update.",
+          "lights": [
+            "debt-update",
+            "epoch-timetable"
+          ]
+        },
+        {
+          "text": "Claims and closing allowances close in parallel. An app’s Request to get Paid after the deadline is rejected.",
+          "lights": [
+            "epoch-timetable",
+            "rtgp"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The train timetable changed, and the deadline for the essay moved.",
+          "lights": []
+        },
+        {
+          "text": "The ISP settles once a month.",
+          "lights": []
+        },
+        {
+          "text": "The parade marches in one fixed order each year, and the band follows the floats.",
+          "lights": []
+        }
+      ]
+    },
+    "hcd": {
+      "positive": [
+        {
+          "text": "At the start of the month the ISP posts a Household Commitment Declaration, the HCD, that lists its households and attributes its funding across them.",
+          "lights": [
+            "hcd"
+          ]
+        },
+        {
+          "text": "The protocol takes the ISP's word for who is on its household roster; it does not verify that each entry is a real household.",
+          "lights": [
+            "hcd"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The football roster was posted on the wall.",
+          "lights": []
+        },
+        {
+          "text": "The commitment of the ISP is paid up front.",
+          "lights": []
+        }
+      ]
+    },
+    "rtgp": {
+      "positive": [
+        {
+          "text": "Each app turns its many service requests into one Request to get Paid, with a single row per household.",
+          "lights": [
+            "rtgp"
+          ]
+        },
+        {
+          "text": "At the end of the epoch the app submits one monthly claim to the protocol.",
+          "lights": [
+            "rtgp"
+          ]
+        },
+        {
+          "text": "Every RtgP carries publicly checkable ISP subtotals, so a false header total is caught.",
+          "lights": [
+            "rtgp"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "An insurance claim was filed, and the claims adjuster called.",
+          "lights": []
+        },
+        {
+          "text": "The app keeps signed records of what it served.",
+          "lights": []
+        }
+      ]
+    },
+    "reconcile-together": {
+      "positive": [
+        {
+          "text": "No, the first app to claim gets no advantage. The ISP reconciles all accepted claims together rather than in arrival order.",
+          "lights": [
+            "reconcile-together"
+          ]
+        },
+        {
+          "text": "It groups every row by household and compares the combined claims with the escrow cap, so an early app cannot take the allowance first.",
+          "lights": [
+            "reconcile-together",
+            "heea"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "She reconciled with her friend, and the books balance.",
+          "lights": []
+        },
+        {
+          "text": "All claims are paid in the end.",
+          "lights": []
+        }
+      ]
+    },
+    "heea": {
+      "positive": [
+        {
+          "text": "Each household gets an escrow account for the epoch, the HEEA, which caps what can be paid for that household.",
+          "lights": [
+            "heea"
+          ]
+        },
+        {
+          "text": "The household escrow is an accounting container, not a separate money transfer.",
+          "lights": [
+            "heea"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The house sale is in escrow, and the lawyer holds the keys.",
+          "lights": []
+        },
+        {
+          "text": "The pot caps the total of all allowances.",
+          "lights": [
+            "the-pot"
+          ]
+        }
+      ]
+    },
+    "iptd": {
+      "positive": [
+        {
+          "text": "After grouping the rows privately, the ISP publishes the IPtD: each app's proposed payout, its flagged rows and the total charged.",
+          "lights": [
+            "iptd"
+          ]
+        },
+        {
+          "text": "The disbursement plan is checked by public verification, but it never shows which apps the same household used.",
+          "lights": [
+            "iptd"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The payout from the lottery was large, and the payment plan was long.",
+          "lights": []
+        },
+        {
+          "text": "The ISP knows which rows belong together.",
+          "lights": []
+        },
+        {
+          "text": "If your combined valid claims fit your closing allowance, the protocol pays the apps from the common fund, one epoch payment per app, up to that funded escrow.",
+          "lights": ["common-fund"]
+        }
+      ]
+    },
+    "freeze-settle": {
+      "positive": [
+        {
+          "text": "Claims from clean households are paid, while a household whose combined claims are over its cap is flagged and all its rows freeze until an evidence round has run.",
+          "lights": [
+            "reconcile-together",
+            "freeze-settle",
+            "evidence-round"
+          ]
+        },
+        {
+          "text": "An overrun flag stops every row for that household before any is paid.",
+          "lights": [
+            "freeze-settle"
+          ]
+        },
+        {
+          "text": "Every row for that household freezes, and an evidence round opens automatically before any of those rows are paid.",
+          "lights": [
+            "freeze-settle",
+            "evidence-round"
+          ]
+        },
+        {
+          "text": "An aggregate above the household’s escrow cap freezes every claim row for that household and opens an evidence round before any of those rows are paid. Claims that stay within the cap proceed to payment.",
+          "lights": [
+            "heea",
+            "freeze-settle",
+            "evidence-round"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "A freeze frame stayed on the screen, and the freezer broke.",
+          "lights": []
+        },
+        {
+          "text": "Claims within a household's escrow proceed to payment.",
+          "lights": [
+            "heea"
+          ]
+        },
+        {
+          "text": "Every row of the spreadsheet freezes below the header when you scroll.",
+          "lights": []
+        }
+      ]
+    },
+    "isp-epoch-failure": {
+      "positive": [
+        {
+          "text": "An ISP that does not fund its commitment has no participating epoch. If it misses the AtS, skips required debt service or leaves a correction unfunded, that establishes an ISP default and can end in a forced wind-down.",
+          "lights": [
+            "ats",
+            "isp-epoch-failure"
+          ]
+        },
+        {
+          "text": "The consequences are explicit for an ISP that fails to open or close its epoch.",
+          "lights": [
+            "isp-epoch-failure"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The default setting is off, and the factory had a wind-down.",
+          "lights": []
+        },
+        {
+          "text": "A household without an opening message defaults to zero allowance.",
+          "lights": [
+            "epoch-opening"
+          ]
+        }
+      ]
+    },
+    "who-does-what": {
+      "positive": [
+        {
+          "text": "In ordinary operation the household's box is an observer: it signs and keeps evidence but never posts a routine transaction. The ISP is trusted with the private mapping but not with payment discretion, and apps are service providers and evidence custodians.",
+          "lights": [
+            "who-does-what"
+          ]
+        },
+        {
+          "text": "The ISP knows which rows belong to which household, but public rules decide the transfers.",
+          "lights": [
+            "who-does-what"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The observer at the match took notes.",
+          "lights": []
+        },
+        {
+          "text": "The protocol enforces backing, signatures and deadlines.",
+          "lights": []
+        }
+      ]
+    },
+    "evidence-round": {
+      "positive": [
+        {
+          "text": "When a household's claims overrun its cap, an evidence round opens: the ISP posts a Call for Evidence from Apps, the CfEfA, and each summoned app must publish its signed ConRecs.",
+          "lights": [
+            "conrec",
+            "evidence-round"
+          ]
+        },
+        {
+          "text": "The dispute becomes a short public proceeding in which the evidence is posted in plaintext so anyone can check the signatures.",
+          "lights": [
+            "evidence-round"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "A round of applause followed, and the evidence in the case was thin.",
+          "lights": []
+        },
+        {
+          "text": "The household can dispute an entry with the protocol.",
+          "lights": []
+        }
+      ]
+    },
+    "mechanical-resolution": {
+      "positive": [
+        {
+          "text": "Resolution is designed to be mechanical rather than discretionary: a ConRec either has valid signatures or it does not, and the arithmetic decides which claims survive.",
+          "lights": [
+            "conrec",
+            "mechanical-resolution"
+          ]
+        },
+        {
+          "text": "The ISP supplies the witness list, and an app that holds no row answers with a signed denial.",
+          "lights": [
+            "mechanical-resolution"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "A mechanical keyboard has better resolution than a cheap one.",
+          "lights": []
+        },
+        {
+          "text": "The arithmetic of the pot is simple.",
+          "lights": [
+            "the-pot"
+          ]
+        }
+      ]
+    },
+    "escalation-audit": {
+      "positive": [
+        {
+          "text": "If an app cannot support a row by the deadline, the row is voided; if the evidence shows it fabricated the row, that is app fraud and the inquiry widens to an escalation audit of the whole epoch.",
+          "lights": [
+            "escalation-audit"
+          ]
+        },
+        {
+          "text": "A missed evidence duty is not the same as proven misconduct, but both lead to penalties.",
+          "lights": [
+            "escalation-audit"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The audit trail was clean, and the audit ends tomorrow.",
+          "lights": []
+        },
+        {
+          "text": "The FUP audit is not designed yet.",
+          "lights": [
+            "timing-states"
+          ]
+        }
+      ]
+    },
+    "silent-padding": {
+      "positive": [
+        {
+          "text": "Silent padding means a dishonest app inflates its claim with charges that never happened but keeps each household's total under its escrow cap, so no overrun fires.",
+          "lights": [
+            "heea",
+            "silent-padding"
+          ]
+        },
+        {
+          "text": "The box's lower diary total exposes the padded claim when the ISP reports the inflated charged total.",
+          "lights": [
+            "silent-padding"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The padding in the sofa was thick, and the charge was small.",
+          "lights": []
+        },
+        {
+          "text": "The app asks for the money once a month.",
+          "lights": []
+        }
+      ]
+    },
+    "household-fraud": {
+      "positive": [
+        {
+          "text": "If valid claims exceed the closing allowance, the escrow is divided among them in proportion to their amounts, and the serving apps absorb the shortfall.",
+          "lights": [
+            "household-fraud"
+          ]
+        },
+        {
+          "text": "That is household fraud: the apps split the funded amount pro rata and take the loss of what is left.",
+          "lights": [
+            "household-fraud"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The fraud investigation closed, and she paid pro forma fees.",
+          "lights": []
+        },
+        {
+          "text": "The pot cannot be exceeded.",
+          "lights": [
+            "the-pot"
+          ]
+        }
+      ]
+    },
+    "allowance-correction": {
+      "positive": [
+        {
+          "text": "If the closing entry published for a household is wrong, its box can detect it with the tag and its latest signed message, and the signed evidence sets the correct baseline, so an honest household cannot be convicted.",
+          "lights": [
+            "hsatm",
+            "allowance-correction"
+          ]
+        },
+        {
+          "text": "An allowance correction first uses pot capacity already reserved for the ISP.",
+          "lights": [
+            "the-pot",
+            "allowance-correction"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The correction fluid dried out, and the entry was in the book.",
+          "lights": []
+        },
+        {
+          "text": "The ISP pays correction funding when the pot would be exceeded.",
+          "lights": [
+            "the-pot",
+            "debt-update"
+          ]
+        }
+      ]
+    },
+    "timing-states": {
+      "positive": [
+        {
+          "text": "The ex-post audit separates two timing states: consumption is compliant while it stays within the allowance already in force, and any excess is spend-ahead.",
+          "lights": [
+            "timing-states"
+          ]
+        },
+        {
+          "text": "A later grant does not change the historical classification of spending that happened before authorisation.",
+          "lights": [
+            "timing-states"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "Go ahead and spend the afternoon, and mind the timing of the train.",
+          "lights": []
+        },
+        {
+          "text": "The grant arrived on time.",
+          "lights": []
+        }
+      ]
+    },
+    "hoarding": {
+      "positive": [
+        {
+          "text": "Asking for a top-up long before the earlier allowance is used up is hoarding, and it can leave less room in the pot for households with genuine later demand.",
+          "lights": [
+            "base-and-topups",
+            "the-pot",
+            "hoarding"
+          ]
+        },
+        {
+          "text": "Requesting far ahead of need is a contractual violation, even if the numbers fit at the end of the month.",
+          "lights": [
+            "hoarding"
+          ]
+        },
+        {
+          "text": "The violation is the early request itself: asking far before the earlier allowance was exhausted.",
+          "lights": ["hoarding"]
+        }
+      ],
+      "negative": [
+        {
+          "text": "Requesting a top-up creates no authorisation; only a signed grant raises your allowance.",
+          "lights": [
+            "base-and-topups"
+          ]
+        },
+        {
+          "text": "A top-up request carries no amount.",
+          "lights": [
+            "fup-faucet",
+            "base-and-topups"
+          ]
+        },
+        {
+          "text": "She was asking far ahead in the queue, and asking far before the deadline did not help.",
+          "lights": []
+        }
+      ]
+    },
+    "detection-posture": {
+      "positive": [
+        {
+          "text": "ESP does not try to stop all fraud in real time. Signed evidence makes later reconstruction possible, caps bound the interim exposure, and penalties make fabrication an unattractive repeated strategy.",
+          "lights": [
+            "detection-posture"
+          ]
+        },
+        {
+          "text": "The posture is detection plus consequences rather than universal prevention.",
+          "lights": [
+            "detection-posture"
+          ]
+        },
+        {
+          "text": "ESP catches fraud afterwards, from signed evidence, and then attaches consequences. The 2026-09-02 draft calls this an evidence-first, post-mortem-challenge posture.",
+          "lights": [
+            "detection-posture"
+          ]
+        },
+        {
+          "text": "ESP is built to catch fraud afterwards and make repeating it costly. It does not try to stop every fraudulent act as it happens.",
+          "lights": ["detection-posture"]
+        }
+      ],
+      "negative": [
+        {
+          "text": "Intrusion detection is a security product, and the consequences were severe.",
+          "lights": []
+        },
+        {
+          "text": "Penalties are intended consequences of proven misconduct.",
+          "lights": []
+        },
+        {
+          "text": "No lock can stop every fraudulent act, said the shopkeeper.",
+          "lights": []
+        }
+      ]
+    },
+    "epoch-opening-handoff": {
+      "positive": [
+        {
+          "text": "How the box and the ISP hand each step over during epoch opening is unspecified: the bilateral transport, delivery, timeout and retry mechanics remain unsealed.",
+          "lights": [
+            "epoch-opening",
+            "epoch-opening-handoff"
+          ]
+        },
+        {
+          "text": "The order is fixed, but the handoff mechanics are not atomic and introduce no new protocol message.",
+          "lights": [
+            "epoch-opening-handoff"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The relay runner dropped the baton at the handoff.",
+          "lights": []
+        },
+        {
+          "text": "The epoch opens in a fixed order.",
+          "lights": [
+            "epoch-opening"
+          ]
+        }
+      ]
+    },
+    "ats-binding-challenge": {
+      "positive": [
+        {
+          "text": "The AtS-binding challenge route is still open: where a household submits proof of a swapped tag, who adjudicates it and what remedy follows have not been decided.",
+          "lights": [
+            "ats",
+            "ats-binding-challenge"
+          ]
+        },
+        {
+          "text": "If the ISP posts a different tag and ciphertext pair than the one in your opening message, you can prove it, but the challenge deadline and adjudicating actor are undefined.",
+          "lights": [
+            "ats-binding-challenge"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The challenge of the day was a puzzle, and the binding of the book was torn.",
+          "lights": []
+        },
+        {
+          "text": "The tag is checked against the latest signed message.",
+          "lights": [
+            "hsatm"
+          ]
+        }
+      ]
+    },
+    "pre-activation-conrec": {
+      "positive": [
+        {
+          "text": "Nobody can currently prove that an app checked the credential before it served you: the HPC has no activation timestamp and the ConRec does not refer to the HPC.",
+          "lights": [
+            "conrec",
+            "hpc",
+            "pre-activation-conrec"
+          ]
+        },
+        {
+          "text": "Pre-activation ConRec enforcement is unsealed, so the mandatory HPC check cannot be audited.",
+          "lights": [
+            "conrec",
+            "hpc",
+            "pre-activation-conrec"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The activation code was sent by post.",
+          "lights": []
+        },
+        {
+          "text": "An app verifies the credential before treating service as billable.",
+          "lights": []
+        }
+      ]
+    },
+    "tariff-format": {
+      "positive": [
+        {
+          "text": "Tariff agreements still need a format: catalogue identifiers, signatures and the acceptance binding must be specified in the authoritative design.",
+          "lights": [
+            "price-catalogue",
+            "tariff-format"
+          ]
+        },
+        {
+          "text": "The format of the tariff agreement and what is disclosed in an evidence round is not yet defined.",
+          "lights": [
+            "price-catalogue",
+            "evidence-round",
+            "tariff-format"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The tariff on imported goods was raised, and the format of the paper changed.",
+          "lights": []
+        },
+        {
+          "text": "Each app publishes one signed catalogue.",
+          "lights": [
+            "price-catalogue"
+          ]
+        }
+      ]
+    },
+    "credit-calibration": {
+      "positive": [
+        {
+          "text": "The ISP credit policy needs numerical calibration: debt ceilings, debt ageing, collateral ratios, amortization schedules and the default waterfall all need pilot data.",
+          "lights": [
+            "credit-calibration"
+          ]
+        },
+        {
+          "text": "The formula, thresholds and number of epochs for debt control are still TODO.",
+          "lights": [
+            "credit-calibration"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "Credit cards have a limit, and the calibration of the scale drifted.",
+          "lights": []
+        },
+        {
+          "text": "Debt is repaid by the ISP.",
+          "lights": []
+        }
+      ]
+    },
+    "dishonest-isp": {
+      "positive": [
+        {
+          "text": "The dishonest-ISP analysis is incomplete: the design must test allowance shaving, dishonest refusals motivated by debt, and correction-funding failure.",
+          "lights": [
+            "debt-update",
+            "dishonest-isp"
+          ]
+        },
+        {
+          "text": "An ISP could shave allowances or refuse top-ups to avoid debt, and the design has not tested every case where the ISP controls a private mapping.",
+          "lights": [
+            "base-and-topups",
+            "who-does-what",
+            "dishonest-isp"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The barber shaving cream ran out, and the honest broker left.",
+          "lights": []
+        },
+        {
+          "text": "The ISP can refuse a top-up when it follows the plan.",
+          "lights": [
+            "base-and-topups",
+            "signed-refusal"
+          ]
+        }
+      ]
+    },
+    "collusion-padding": {
+      "positive": [
+        {
+          "text": "ISP-and-app collusion still has an undefeated silent-padding form: a dishonest ISP can help an accomplice app fabricate plausible rows and suppress the summons that would expose it.",
+          "lights": [
+            "silent-padding",
+            "collusion-padding"
+          ]
+        },
+        {
+          "text": "One form of padding is not defeated when the ISP and an app collude.",
+          "lights": [
+            "collusion-padding"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The two firms were accused of collusion by the regulator.",
+          "lights": []
+        },
+        {
+          "text": "Silent padding is exposed through overlapping signals.",
+          "lights": [
+            "silent-padding"
+          ]
+        }
+      ]
+    },
+    "anti-collusion": {
+      "positive": [
+        {
+          "text": "Several anti-collusion mechanisms are candidates only: a public annex of charged totals using household tags, trustless witness discovery, compelled verifiable decryption and random evidence sampling.",
+          "lights": [
+            "anti-collusion"
+          ]
+        },
+        {
+          "text": "Ideas for stopping collusion, such as broadcast evidence summons, are not part of the current design.",
+          "lights": [
+            "anti-collusion"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The annex to the house was built last summer.",
+          "lights": []
+        },
+        {
+          "text": "A dishonest ISP can help an app.",
+          "lights": []
+        }
+      ]
+    },
+    "borrow-and-default": {
+      "positive": [
+        {
+          "text": "Borrow-and-default is now the central attack on the common fund: a wash app turns an ISP overdraft into cash, and it pays only if the ISP can evade the debt through default, restructuring or weak collateral recovery.",
+          "lights": [
+            "common-fund",
+            "overdraft",
+            "borrow-and-default"
+          ]
+        },
+        {
+          "text": "The earlier worry, consumption-weighted allocation farming, has been replaced by this one.",
+          "lights": [
+            "borrow-and-default"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "He wanted to borrow a pen, and the washing machine defaulted to cold.",
+          "lights": []
+        },
+        {
+          "text": "An overdraft is capacity reserved for the ISP.",
+          "lights": [
+            "overdraft"
+          ]
+        }
+      ]
+    },
+    "durable-second-instance": {
+      "positive": [
+        {
+          "text": "Disputes in which the ISP is a party cannot be judged by that ISP, so the end state needs a durable second instance; the independent actor or mechanism and its authority are unsealed.",
+          "lights": [
+            "durable-second-instance"
+          ]
+        },
+        {
+          "text": "Who judges such a case is open: an independent dispute resolution mechanism has not been chosen.",
+          "lights": [
+            "durable-second-instance"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "He was a party to the lawsuit and she was the second to speak.",
+          "lights": []
+        },
+        {
+          "text": "The ISP supplies the witness list.",
+          "lights": [
+            "mechanical-resolution"
+          ]
+        }
+      ]
+    },
+    "finality-horizon": {
+      "positive": [
+        {
+          "text": "Settlement finality after execution is deferred: the protocol has not decided when payments become irreversible, or whether later fraud evidence can trigger payment reversal or recovery.",
+          "lights": [
+            "finality-horizon"
+          ]
+        },
+        {
+          "text": "The irreversibility horizon and post-execution recovery are both unsealed.",
+          "lights": [
+            "finality-horizon"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The final whistle blew and the horizon was red.",
+          "lights": []
+        },
+        {
+          "text": "Execution precedes the debt update.",
+          "lights": [
+            "debt-update"
+          ]
+        }
+      ]
+    },
+    "penalty-enforcement": {
+      "positive": [
+        {
+          "text": "Slashing and expulsion are intended consequences of proven misconduct, but who enforces them, the penalty amounts, collateral sizing, custody, appeals and re-entry rules are undefined.",
+          "lights": [
+            "penalty-enforcement"
+          ]
+        },
+        {
+          "text": "Penalty enforcement remains unsealed, and naming the consequences defines no protocol message.",
+          "lights": [
+            "penalty-enforcement"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The penalty kick was missed, and the player was sent off.",
+          "lights": []
+        },
+        {
+          "text": "Proven app violations are intended to lead to penalties.",
+          "lights": []
+        }
+      ]
+    },
+    "isp-fronting": {
+      "positive": [
+        {
+          "text": "One option not in the current settlement path is ISP fronting: the ISP would pay apps in full and recover the shortfall from the household, which would make it an obligatory insurer.",
+          "lights": [
+            "isp-fronting"
+          ]
+        },
+        {
+          "text": "The ISP could pay apps in full and recover from the household, but that is not part of the current settlement path.",
+          "lights": [
+            "isp-fronting"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The front of the building faces the sea.",
+          "lights": []
+        },
+        {
+          "text": "Apps absorb the shortfall.",
+          "lights": [
+            "household-fraud"
+          ]
+        }
+      ]
+    },
+    "emergency-settlement": {
+      "positive": [
+        {
+          "text": "If the ISP misses the IPtD deadline there is no defined emergency settlement: how a second instance reconstructs the claim assignments and pays out remains undefined.",
+          "lights": [
+            "iptd",
+            "durable-second-instance",
+            "emergency-settlement"
+          ]
+        },
+        {
+          "text": "An emergency route for a missing IPtD is still open.",
+          "lights": [
+            "iptd",
+            "emergency-settlement"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The emergency exit was blocked, and the settlement of the argument was reached.",
+          "lights": []
+        },
+        {
+          "text": "The IPtD is published by the ISP.",
+          "lights": [
+            "iptd"
+          ]
+        }
+      ]
+    },
+    "household-routes": {
+      "positive": [
+        {
+          "text": "The design has not defined how a household's evidence reaches the protocol: there is no household-to-protocol challenge route, no household report route for a diary mismatch and no production-demand route for a missing IsHEC.",
+          "lights": [
+            "ishec",
+            "household-routes"
+          ]
+        },
+        {
+          "text": "Household ingress and household transparency are open questions.",
+          "lights": [
+            "household-routes"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The household routes to work vary by traffic.",
+          "lights": []
+        },
+        {
+          "text": "The box alerts the household on a mismatch.",
+          "lights": []
+        }
+      ]
+    },
+    "audit-design": {
+      "positive": [
+        {
+          "text": "The FUP audit and the escalation audit are not designed yet: the likely approach uses zero-knowledge proofs, but the proof relation, completeness guarantee and fallback disclosure are open.",
+          "lights": [
+            "escalation-audit",
+            "timing-states",
+            "audit-design"
+          ]
+        },
+        {
+          "text": "How an audit is invoked and which proof duties apply are deferred.",
+          "lights": [
+            "audit-design"
+          ]
+        }
+      ],
+      "negative": [
+        {
+          "text": "The audit finished early, and the zero point of the scale drifted.",
+          "lights": []
+        },
+        {
+          "text": "Timestamps give an asserted order.",
+          "lights": []
+        }
+      ]
+    }
+  }
+}

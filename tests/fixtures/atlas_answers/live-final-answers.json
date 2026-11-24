@@ -1,0 +1,53 @@
+{
+  "about": "Two assistant answers captured from the live application on 11 October 2026 on the final client (xAI, desktop): the answer to a place's own teaser question ('What if my ISP refuses a top-up that my plan entitles me to?'), which before the fix lit 'dishonest-isp' but not the place it was asked about ('signed-refusal'), and the answer to the typed follow-up that had been needed. 'lights' is the reviewed set of places each lights now; 'evidence' is the phrase that justifies every place. (Revised the same day: the bare phrase 'fair-use policy' no longer lights the FUP faucet; a reviewer found it named the FUP audit in other answers.)",
+  "turns": [
+    {
+      "role": "user",
+      "text": "What if my ISP refuses a top-up that my plan entitles me to?"
+    },
+    {
+      "role": "assistant",
+      "text": "The refusal itself becomes your evidence. A grant or a refusal produces a Household Signed Allowance Message (HSATM), signed by both your ISP and your box. It records the epoch, the sequence number, the timestamp, and the allowance total. If that refusal breaks the retail promise your plan sold you, the signed message is what you hold to show it.\n\nWhether the refusal was allowed depends on your subscriber contract, not on an automatic protocol ruling. The plan sets the base allowance, the top-up entitlements, the rate limits, and the contractual maximum. The protocol does not read those terms. A refusal in a heavy month is legitimate when it follows the fair-use policy you subscribed to and the ISP’s management of its pot. The base allowance is the guaranteed part; top-ups are conditional on that policy and on the pot ceiling. If the ISP breaks the promise it sold, your remedy runs through the subscriber contract and ordinary law. This summary does not define an automatic protocol penalty for a wrongful refusal.\n\nThe ISP still cannot grant its way past the pot. It alone decides whether to grant a top-up and how large it is, within your contract and the pot ceiling. A refusal does not raise your bill. Only the agreed plan price, and any separately priced add-on you explicitly accept, may be charged.\n\nDishonest refusals, including refusals driven by the ISP’s own debt, are still listed as unfinished analysis in this draft.",
+      "lights": [
+        "internet-bill",
+        "base-and-topups",
+        "retail-contract",
+        "signed-refusal",
+        "the-pot",
+        "hsatm",
+        "dishonest-isp"
+      ],
+      "evidence": {
+        "internet-bill": "agreed plan price",
+        "base-and-topups": "base allowance",
+        "retail-contract": "subscriber contract",
+        "signed-refusal": "refusal itself becomes your evidence",
+        "the-pot": "the pot",
+        "hsatm": "HSATM",
+        "dishonest-isp": "Dishonest refusals"
+      },
+      "stayDark": []
+    },
+    {
+      "role": "user",
+      "text": "Could you explain \"A refusal leaves signed evidence\" in the ESP design in a few sentences?"
+    },
+    {
+      "role": "assistant",
+      "text": "A refusal is recorded as a Household Signed Allowance Message (HSATM), signed by both your ISP and your household box. The message carries the epoch, sequence number, timestamp, and allowance total, so the refusal is a jointly signed historical fact rather than a private ISP decision that leaves no trace.\n\nThat signed refusal is the household’s evidence if the ISP breaks the retail promise it sold. A refusal during a heavy month is legitimate when it follows the subscribed fair-use policy and the ISP’s management of its pot. The protocol does not read the subscriber contract or decide the retail remedy; a claim that the refusal broke the plan remains a matter for that contract and ordinary law.",
+      "lights": [
+        "retail-contract",
+        "signed-refusal",
+        "the-pot",
+        "hsatm"
+      ],
+      "evidence": {
+        "retail-contract": "subscriber contract",
+        "signed-refusal": "signed refusal",
+        "the-pot": "its pot",
+        "hsatm": "HSATM"
+      },
+      "stayDark": []
+    }
+  ]
+}

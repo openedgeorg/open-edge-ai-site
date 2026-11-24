@@ -14,13 +14,27 @@ import {
   CLEAR_CONFIRM_LABEL,
   CLEAR_CONFIRM_MS,
   CLEAR_LABEL,
+  HERO_LABEL_RESUME,
+  HERO_LABEL_START,
+  HERO_RESUME,
   NO_GLOSSARY_NOTICE,
   SCROLLED_AWAY_SCREENS,
+  SEEN_CHECK_MS,
   TWO_COLUMNS_QUERY,
   conversationInView,
   describeLit,
   mapStillWanted,
 } from "../../site/js/atlas.js";
+import {
+  DOCK_QUERY,
+  PLACE_MIN_PX,
+  SCROLL_IDLE_MS,
+  SPOT_MIN_PX,
+  dockLabels,
+  overlapPx,
+  readerPlace,
+  worthRemembering,
+} from "../../site/js/atlas-nav.js";
 import { SEEN_KEY } from "../../site/js/atlas-chat.js";
 import { buildIndex } from "../../site/js/atlas-graph.js";
 import { ATLAS_KEY, persistAtlas, reduceAtlas, restoreAtlas } from "../../site/js/atlas-state.js";
@@ -182,5 +196,86 @@ describe("the replies already read survive a reload (F11)", () => {
     // The controller's reset() is exactly that: the reducer and persistAtlas, nothing else touches storage.
     assert.ok(!/removeItem|storage\.clear/.test(source), "atlas.js never removes or clears a storage key");
     assert.ok(!source.includes(SEEN_KEY), "and never mentions the memory's key");
+  });
+});
+
+describe("the dock (atlas-nav.js): where is the visitor, and what does the bar say? (F05)", () => {
+  const VIEW = { top: 88, height: 844 };
+
+  it("overlapPx counts the pixels of a box between two heights of the window", () => {
+    assert.equal(overlapPx({ top: 100, bottom: 300 }, 0, 800), 200);
+    assert.equal(overlapPx({ top: -100, bottom: 50 }, 0, 800), 50);
+    assert.equal(overlapPx({ top: 700, bottom: 1500 }, 0, 800), 100);
+    assert.equal(overlapPx({ top: 900, bottom: 1000 }, 0, 800), 0, "wholly below");
+    assert.equal(overlapPx({ top: -300, bottom: -10 }, 0, 800), 0, "wholly above");
+    assert.equal(overlapPx(null, 0, 800), 0);
+  });
+
+  it("readerPlace: whichever of the map and the conversation shows more, if it shows enough", () => {
+    assert.equal(PLACE_MIN_PX, 120);
+    const map = { top: 200, bottom: 1200 };
+    const farChat = { top: 1900, bottom: 2600 };
+    assert.equal(readerPlace(map, farChat, VIEW), "map");
+    assert.equal(readerPlace({ top: -900, bottom: 100 }, { top: 500, bottom: 1300 }, VIEW), "answer", "scrolled on to the conversation");
+    assert.equal(readerPlace({ top: 300, bottom: 1000 }, { top: 800, bottom: 1500 }, VIEW), "map", "the map shows more of itself");
+    assert.equal(readerPlace({ top: 700, bottom: 1500 }, { top: 300, bottom: 700 }, VIEW), "answer", "the conversation shows more");
+    assert.equal(readerPlace({ top: -2000, bottom: -1000 }, { top: 4000, bottom: 5000 }, VIEW), "elsewhere", "neither is on screen (the hero, the footer)");
+    assert.equal(readerPlace({ top: VIEW.height - 119, bottom: 2000 }, null, VIEW), "elsewhere", "119 pixels of the map are not enough");
+    assert.equal(readerPlace({ top: VIEW.height - 120, bottom: 2000 }, null, VIEW), "map", "120 are");
+    assert.equal(readerPlace(null, null, VIEW), "elsewhere");
+    assert.equal(readerPlace({ top: 0, bottom: 100 }, null, VIEW), "elsewhere", "what lies under the sticky header does not count");
+    assert.equal(readerPlace({ top: 0, bottom: 300 }, null, VIEW), "map", "but what shows below it does");
+  });
+
+  it("worthRemembering: the map itself is on screen, not just its edge", () => {
+    assert.equal(SPOT_MIN_PX, 240);
+    assert.equal(worthRemembering({ top: 100, bottom: 900 }, VIEW), true);
+    assert.equal(worthRemembering({ top: 700, bottom: 900 }, VIEW), false, "a strip at the foot of the window");
+    assert.equal(worthRemembering({ top: 400, bottom: 640 }, VIEW), true, "exactly the minimum");
+    assert.equal(worthRemembering(null, VIEW), false);
+    assert.equal(worthRemembering({ top: 100, bottom: 250 }, { top: 88, height: 300 }), true, "in a very short window a third of it is enough");
+  });
+
+  it("dockLabels: Map or List, a note while a question runs or an answer is new, the button for places out of sight", () => {
+    assert.deepEqual(dockLabels(), { map: "Map", answer: "Conversation", note: "", news: "" });
+    assert.equal(dockLabels({ view: "list" }).map, "List");
+    assert.equal(dockLabels({ waiting: true }).note, "waiting…");
+    assert.equal(dockLabels({ unread: true }).note, "new answer");
+    assert.equal(dockLabels({ waiting: true, unread: true }).note, "waiting…", "a question that runs is said first, even while an earlier answer is unread");
+    assert.equal(dockLabels({ news: 1 }).news, "Show 1 new place");
+    assert.equal(dockLabels({ news: 3 }).news, "Show 3 new places");
+    assert.equal(dockLabels({ news: 0 }).news, "");
+    assert.equal(dockLabels({ news: -2 }).news, "");
+    assert.equal(dockLabels({ news: Number.NaN }).news, "");
+    for (const labels of [dockLabels({ view: "list", news: 2, unread: true }), dockLabels()]) {
+      assert.doesNotMatch(JSON.stringify(labels), /learned|understood|verified|mastered/i, "visited means mentioned, whatever the bar says");
+    }
+  });
+
+  it("the dock is shown exactly where the page is one column, as the style sheet says", () => {
+    assert.equal(DOCK_QUERY, "(max-width: 1179px)");
+    assert.equal(TWO_COLUMNS_QUERY, "(min-width: 1180px)", "the two queries leave no width uncovered and none doubly");
+    const css = readFileSync(new URL("../../site/css/atlas-panel.css", import.meta.url), "utf8");
+    assert.ok(css.includes(`@media ${DOCK_QUERY} {`), "atlas-panel.css shows the dock in the same range");
+    assert.match(css, /\.atlas-dock \{\s*display: none;\s*\}/, "and nowhere else");
+    assert.ok(SCROLL_IDLE_MS >= 100 && SEEN_CHECK_MS >= 100, "the pauses are real pauses");
+  });
+
+  it("the words of the first screen's question", () => {
+    assert.equal(HERO_LABEL_START, "Start with one question");
+    assert.equal(HERO_LABEL_RESUME, "Pick up where you left off");
+    assert.equal(HERO_RESUME, "Keep exploring the map");
+    const html = readFileSync(new URL("../../site/index.html", import.meta.url), "utf8");
+    assert.ok(html.includes(`<p class="hero-ask-label">${HERO_LABEL_START}</p>`), "the page starts with the same label");
+    assert.match(html, /<div class="hero-ask-wrap" hidden>/, "and hides the whole question until the script runs");
+  });
+
+  it("the controller never moves the window or the keyboard to a place the reply lit on its own account when the visitor is elsewhere", () => {
+    const source = readFileSync(new URL("../../site/js/atlas.js", import.meta.url), "utf8");
+    // showLit decides whether the window follows; everything else that scrolls to a place is behind a button.
+    assert.match(source, /const vertical = !matches\(TWO_COLUMNS_QUERY\) && !reading && around;/);
+    assert.match(source, /function showNew\(\)/);
+    assert.match(source, /newPlaces = \[\.\.\.newPlaces\.filter\(\(id\) => !fresh\.includes\(id\)\), \.\.\.\(brought \? \[\] : fresh\)\];/);
+    assert.ok(!/\.focus\(\)/.test(source.slice(source.indexOf("function showLit"), source.indexOf("function applyReply"))), "showLit and the helpers around it never call focus()");
   });
 });

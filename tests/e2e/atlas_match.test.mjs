@@ -681,6 +681,119 @@ test("curly apostrophes are normalised on both sides", () => {
   assert.deepEqual(matchReply("the ISPs pot", fromCurly), []);
 });
 
+// ---------------------------------------------------------------- the possessive (F07)
+
+test("a possessive is not read: \"your ISP's debt\" is the phrase \"ISP debt\" (F07: the captured answers say \"your ISP\u2019s debt\")", () => {
+  const g = glossaryOf(["ISP debt", "common fund"]);
+  for (const text of [
+    "the ISP debt",
+    "the ISP's debt",
+    "the ISP\u2019s debt",
+    "your ISP\u2019s debt to the common fund",
+    "the ISP's **debt**",
+    "the ISP's  debt",
+    "the ISP's-debt",
+    "the ISP's\ndebt",
+    "- the ISP's debt",
+    "the ISPs' debt is not this, but the ISP's debt is",
+    "the 's ISP debt",
+  ]) {
+    assert.deepEqual(matchReply(text, g), ["x"], JSON.stringify(text));
+  }
+  // The letter s has to stand alone straight after ONE apostrophe, behind a letter or digit.
+  for (const text of [
+    "the ISPs debt",
+    "the ISP' s debt",
+    "the ISP'sx debt",
+    "the ISP's2 debt",
+    "the ISP\u2019sdebt",
+    "the ISP's. debt",
+    "the ISP's, debt",
+    "the ISP's\n\ndebt",
+    "the ISP's\n- debt",
+    "the ISP'' s debt",
+    "the ISP's'debt",
+  ]) {
+    assert.deepEqual(matchReply(text, g), [], JSON.stringify(text));
+  }
+  assert.deepEqual(matchReply("the ISPs' debt", g), [], "a plural possessive is not a possessive s");
+  assert.deepEqual(matchReply("'s ISP's debt", g), ["x"], "a lone 's at the very start is left alone, the next one is dropped");
+});
+
+test("a possessive between the words of a phrase, an acronym or a term does not break it", () => {
+  const g = compileGlossary([
+    { id: "pot", terms: ["pot ceiling"] },
+    { id: "heid", terms: ["HEID"] },
+    { id: "fund", terms: ["common fund capacity"] },
+    { id: "bill", terms: ["household bill"] },
+  ]);
+  assert.deepEqual(matchReply("the pot's ceiling", g), ["pot"]);
+  assert.deepEqual(matchReply("THE POT'S CEILING", g), ["pot"], "also in capitals, where the term is case-blind");
+  assert.deepEqual(matchReply("THE POT\u2019S CEILING", g), ["pot"]);
+  assert.deepEqual(matchReply("the HEID's encryption", g), ["heid"]);
+  assert.deepEqual(matchReply("the HEIDs", g), ["heid"], "a plural is still a plural");
+  assert.deepEqual(matchReply("the common fund's capacity", g), ["fund"]);
+  assert.deepEqual(matchReply("the household's bill", g), ["bill"]);
+  assert.deepEqual(matchReply("the household\u2019s bills", g), ["bill"], "and the last word may still carry a plural s");
+  assert.deepEqual(matchReply("the household's, bill", g), []);
+});
+
+test("a term written with a possessive is the same term as the one without", () => {
+  for (const [withPossessive, without] of [
+    ["ISP's pot", "ISP pot"],
+    ["ISP\u2019s pot", "ISP pot"],
+    ["the ISP's pot", "the ISP pot"],
+    ["pot's ceiling", "pot ceiling"],
+  ]) {
+    const a = glossaryOf([withPossessive]);
+    const b = glossaryOf([without]);
+    for (const text of ["the ISP pot", "the ISP's pot", "the ISP\u2019s pot", "the pot's ceiling", "the pot ceiling", "ISPs pot", "ISP' pot", "ISP, pot"]) {
+      assert.deepEqual(matchReply(text, a), matchReply(text, b), `${withPossessive} / ${without} on ${JSON.stringify(text)}`);
+    }
+  }
+  assert.deepEqual(matchReply("the ISP pot", glossaryOf(["ISP's pot"])), ["x"]);
+  assert.deepEqual(matchReply("the ISP's pot", glossaryOf(["ISP pot"])), ["x"]);
+  // An acronym written with a possessive is the acronym.
+  assert.deepEqual(matchReply("see the ISP", glossaryOf(["ISP's"])), ["x"]);
+  assert.deepEqual(matchReply("see the isp", glossaryOf(["ISP's"])), [], "and it keeps its case rule");
+});
+
+test("a term that keeps a regex of its own reads a possessive the same way", () => {
+  const g = glossaryOf(["(ISP's debt)", "the pot"]);
+  const via = Object.fromEntries(g.entries[0].tests.map((t) => [t.term, t.via]));
+  assert.equal(via["(ISP's debt)"], "pattern");
+  assert.deepEqual(matchReply("see (ISP's debt) here", g), ["x"]);
+  assert.deepEqual(matchReply("see (ISP debt) here", g), ["x"]);
+  assert.deepEqual(matchReply("see (ISP\u2019s debt) here", g), ["x"]);
+  assert.deepEqual(matchReply("see (ISPs debt) here", g), []);
+});
+
+test("the possessive rule agrees with the regex reference on a generated mix of apostrophes, letters and separators", () => {
+  const atoms = ["ISP", "ISP's", "isp", "s", "S", "pot", "the", "debt", "x", "\u00e9", "9", "'s", "'", "A's", "ISPs", "AtS", "pot's", "'S", "s'", "ISP\u2019s", "ISP\u2018s"];
+  const separators = [" ", "-", "'", "\u2019", " '", "' ", "**", "_", "\n", "\n\n", "'s ", "s'", "`", ".", ","];
+  const terms = ["ISP debt", "ISP's debt", "the pot", "pot's", "ISP's", "ISP", "AtS", "x's y", "'s x", "-x's", "(ISP's)", "A's", "s", "the pot's ceiling", "a's's b"];
+  const rnd = seededRandom(20261015);
+  const pick = (list) => list[Math.floor(rnd() * list.length)];
+  let compared = 0;
+  let lit = 0;
+  for (let round = 0; round < 150; round += 1) {
+    const islands = [0, 1, 2, 3].map((n) => ({ id: `i${n}`, terms: [pick(terms), pick(terms), pick(terms)] }));
+    const g = compileGlossary(islands);
+    const ref = referenceCompile(islands, new Set(REVIEWED));
+    assert.deepEqual(g.rejected, ref.rejected);
+    for (let k = 0; k < 40; k += 1) {
+      let reply = "";
+      for (let n = 1 + Math.floor(rnd() * 8); n > 0; n -= 1) reply += pick(rnd() < 0.5 ? atoms : terms) + pick(separators);
+      const got = matchReply(reply, g);
+      assert.deepEqual(got, referenceMatch(reply, ref), JSON.stringify({ reply, islands }));
+      compared += 1;
+      if (got.length > 0) lit += 1;
+    }
+  }
+  assert.equal(compared, 6000);
+  assert.ok(lit > compared * 0.3, `${lit} of ${compared} light something`);
+});
+
 // ---------------------------------------------------------------- results
 
 test("matchReply returns graph order, each id once", () => {

@@ -140,6 +140,33 @@
     box-shadow: inset 0 -4px 0 var(--ap-lit);
 }
 
+/* "Show 3 new places": the places a reply lit that are not on screen. It is there only while there are some. */
+.atlas .atlas-new-places {
+    font: inherit;
+    min-height: 44px;
+    padding: 0.4rem 1rem;
+    font-weight: 700;
+    color: var(--ap-bg);
+    background: var(--ap-lit);
+    border: 2px solid var(--ap-lit);
+    border-radius: 999px;
+    cursor: pointer;
+}
+
+.atlas .atlas-pan-hint {
+    display: none;
+    flex: 1 0 100%;
+    margin: 0;
+    font-size: 0.875rem;
+    color: var(--ap-muted);
+}
+
+@media (max-width: 940px) {
+    .atlas .atlas-pan-hint {
+        display: block;
+    }
+}
+
 /* Clear map is not a view: it sits apart from the Map / List toggles, and is as wide as its
    confirm label so the toolbar does not shift when the label changes. */
 .atlas-reset {
@@ -179,13 +206,150 @@
     margin-top: 0.5rem;
 }
 
+.atlas-list-tools + .atlas-list-empty + .atlas-list-region,
+.atlas-list-tools + .atlas-list-region {
+    margin-top: 0.5rem;
+}
+
+/* A region is a disclosure: the heading holds the button that opens and closes it, and the counts sit beside it
+   so a closed region still says what is in it. */
+.atlas-list-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0 1rem;
+    margin-bottom: 0.6rem;
+    border-bottom: 1px solid var(--ap-border);
+}
+
+.atlas-list-region.is-collapsed .atlas-list-bar {
+    margin-bottom: 0;
+}
+
 .atlas .atlas-list-heading {
+    flex: 1 1 14rem;
+    min-width: 0;
+    margin: 0;
     font-size: 0.95rem;
     letter-spacing: 0.02em;
     color: var(--ap-muted);
-    border-bottom: 1px solid var(--ap-border);
-    padding-bottom: 0.3rem;
-    margin-bottom: 0.6rem;
+}
+
+.atlas-list-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    min-height: 44px;
+    padding: 0.3rem 0;
+    font: inherit;
+    font-weight: 700;
+    text-align: left;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.atlas-list-toggle::before {
+    content: "\25B8";
+    flex: 0 0 auto;
+    color: var(--ap-lit);
+}
+
+.atlas-list-toggle[aria-expanded="true"]::before {
+    content: "\25BE";
+}
+
+.atlas-list-toggle:hover {
+    color: var(--ap-text);
+}
+
+.atlas .atlas-list-counts {
+    flex: 0 1 auto;
+    font-size: 0.85rem;
+    color: var(--ap-muted);
+}
+
+/* The tools above the list: what to show, where to jump, open or close everything. */
+.atlas-list-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.6rem 1rem;
+}
+
+.atlas-list-filters {
+    display: flex;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.atlas-list-filter,
+.atlas-list-bulk {
+    font: inherit;
+    min-height: 44px;
+    padding: 0.4rem 0.7rem;
+    color: var(--ap-text);
+    background: var(--ap-surface);
+    border: 2px solid var(--ap-border);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.atlas-list-bulk {
+    border-style: dashed;
+}
+
+.atlas-list-filter:hover,
+.atlas-list-bulk:hover {
+    background: var(--ap-surface-2);
+}
+
+.atlas-list-filter[aria-pressed="true"] {
+    font-weight: 700;
+    background: var(--ap-surface-2);
+    border-color: var(--ap-lit);
+    box-shadow: inset 0 -4px 0 var(--ap-lit);
+}
+
+.atlas-list-bulk {
+    flex: 0 0 auto;
+}
+
+.atlas-list-jump {
+    flex: 1 1 10rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 0;
+}
+
+.atlas .atlas-list-jump-label {
+    font-size: 0.85rem;
+    color: var(--ap-muted);
+}
+
+.atlas-list-select {
+    width: 100%;
+    min-height: 44px;
+    padding: 0.3rem 0.5rem;
+    font: inherit;
+    color: var(--ap-text);
+    background: var(--ap-surface);
+    border: 2px solid var(--ap-border);
+    border-radius: 8px;
+}
+
+.atlas .atlas-list-empty {
+    margin: 0.75rem 0 0;
+    padding: 0.5rem 0.8rem;
+    border: 1px dashed var(--ap-border);
+    border-radius: 6px;
+    color: var(--ap-muted);
 }
 
 .atlas-list-items {
@@ -296,6 +460,55 @@
     content: "Ask: ";
     font-weight: 700;
     color: var(--ap-frontier);
+}
+
+/* A visited place: the same question, a quieter button. */
+.atlas-list-again {
+    display: block;
+    width: 100%;
+    margin-top: 0.5rem;
+    min-height: 44px;
+    padding: 0.5rem 0.75rem;
+    font: inherit;
+    text-align: left;
+    color: var(--ap-muted);
+    background: transparent;
+    border: 2px solid var(--ap-border);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.atlas-list-again::before {
+    content: "Ask again: ";
+    font-weight: 700;
+    color: var(--ap-lit);
+}
+
+.atlas-list-again:hover:not([aria-disabled="true"]) {
+    color: var(--ap-text);
+    background: var(--ap-surface-2);
+}
+
+.atlas-list-again[aria-disabled="true"] {
+    border-style: dashed;
+    cursor: not-allowed;
+}
+
+.atlas-list-again[aria-disabled="true"]::before {
+    color: var(--ap-muted);
+}
+
+/* "new": lit by the latest reply. */
+.atlas-list-new {
+    display: inline-block;
+    padding: 0 0.4rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ap-bg);
+    background: var(--ap-lit);
+    border-radius: 4px;
 }
 
 .atlas-list-ask:hover:not([aria-disabled="true"]) {
@@ -422,6 +635,58 @@
 .atlas .atlas-inspector-hint {
     color: var(--ap-muted);
     font-style: italic;
+}
+
+.atlas .atlas-inspector-start {
+    padding-left: 0.6rem;
+    font-size: 0.9rem;
+    color: var(--ap-muted);
+    border-left: 3px solid var(--ap-lit);
+}
+
+.atlas-inspector-ask,
+.atlas-inspector-end,
+.atlas-inspector-path-button {
+    font: inherit;
+    min-height: 44px;
+    padding: 0.4rem 0.9rem;
+    color: var(--ap-text);
+    background: var(--ap-surface-2);
+    border: 2px solid var(--ap-border);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.atlas-inspector-ask {
+    margin-top: 0.4rem;
+    border-color: var(--ap-frontier);
+}
+
+/* A path of a visited place is a button: the whole line reads, and can be chosen, by touch and keyboard. */
+.atlas-inspector-path-button {
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    overflow-wrap: anywhere;
+}
+
+.atlas-inspector-ask:hover:not([aria-disabled="true"]),
+.atlas-inspector-end:hover,
+.atlas-inspector-path-button:hover {
+    background: var(--ap-surface-2);
+}
+
+.atlas-inspector-ask[aria-disabled="true"] {
+    border-style: dashed;
+    border-color: var(--ap-dim);
+    color: var(--ap-muted);
+    cursor: not-allowed;
+}
+
+.atlas-inspector-ends {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
 }
 
 .atlas .atlas-inspector-label-path {
@@ -715,6 +980,103 @@
     }
 }
 
+/* The dock (atlas-nav.js): in the one-column layout a bar at the bottom of the window for as long as the Atlas
+   is on screen, with a switch between the map and the conversation. It is the last item of the layout and
+   sticks to the bottom edge, so it needs no script to appear and disappear, and at the end of the page it
+   sits in the flow under the conversation instead of over it. It is outside the dark card, so it carries its
+   own colours. While a text field of the conversation has focus it steps aside (.is-tucked). */
+
+.atlas-dock {
+    display: none;
+}
+
+@media (max-width: 1179px) {
+    html {
+        scroll-padding-bottom: 5.5rem;
+    }
+
+    .atlas-dock {
+        --dock-bg: #0e1626;
+        --dock-surface: #16233a;
+        --dock-border: #6a80a8;
+        --dock-text: #eaf0f9;
+        --dock-muted: #b4c2d8;
+        --dock-lit: #f5c542;
+        position: sticky;
+        bottom: 0;
+        z-index: 30;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        padding: 0.5rem;
+        background: var(--dock-bg);
+        border: 1px solid var(--dock-border);
+        border-radius: 12px;
+        box-shadow: 0 -4px 18px rgba(0, 0, 0, 0.35);
+    }
+
+    .atlas-dock.is-tucked {
+        display: none;
+    }
+}
+
+.atlas-dock-button {
+    display: flex;
+    flex: 1 1 6rem;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0.3rem 0.6rem;
+    font: inherit;
+    line-height: 1.2;
+    color: var(--dock-text);
+    background: var(--dock-surface);
+    border: 2px solid var(--dock-border);
+    border-radius: 8px;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.atlas-dock-button[hidden],
+.atlas-dock-note[hidden] {
+    display: none !important;
+}
+
+.atlas-dock-button:focus-visible {
+    outline: 3px solid #fff;
+    outline-offset: 2px;
+}
+
+.atlas-dock-button[aria-current="true"] {
+    font-weight: 700;
+    border-color: var(--dock-lit);
+    box-shadow: inset 0 -4px 0 var(--dock-lit);
+}
+
+.atlas-dock-note {
+    font-size: 0.75rem;
+    color: var(--dock-muted);
+}
+
+.atlas-dock-answer.has-news {
+    border-color: var(--dock-lit);
+}
+
+.atlas-dock-answer.has-news .atlas-dock-note {
+    font-weight: 700;
+    color: var(--dock-lit);
+}
+
+.atlas-dock-new {
+    flex: 1 1 100%;
+    font-weight: 700;
+    color: #0e1626;
+    background: var(--dock-lit);
+    border-color: var(--dock-lit);
+}
+
 @media (forced-colors: active) {
     .atlas-tabs button,
     .atlas-reset,
@@ -761,6 +1123,53 @@
     .atlas-swatch-contested,
     .atlas-swatch-open {
         border-style: dashed;
+    }
+
+    .atlas-list-filter,
+    .atlas-list-bulk,
+    .atlas-list-select,
+    .atlas-list-again,
+    .atlas-inspector-ask,
+    .atlas-inspector-end,
+    .atlas-inspector-path-button,
+    .atlas-dock-button,
+    .atlas .atlas-new-places {
+        border: 2px solid ButtonText;
+        color: ButtonText;
+        background: ButtonFace;
+    }
+
+    .atlas-list-filter[aria-pressed="true"],
+    .atlas-dock-button[aria-current="true"] {
+        background: Highlight;
+        color: HighlightText;
+    }
+
+    .atlas-list-again[aria-disabled="true"],
+    .atlas-inspector-ask[aria-disabled="true"] {
+        border-style: dashed;
+        border-color: GrayText;
+        color: GrayText;
+    }
+
+    .atlas-list-new {
+        color: HighlightText;
+        background: Highlight;
+    }
+
+    .atlas-list-toggle::before,
+    .atlas-list-again::before {
+        color: ButtonText;
+    }
+
+    .atlas-dock {
+        border: 2px solid CanvasText;
+        background: Canvas;
+    }
+
+    .atlas-dock-note,
+    .atlas-dock-answer.has-news .atlas-dock-note {
+        color: inherit;
     }
 }
 

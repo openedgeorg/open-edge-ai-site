@@ -13,6 +13,12 @@
  * read as hyphens; and the single-word allowlist is a parameter (the reviewed list is pinned in the
  * test files, not read from the matcher).
  *
+ * The possessive rule (an apostrophe and a lone "s" that end a word are not read: "ISP's debt" is "ISP debt")
+ * is done here with one regular expression over the text, on the reply and on every term alike. The
+ * shipped matcher does it while tokenising, by dropping the token "s" that follows a gap of exactly one
+ * apostrophe; the two agree because both need the apostrophe to touch a letter or digit on its left and
+ * the "s" to be a whole run (no letter or digit after it).
+ *
  * The F43 rule is done here a different way from the shipped matcher on purpose, so that the
  * differential test compares two implementations. The reply is cut into SEGMENTS before anything
  * else, every term is tested against every segment on its own, and an island is lit when any segment
@@ -40,6 +46,12 @@ export function referenceNormalise(text) {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+/**
+ * Drop every possessive "'s": an apostrophe and a lone s or S, straight after a letter or digit and not
+ * followed by one. Lookbehind is fine here (this file only runs under node); the shipped matcher has none.
+ */
+export const referencePossessive = (text) => text.replace(/(?<=[\p{L}\p{N}])'[sS](?![\p{L}\p{N}])/gu, "");
 
 const escapeRegExp = (text) => text.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
 const phraseTokens = (term) => term.split(/[\s\-*_`]+/).filter(Boolean);
@@ -86,7 +98,7 @@ export function referenceCompile(islands, allowed) {
         rejected.push({ id: island.id, term });
         continue;
       }
-      const text = referenceNormalise(term);
+      const text = referencePossessive(referenceNormalise(term));
       const exact = referenceCaseSensitive(text, kind);
       const key = `${kind}:${exact ? `exact:${text}` : `any:${text.toLowerCase()}`}`;
       if (seen.has(key)) continue;
@@ -130,7 +142,9 @@ export function referenceSegments(text) {
 
 export function referenceMatch(text, reference) {
   if (typeof text !== "string") return [];
-  const replies = referenceSegments(text).map(referenceNormalise).filter((reply) => reply !== "");
+  const replies = referenceSegments(text)
+    .map((segment) => referencePossessive(referenceNormalise(segment)))
+    .filter((reply) => reply !== "");
   const ids = [];
   for (const entry of reference.entries) {
     if (ids.includes(entry.id)) continue;

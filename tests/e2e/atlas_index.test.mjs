@@ -90,7 +90,7 @@ test("index.html keeps the CSP meta tag, the stylesheet links and the module scr
     /<meta http-equiv="Content-Security-Policy" content="default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'">/,
   );
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((match) => match[1]);
-  assert.deepEqual(links, ["css/main.css", "css/atlas.css", "css/atlas-panel.css"]);
+  assert.deepEqual(links, ["css/main.css", "css/atlas.css", "css/atlas-panel.css", "css/chat.css"]);
   assert.match(html, /<script type="module" src="js\/app\.js"><\/script>\s*<script type="module" src="js\/atlas\.js"><\/script>/);
 });
 
@@ -259,6 +259,35 @@ test("the nav and the hero lead to the Atlas, and the page sections keep their o
   assert.ok(order.every((at) => at > 0) && [...order].sort((a, b) => a - b).join() === order.join(), "About, ESP, Clear Ledger, then the Atlas");
 });
 
+test("the hero gives the household premise in plain words with its caveats, and hides the question until the script runs (F08)", () => {
+  const hero = html.slice(html.indexOf('<section class="hero">'), html.indexOf("</section>"));
+  const text = (pattern) => (hero.match(pattern) || [])[1] || "";
+  const headline = text(/<h1>([^<]*)<\/h1>/);
+  const premise = text(/<p class="hero-tagline">([^<]*)<\/p>/);
+  assert.match(headline, /internet bill/i, "the headline is about the household's bill");
+  assert.doesNotMatch(headline, /\bESP\b/, "and needs no acronym");
+  for (const pattern of [/internet provider/, /standing monthly plan/, /proposed design/, /draft/, /not a product/, /illustrative/]) {
+    assert.match(premise, pattern, `the premise says ${pattern}`);
+  }
+  assert.doesNotMatch(premise, /guarantee|settled|will pay|saves? you|cheaper/i, "and promises nothing");
+  assert.doesNotMatch(hero, /gate 1|development client|\blearned\b/i, "no release-gate wording and no claim of learning");
+  assert.match(hero, /<div class="hero-ask-wrap" hidden>\s*<p class="hero-ask-label">Start with one question<\/p>\s*<button type="button" class="hero-ask"><span class="hero-ask-text"><\/span><\/button>/, "the question is built by the script and hidden without it");
+  assert.match(hero, /That is only a starting marker \(<span class="hero-count"><\/span>\)/, "the counter is explained as a starting marker");
+  assert.ok(hero.indexOf("hero-ask-wrap") < hero.indexOf("hero-cta-link"), "the question comes before the link");
+  assert.ok(!html.includes('class="hero-ask-text">'.concat(graph.FIRST_SUGGESTION)), "the question text is the graph's, written by the script, not copied into the page");
+});
+
+test("no visitor-facing text outside the conversation card mentions Gate 1 or a development client (F08)", () => {
+  const outside = html
+    .replace(/<div id="conversation"[\s\S]*?<\/form>(\s*<details[\s\S]*?<\/details>)?\s*<\/div>/, "")
+    .replace(/<!--[\s\S]*?-->/g, "");
+  assert.doesNotMatch(outside, /gate 1|development client/i);
+});
+
+test("the legend says that the start place is lit as a starting marker (F08)", () => {
+  assert.match(html, /<strong>visited<\/strong>: an answer mentioned this place \(Your internet bill starts lit as a starting marker\)/);
+});
+
 test("the suggestion chips live in the Atlas card, under the honesty note and above the toolbar", () => {
   const atlas = html.indexOf('<div id="atlas" class="atlas">');
   const chat = html.indexOf('<div id="conversation" class="atlas-chat">');
@@ -286,7 +315,9 @@ test("the status elements: one polite notice, one spoken summary, and no live re
 
 test("the chat card copy no longer points at sections 'above' it", () => {
   const chat = html.slice(html.indexOf('<div id="conversation"'));
-  assert.match(chat, /<p>The rest of the page stays available without JavaScript\. This conversation is a development client and is not a Gate 1 claim\.<\/p>/);
+  assert.match(chat, /<p>The rest of the page stays available without JavaScript\.<\/p>/);
+  // The release-gate wording is developer-facing: it sits in a collapsed details element, not in the visible intro.
+  assert.match(chat, /<details class="atlas-dev-note">\s*<summary>Developer details<\/summary>\s*<p>This conversation is a development client and is not a Gate 1 claim\.<\/p>\s*<\/details>/);
   assert.doesNotMatch(html, /The sections above/);
 });
 

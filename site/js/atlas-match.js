@@ -17,6 +17,11 @@
  *   that begins with "- ", "* ", "+ ", "1. " or "# ", ends the phrase before it, so two bullets such
  *   as "- **Monthly epoch**" and "- **Identity layers**" never make "epoch identity". A single newline
  *   inside a paragraph is only a space (a soft-wrapped line still makes the phrase).
+ *   The one exception to "any other character breaks the phrase" is the possessive: an apostrophe and
+ *   an "s" that end a word are not read at all, so "your ISP's debt" is the phrase "ISP debt" and
+ *   "the pot's ceiling" is "pot ceiling" (a model answer is full of them). Only a lone "s"
+ *   directly after one apostrophe counts ("ISP's", never "ISP'sx" or "ISP' s"), and a term is read the
+ *   same way, so a term written with a possessive is the same term without it.
  *   EXCEPT a phrase whose first character is uppercase ("Allowance to Spend", "Consumption
  *   Record"): that is an acronym expansion written out, and it is matched case-sensitively, so a
  *   reply that merely says "allowance to spend" in passing lights nothing;
@@ -165,6 +170,10 @@ function canonicalGap(gap) {
 
 /**
  * Split a normalised text into its runs of letters and digits and the canonical gaps between them.
+ * A possessive is dropped: a run that is a lone "s" straight after one apostrophe ("ISP's") is not a
+ * word of its own and leaves no gap, so the text reads "ISP debt" for "ISP's debt". The gap that
+ * follows the dropped "s" becomes the gap after the word before it. Terms and replies both go through
+ * here, which is what keeps a term written with a possessive equal to the one without.
  * @param {string} text
  * @param {RegExp} tokenRe global
  * @returns {{runs: string[], gaps: string[]}}
@@ -174,11 +183,35 @@ function splitRuns(text, tokenRe) {
   const gaps = [];
   let last = 0;
   for (const found of text.matchAll(tokenRe)) {
-    if (runs.length > 0) gaps.push(canonicalGap(text.slice(last, found.index)));
-    runs.push(found[0]);
+    const gap = runs.length > 0 ? canonicalGap(text.slice(last, found.index)) : "";
     last = found.index + found[0].length;
+    if (gap === "'" && (found[0] === "s" || found[0] === "S")) continue;
+    if (runs.length > 0) gaps.push(gap);
+    runs.push(found[0]);
   }
   return { runs, gaps };
+}
+
+/**
+ * The text with every possessive taken out: "ISP's debt" becomes "ISP debt". The same rule as in
+ * splitRuns, for the terms that keep a regular expression of their own (they match the text, not its
+ * tokens), so a possessive is transparent to every kind of term.
+ * @param {string} text normalised
+ * @param {RegExp|null} tokenRe global
+ */
+function dropPossessives(text, tokenRe) {
+  if (!tokenRe || !text.includes("'")) return text;
+  let out = "";
+  let copyFrom = 0;
+  let last = -1;
+  for (const found of text.matchAll(tokenRe)) {
+    if (last >= 0 && (found[0] === "s" || found[0] === "S") && found.index === last + 1 && text[last] === "'") {
+      out += text.slice(copyFrom, last);
+      copyFrom = found.index + 1;
+    }
+    last = found.index + found[0].length;
+  }
+  return out + text.slice(copyFrom);
 }
 
 /**
@@ -297,7 +330,7 @@ export function compileGlossary(islands = ISLANDS) {
           else bucket.set(candidate.runs[0], [candidate]);
           tests.push({ term: text, kind, caseSensitive, via: "tokens" });
         } else {
-          const re = buildPattern(text, kind, caseSensitive);
+          const re = buildPattern(dropPossessives(text, tokenRe), kind, caseSensitive);
           lookup.patterns.push({ entry: entryIndex, re });
           tests.push({ term: text, kind, caseSensitive, via: "pattern", re });
         }
@@ -352,14 +385,7 @@ export function matchReply(text, glossary) {
   if (!lookup || !lookup.tokenRe) return [];
   const hit = new Uint8Array(glossary.entries.length);
 
-  const tokens = [];
-  const gaps = [];
-  let previousEnd = 0;
-  for (const found of reply.matchAll(lookup.tokenRe)) {
-    if (tokens.length > 0) gaps.push(canonicalGap(reply.slice(previousEnd, found.index)));
-    tokens.push(found[0]);
-    previousEnd = found.index + found[0].length;
-  }
+  const { runs: tokens, gaps } = splitRuns(reply, lookup.tokenRe);
   const lowered = tokens.map((token) => token.toLowerCase());
 
   const probe = (list, at) => {
@@ -381,8 +407,11 @@ export function matchReply(text, glossary) {
       probe(lookup.folded.get(low.slice(0, -1)), at);
     }
   }
-  for (const { entry, re } of lookup.patterns) {
-    if (hit[entry] === 0 && re.test(reply)) hit[entry] = 1;
+  if (lookup.patterns.length > 0) {
+    const plain = dropPossessives(reply, lookup.tokenRe);
+    for (const { entry, re } of lookup.patterns) {
+      if (hit[entry] === 0 && re.test(plain)) hit[entry] = 1;
+    }
   }
 
   const ids = [];

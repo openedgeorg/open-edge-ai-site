@@ -26,6 +26,14 @@
  *   later turn. If the question is not in the list (a reload, or the chat showing an older snapshot)
  *   there is nothing to deliver yet and the bridge keeps waiting. A row is never taken merely because
  *   it is the last one.
+ * - The chat paints more phases than ready/running: `cancelling` is busy; `failed` and `cancelled` are
+ *   outcomes of a question that has NO reply (suggestions work again, nothing is delivered, and a failure says
+ *   "the last question did not go through"); `unresolved` means the chat could not confirm what became of the
+ *   question (it is not sent again), so suggestions wait and the question stays awaited: if it is resolved later
+ *   its reply is still delivered. A row the chat marks `data-role="error"` is a message about a problem, never a reply.
+ * - A reply that arrives after a reload (the chat shows `reconciling` again and then `ready`) has no `awaiting`
+ *   in memory. It is delivered from the rows after the last question this tab ever submitted (the stored
+ *   fingerprints), once, unless its key was delivered before.
  * - A delivered reply is remembered as `${position of its first row}:${hash of its squashed text}`, so an
  *   identical canned answer in a later turn still counts while a second read of the very same list does not.
  * - That memory also lives in sessionStorage (SEEN_KEY, passed in as `storage`), because a reload
@@ -62,7 +70,11 @@ export const START_GIVE_UP_MS = 10000;
 /** A late reply is delivered only after #history has been quiet for this long (a stream may still be growing). */
 export const LATE_SETTLE_MS = 1500;
 
-const BUSY_PHASES = new Set(["submitting", "running", "reconciling", "recovering"]);
+const BUSY_PHASES = new Set(["submitting", "running", "reconciling", "recovering", "cancelling"]);
+/** Phases in which the last question has no reply and nothing is going on: suggestions work again. */
+const FAILED_PHASES = new Set(["failed", "cancelled"]);
+/** The chat could not confirm what became of the last question. It is neither busy nor settled. */
+const UNRESOLVED_PHASE = "unresolved";
 /**
  * The most entries the stored memory holds of EACH kind (reply keys, and `q:` question keys); the
  * oldest of a kind goes first. A turn adds one of each, so this is also the number of turns the
@@ -89,6 +101,7 @@ const MESSAGES = {
   rate: "You are sending quickly. Suggestions will be back shortly.",
   unavailable: "The chat is not available right now.",
   noprogress: "The last question did not go through.",
+  unresolved: "The chat is still checking on your last question.",
 };
 
 function normPhase(value) {
@@ -168,15 +181,25 @@ export function createDomPort(doc, options = {}) {
     return element && typeof element.value === "string" ? element.value : "";
   }
 
+  /** A row the chat marks as a message about a problem is not part of any reply. */
+  function isProblemRow(row) {
+    try {
+      const item = row && row.parentElement;
+      return Boolean(item && typeof item.getAttribute === "function" && item.getAttribute("data-role") === "error");
+    } catch {
+      return false;
+    }
+  }
+
   /** The text of every `#history li > p` row, in order, blank rows included (text only, never markup). */
   function rowTexts() {
     const history = find("#history");
     if (!history) return [];
     try {
       if (typeof history.querySelectorAll !== "function") return [];
-      return Array.from(history.querySelectorAll("li > p")).map((row) =>
-        String(row && row.textContent != null ? row.textContent : ""),
-      );
+      return Array.from(history.querySelectorAll("li > p"))
+        .filter((row) => !isProblemRow(row))
+        .map((row) => String(row && row.textContent != null ? row.textContent : ""));
     } catch {
       return [];
     }
@@ -280,7 +303,7 @@ export function createDomPort(doc, options = {}) {
 /**
  * @typedef {object} ChatStatus
  * @property {boolean} canSend
- * @property {"" | "starting" | "busy" | "draft" | "rejected" | "rate" | "unavailable" | "noprogress"} reason
+ * @property {"" | "starting" | "busy" | "draft" | "rejected" | "rate" | "unavailable" | "noprogress" | "unresolved"} reason
  *   "noprogress" is informational: canSend is true again, and `message` says the last question did not go through.
  * @property {string} message
  * @property {number|null} resumeAt epoch ms when a time-based block ends, else null
@@ -364,7 +387,7 @@ export function createChatBridge({
 
   function settle(t) {
     while (sends.length && sends[0] <= t - SEND_WINDOW_MS) sends.shift();
-    if (awaiting && !BUSY_PHASES.has(readPhase())) {
+    if (awaiting && !BUSY_PHASES.has(readPhase()) && readPhase() !== UNRESOLVED_PHASE) {
       if (awaiting.sawBusy) {
         if (t - awaiting.at >= staleSubmitMs) awaiting = null;
       } else if (t - awaiting.at >= noProgressMs) {
@@ -396,8 +419,9 @@ export function createChatBridge({
     if (current === "unavailable") return block("unavailable");
     // The chat never painted a phase: it is still booting, or it never will. Say which, honestly.
     if (current === "") return t - createdAt >= startGiveUpMs ? block("unavailable") : block("starting");
+    if (current === UNRESOLVED_PHASE) return block("unresolved");
     if (BUSY_PHASES.has(current) || awaiting) return block("busy");
-    if (current !== "ready" && current !== "rejected") return block("busy");
+    if (current !== "ready" && current !== "rejected" && !FAILED_PHASES.has(current)) return block("busy");
     const rate = rateResumeAt();
     if (rejectUntil > t) return block("rejected", Math.max(rejectUntil, rate == null ? 0 : rate));
     if (rate != null) return block("rate", rate);
@@ -421,7 +445,7 @@ export function createChatBridge({
     const rate = rateResumeAt();
     if (rate != null) deadline = Math.min(deadline, rate);
     const current = readPhase();
-    if (awaiting && !BUSY_PHASES.has(current)) {
+    if (awaiting && !BUSY_PHASES.has(current) && current !== UNRESOLVED_PHASE) {
       deadline = Math.min(deadline, awaiting.at + (awaiting.sawBusy ? staleSubmitMs : noProgressMs));
     }
     if (current === "" && t - createdAt < startGiveUpMs) deadline = Math.min(deadline, createdAt + startGiveUpMs);
@@ -625,6 +649,36 @@ export function createChatBridge({
     return turn.map((row) => row.text).join("\n\n");
   }
 
+  /**
+   * The reply to a question this bridge no longer awaits (the page was reloaded while the chat was still
+   * checking on it): the rows after the LAST row that is an echo of a question this tab submitted, up to
+   * the end of the list. Nothing when there is no such row, nothing after it, or the reply was handed on already.
+   */
+  function pickRecovered() {
+    const list = readRows();
+    if (list === null) return null;
+    const rows = [];
+    for (const text of list) {
+      const plain = squash(text);
+      if (plain !== "") rows.push({ text, plain });
+    }
+    let at = -1;
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      if (isEcho(rows[i].plain)) {
+        at = i;
+        break;
+      }
+    }
+    if (at < 0) return null;
+    const turn = rows.slice(at + 1);
+    if (turn.length === 0) return null;
+    const key = `${at + 1}:${fnv1a32(turn.map((row) => row.plain).join(" "))}`;
+    if (seen.has(key)) return null;
+    remember(key);
+    storeSeen();
+    return turn.map((row) => row.text).join("\n\n");
+  }
+
   function deliver(reply) {
     if (typeof onReply !== "function") return;
     try {
@@ -711,8 +765,19 @@ export function createChatBridge({
     } else if (next === "unavailable") {
       if (awaiting) dirty = true;
       awaiting = null;
+    } else if (FAILED_PHASES.has(next)) {
+      // The question has no reply. A failure is told ("did not go through"); a cancellation is the visitor's own.
+      if (awaiting && next === "failed") lost = { text: awaiting.text, at: t };
+      awaiting = null;
+      late = null;
+      cancelLateTimer();
+      dirty = true;
     } else if (next === "ready") {
-      if (previous !== "ready" && awaiting) {
+      if (previous !== "ready" && !awaiting && !late && (BUSY_PHASES.has(previous) || previous === UNRESOLVED_PHASE)) {
+        reply = pickRecovered();
+        if (reply !== null) lost = null;
+        dirty = true;
+      } else if (previous !== "ready" && awaiting) {
         const submitted = awaiting.text;
         awaiting = null;
         reply = pickReply(submitted);

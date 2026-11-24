@@ -2018,6 +2018,268 @@ describe("rejected runs", () => {
   });
 });
 
+describe("the phases of an outcome the chat tells: failed, cancelled, cancelling, unresolved", () => {
+  test("cancelling is busy like running: suggestions wait and nothing is submitted", () => {
+    const { bridge, port } = setup({ phase: "cancelling" });
+    assert.equal(bridge.status().reason, "busy");
+    assert.deepEqual(bridge.sendTeaser("hello"), { sent: false, reason: "busy" });
+    assert.deepEqual(port.submitted, []);
+  });
+
+  test("a run that is cancelled while it is stopping ends without a reply and without a pause", () => {
+    const { bridge, port, replies } = setup();
+    bridge.sendTeaser("Question");
+    port.setPhase("running");
+    port.setPhase("cancelling");
+    assert.equal(bridge.status().reason, "busy");
+    port.setPhase("cancelled");
+    const status = bridge.status();
+    assert.deepEqual([status.canSend, status.reason, status.resumeAt], [true, "", null], "the visitor's own cancellation is not reported as a failure");
+    assert.deepEqual(replies, []);
+    assert.deepEqual(bridge.sendTeaser("Another"), { sent: true, reason: "" });
+  });
+
+  test("a run that failed delivers nothing, frees the suggestions at once and says the question did not go through", () => {
+    const { bridge, port, replies } = setup();
+    bridge.sendTeaser("What is a pot?");
+    port.setPhase("running");
+    port.setPhase("failed");
+    assert.deepEqual(replies, []);
+    const status = bridge.status();
+    assert.deepEqual([status.canSend, status.reason, status.resumeAt], [true, "noprogress", null], "no pause either: nothing was refused");
+    assert.equal(status.message, "The last question did not go through.");
+    assert.deepEqual(bridge.sendTeaser("Another"), { sent: true, reason: "" });
+    assert.equal(bridge.status().reason, "busy", "and the next question is the one awaited now");
+  });
+
+  test("a failed run is not held as a busy one: it needs no STALE_SUBMIT_MS to give up", () => {
+    const { bridge, port, clock } = setup();
+    bridge.sendTeaser("Question");
+    port.setPhase("running");
+    clock.advance(1000);
+    port.setPhase("failed");
+    assert.equal(bridge.status().canSend, true);
+    clock.advance(STALE_SUBMIT_MS + 1000);
+    assert.equal(bridge.status().canSend, true);
+    assert.equal(bridge.status().reason, "", "the notice goes away by itself, as for any run that did not go through");
+  });
+
+  test("an older answer that is the last row is not delivered by a failed run", () => {
+    const { bridge, port, replies } = setup({ list: ["Old question", "Old answer"] });
+    bridge.sendTeaser("New question");
+    port.setPhase("running");
+    port.setHistory(["Old question", "Old answer", "New question"]);
+    port.setPhase("failed");
+    port.setHistory(["Old question", "Old answer", "New question"]);
+    assert.deepEqual(replies, []);
+  });
+
+  test("a partial answer on the list is not delivered when the run ends failed or cancelled", () => {
+    for (const outcome of ["failed", "cancelled"]) {
+      const { bridge, port, replies, clock } = setup();
+      bridge.sendTeaser("Question");
+      port.setPhase("running");
+      port.say("Half an ans");
+      port.setPhase(outcome);
+      clock.advance(LATE_SETTLE_MS * 4);
+      assert.deepEqual(replies, [], outcome);
+    }
+  });
+
+  test("failed and cancelled are not busy at start (a restored page): suggestions work", () => {
+    for (const phase of ["failed", "cancelled"]) {
+      const { bridge, port } = setup({ phase });
+      assert.equal(bridge.status().canSend, true, phase);
+      assert.deepEqual(bridge.sendTeaser("hello"), { sent: true, reason: "" }, phase);
+      assert.deepEqual(port.submitted, ["hello"], phase);
+    }
+  });
+
+  test("a question sent after a failure is an ordinary run: its reply is delivered once", () => {
+    const { bridge, port, replies } = setup();
+    bridge.sendTeaser("First");
+    port.setPhase("running");
+    port.setPhase("failed");
+    bridge.sendTeaser("Second");
+    port.setPhase("submitting");
+    port.setPhase("running");
+    port.say("The answer");
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["The answer"]);
+  });
+
+  test("a run that fails and is sent again by the page (no submit seen) is picked up when it goes busy", () => {
+    const { bridge, port, replies } = setup();
+    bridge.sendTeaser("Question");
+    port.setPhase("running");
+    port.setPhase("failed");
+    port.setPhase("submitting");
+    assert.equal(bridge.status().reason, "busy");
+    port.setPhase("running");
+    port.say("Answer");
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["Answer"]);
+  });
+
+  test("unresolved: the chat could not confirm the question, so suggestions wait with a message of their own", () => {
+    const { bridge, port } = setup({ phase: "unresolved" });
+    const status = bridge.status();
+    assert.deepEqual([status.canSend, status.reason, status.resumeAt], [false, "unresolved", null]);
+    assert.equal(status.message, "The chat is still checking on your last question.");
+    assert.deepEqual(bridge.sendTeaser("hello"), { sent: false, reason: "unresolved" });
+    assert.deepEqual(port.submitted, []);
+  });
+
+  test("unresolved never times out: the question is still awaited", () => {
+    const { bridge, port, clock } = setup();
+    bridge.sendTeaser("Question");
+    port.setPhase("running");
+    port.setPhase("reconciling");
+    port.setPhase("unresolved");
+    clock.advance(STALE_SUBMIT_MS * 4);
+    assert.equal(bridge.status().reason, "unresolved");
+  });
+
+  test("a question that was unresolved and is resolved later still delivers its reply, once", () => {
+    const { bridge, port, replies } = setup();
+    bridge.sendTeaser("Question");
+    port.setPhase("running");
+    port.setPhase("unresolved");
+    port.setPhase("reconciling");
+    port.say("The answer, after all");
+    port.setPhase("ready");
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["The answer, after all"]);
+    assert.equal(bridge.status().canSend, true);
+  });
+
+  test("unresolved then failed: the question is over and said to have failed", () => {
+    const { bridge, port, replies } = setup();
+    bridge.sendTeaser("Question");
+    port.setPhase("running");
+    port.setPhase("unresolved");
+    port.setPhase("failed");
+    assert.deepEqual(replies, []);
+    assert.equal(bridge.status().reason, "noprogress");
+  });
+
+  test("an unknown phase is still busy, so a phase the bridge has not heard of can never deliver or free anything", () => {
+    const { bridge, port, replies } = setup();
+    bridge.sendTeaser("Question");
+    port.setPhase("running");
+    port.say("Looks like an answer");
+    port.setPhase("mystery");
+    assert.equal(bridge.status().reason, "busy");
+    assert.deepEqual(replies, []);
+  });
+});
+
+describe("a reply that arrives after a reload: the chat shows reconciling again, then ready", () => {
+  const key = (text) => `q:${fnv1a32(text)}`;
+  const replyKey = (position, text) => `${position}:${fnv1a32(text)}`;
+  const seed = (...entries) => makeFakeStorage({ [SEEN_KEY]: JSON.stringify(entries) });
+
+  test("the answer to the question this tab asked before the reload is delivered once", () => {
+    const storage = seed(key("What is the pot?"));
+    const { port, replies, bridge } = setup({ phase: "reconciling", list: ["What is the pot?"] }, { storage });
+    assert.equal(bridge.status().reason, "busy");
+    port.say("The pot is shared.");
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["The pot is shared."]);
+    assert.deepEqual(storage.seen(), [key("What is the pot?"), replyKey(1, "The pot is shared.")], "and remembered by position and hash only");
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["The pot is shared."], "once");
+  });
+
+  test("older answers of the restored list are not the new one: only the rows after the last question count", () => {
+    const storage = seed(key("Q1"), replyKey(1, "A1"), key("Q2"));
+    const { port, replies } = setup({ phase: "reconciling", list: ["Q1", "A1", "Q2"] }, { storage });
+    port.say("A2");
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["A2"]);
+  });
+
+  test("ready with nothing after the last question delivers nothing", () => {
+    const storage = seed(key("Q1"), replyKey(1, "A1"), key("Q2"));
+    const { port, replies, bridge } = setup({ phase: "reconciling", list: ["Q1", "A1", "Q2"] }, { storage });
+    port.setPhase("ready");
+    assert.deepEqual(replies, []);
+    assert.equal(bridge.status().canSend, true);
+  });
+
+  test("a reply that was delivered before the reload is not delivered again", () => {
+    const storage = seed(key("Q1"), replyKey(1, "A1"));
+    const { port, replies } = setup({ phase: "reconciling", list: ["Q1", "A1"] }, { storage });
+    port.setPhase("ready");
+    assert.deepEqual(replies, []);
+  });
+
+  test("a list restored on boot (no busy phase before ready) delivers nothing: reading history is not an answer", () => {
+    const storage = seed(key("Q1"));
+    const { port, replies } = setup({ phase: "", list: ["Q1", "A1"] }, { storage });
+    port.setPhase("ready");
+    assert.deepEqual(replies, []);
+    const again = setup({ phase: "ready", list: ["Q1", "A1"] }, { storage: seed(key("Q1")) });
+    again.port.setHistory(["Q1", "A1"]);
+    assert.deepEqual(again.replies, []);
+  });
+
+  test("a question the tab never asked (no echo row) cannot make a reply", () => {
+    const { port, replies } = setup({ phase: "reconciling", list: ["Some other text", "Some other answer"] });
+    port.setPhase("ready");
+    assert.deepEqual(replies, []);
+  });
+
+  test("a failure and a cancellation do not make a reply either, nor the ready after them", () => {
+    for (const outcome of ["failed", "cancelled"]) {
+      const storage = seed(key("Q1"));
+      const { port, replies } = setup({ phase: "reconciling", list: ["Q1"] }, { storage });
+      port.say("Partial answer");
+      port.setPhase(outcome);
+      port.setPhase("ready");
+      assert.deepEqual(replies, [], outcome);
+    }
+  });
+
+  test("a turn of several rows after the reload is delivered together, once", () => {
+    const storage = seed(key("Q1"));
+    const { port, replies } = setup({ phase: "reconciling", list: ["Q1"] }, { storage });
+    port.say("Preamble.");
+    port.say("The answer.");
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["Preamble.\n\nThe answer."]);
+  });
+
+  test("after unresolved the same applies to a bridge that still awaits the question: the reply comes through the awaited path", () => {
+    const storage = seed(key("Q1"));
+    const { port, replies, bridge } = setup({ phase: "unresolved", list: ["Q1"] }, { storage });
+    assert.equal(bridge.status().reason, "unresolved");
+    port.say("A1");
+    port.setPhase("ready");
+    assert.deepEqual(replies, ["A1"]);
+  });
+});
+
+describe("rows the chat marks as problems are never part of a reply", () => {
+  test("rows(), lastReply() and rowCount() leave out a row with data-role=error", () => {
+    const fake = makeFakeDocument();
+    const port = createDomPort(fake.doc);
+    fake.history.setRows([{ text: "the question", role: "user" }, { text: "Something went wrong", role: "error" }, { text: "the answer", role: "assistant" }]);
+    assert.deepEqual(port.rows(), ["the question", "the answer"]);
+    assert.equal(port.lastReply(), "the answer");
+    assert.equal(port.rowCount(), 2);
+    fake.history.setRows([{ text: "the question", role: "user" }, { text: "Something went wrong", role: "error" }]);
+    assert.equal(port.lastReply(), "the question", "an error row is not a reply, however last it is");
+  });
+
+  test("rows of any other role, or without one, are read as before", () => {
+    const fake = makeFakeDocument();
+    const port = createDomPort(fake.doc);
+    fake.history.setRows([{ text: "q", role: "user" }, { text: "a", role: "assistant" }, { text: "b" }, "c"]);
+    assert.deepEqual(port.rows(), ["q", "a", "b", "c"]);
+  });
+});
+
 describe("the draft box and the bridge's own text", () => {
   /** What the chat does with a refused teaser: the rejected phase, with the text put back into the box. */
   function rejectTeaser(port, text) {
@@ -2514,9 +2776,16 @@ function makeFakeHistory() {
       // Only the row paragraphs match; a source panel's paragraphs are not "li > p".
       return selector === "li > p" ? rows.map((row) => row.p) : [];
     },
-    setRows(texts) {
+    /** Each entry is a text, or `{text, role}` for a row the chat marks with data-role (user, assistant, error). */
+    setRows(entries) {
       rows.length = 0;
-      for (const text of texts) rows.push({ p: makeFakeElement("p", { textContent: text }) });
+      for (const entry of entries) {
+        const text = typeof entry === "object" && entry !== null ? entry.text : entry;
+        const role = typeof entry === "object" && entry !== null ? entry.role : null;
+        const p = makeFakeElement("p", { textContent: text });
+        p.parentElement = { getAttribute: (name) => (name === "data-role" ? role : null) };
+        rows.push({ p });
+      }
     },
   });
   return history;

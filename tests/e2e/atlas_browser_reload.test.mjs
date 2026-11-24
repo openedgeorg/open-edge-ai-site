@@ -36,7 +36,14 @@
  * Test g is F32: the history can show one turn as several rows (a preamble, then the answer), and the
  * Atlas reads them together.
  *
- * What the conversation client does that matters here (the double reproduces it):
+ * Two conversation clients run these scenarios (CHAT_SETUP.mode). The double is a port of the OLD client; the
+ * working tree's own client ("real") restores the list on boot, keeps a new question pending until its OWN
+ * answer is in the history (it does not paint `ready` on an older snapshot) and asks again by itself. The
+ * scenarios below were written for the old client and keep their exact steps in the double branches; the real
+ * branches check the same thing about the Atlas (an old answer, the visitor's own earlier question or a list
+ * that is read again never lights the map; the real answer lights its places once) for the client that exists.
+ *
+ * What the OLD conversation client does that matters here (the double reproduces it; REAL = false):
  *  - After a reload the list (#history) is EMPTY and stays so until the visitor sends something.
  *  - /events that answers 404 makes follow() settle at once; the chat then polls /history every 2 s,
  *    but only until ANY assistant row exists, which from turn 2 on is true from the first fetch. So
@@ -69,6 +76,8 @@ import { BROWSER_CONCURRENCY, CHAT_SETUP, findChrome, launchBrowser, siteFileFor
 
 const INDEX = buildIndex();
 const GLOSSARY = compileGlossary(ISLANDS);
+/** The working tree's own conversation client (else the port of the old one). */
+const REAL = CHAT_SETUP.mode === "real";
 const START_NEIGHBOURS = [...INDEX.neighbours.get(START_ID)];
 
 /** The visitor's own second question, typed (it is not a suggestion, and not the first one). */
@@ -217,6 +226,14 @@ async function handle(req, res, backend) {
   if (method === "POST" && pathname === "/visitor-session") {
     await readJson(req);
     return json(res, 200, { subject_id: "s-1", csrf_token: "t-1" });
+  }
+  if (method === "GET" && pathname === "/providers") {
+    return json(res, 200, {
+      providers: [
+        { provider: "openai", harness: "codex", display_model: "m", eligible: true, available: true },
+        { provider: "xai", harness: "grok-build", display_model: "m", eligible: true, available: true },
+      ],
+    });
   }
   if (method === "POST" && pathname === "/conversations") {
     await readJson(req);
@@ -536,7 +553,13 @@ async function firstTurnReloadClear(page, url, first) {
   await reloadTab(page);
   const restored = await read(page);
   assertMapShows(restored, [first.text], "after the reload");
-  assert.deepEqual(restored.rows, [], "precondition: after a reload the chat shows no rows");
+  if (REAL) {
+    // The working tree's chat reads the conversation back on boot. Reading it back lights nothing.
+    await page.waitFor(`document.querySelectorAll("#history li > p").length === 2`, { what: "the chat to show the conversation again" });
+    assert.deepEqual((await read(page)).rows, [FIRST_SUGGESTION, first.text], "precondition: after a reload the chat shows turn 1 again");
+  } else {
+    assert.deepEqual(restored.rows, [], "precondition: after a reload the chat shows no rows");
+  }
   await clearMap(page);
   assertNothingLit(await read(page), "after Clear map");
 }
@@ -583,14 +606,28 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
     stale(backend);
     await page.eval(INSTALL_RECORDER);
     await ask(page);
-    await page.waitFor(`${PHASE_IS("ready")} && document.querySelectorAll("#history li > p").length === ${staleRows.length}`, {
-      timeout: 15000,
-      what: "the chat to paint ready on the older snapshot",
-    });
-    assert.equal(backend.turns.length, 2, "the question did reach the backend");
-    assert.deepEqual(backend.posts.map((post) => post.message), [FIRST_SUGGESTION, question]);
-    const shown = await read(page);
-    assert.deepEqual(shown.rows, staleRows, "precondition: the chat shows the older list, without the question just asked");
+    if (REAL) {
+      // The working tree's chat shows the older list with the question just asked under it, and stays busy:
+      // nothing in the older list answers that question.
+      await page.waitFor(`document.querySelectorAll("#history li > p").length === ${staleRows.length + 1}`, {
+        timeout: 15000,
+        what: "the chat to show the older list and the question just asked",
+      });
+      assert.equal(backend.turns.length, 2, "the question did reach the backend");
+      assert.deepEqual(backend.posts.map((post) => post.message), [FIRST_SUGGESTION, question]);
+      const shown = await read(page);
+      assert.deepEqual(shown.rows, [...staleRows, question], "the older list, then the question just asked");
+      assert.notEqual(shown.phase, "ready", "the question is still pending");
+    } else {
+      await page.waitFor(`${PHASE_IS("ready")} && document.querySelectorAll("#history li > p").length === ${staleRows.length}`, {
+        timeout: 15000,
+        what: "the chat to paint ready on the older snapshot",
+      });
+      assert.equal(backend.turns.length, 2, "the question did reach the backend");
+      assert.deepEqual(backend.posts.map((post) => post.message), [FIRST_SUGGESTION, question]);
+      const shown = await read(page);
+      assert.deepEqual(shown.rows, staleRows, "precondition: the chat shows the older list, without the question just asked");
+    }
 
     // However long we wait, neither the old answer nor the visitor's own earlier question is the answer.
     await sleep(LATE_SETTLE_MS + 2500);
@@ -603,8 +640,8 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
     // /history catches up and the list is rewritten: the real answer is there.
     backend.lagging = false;
     backend.historyOverride = null;
-    await rewriteList(page);
-    await page.waitFor(REPLIES_ARE(1), { timeout: 10000, what: "the Atlas to scan the answer once the list shows it" });
+    if (!REAL) await rewriteList(page); // the old chat never asks again; the working tree's chat does
+    await page.waitFor(REPLIES_ARE(1), { timeout: REAL ? 20000 : 10000, what: "the Atlas to scan the answer once the list shows it" });
     const lit = await read(page);
     assertMapShows(lit, [second.text], "after the real answer");
     assert.deepEqual(lit.rows, [FIRST_SUGGESTION, first.text, question, second.text], "the list is the true conversation");
@@ -616,7 +653,8 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
     const later = await read(page);
     assertMapShows(later, [second.text], "a few seconds later");
     const samples = await timeline(page);
-    const gap = assertLitOnceAfterFinal(samples, { before: 0, finalText: second.text, label, waitsForQuiet: true });
+    // The working tree's chat paints the answer and `ready` together, so there is no late path to wait for.
+    const gap = assertLitOnceAfterFinal(samples, { before: 0, finalText: second.text, label, waitsForQuiet: !REAL });
     t.diagnostic(`answer shown at ${gap.shownAt} ms, map lit at ${gap.litAt} ms (waited ${gap.litAt - gap.shownAt} ms for a quiet list)`);
     assert.equal(later.cspViolations, 0, "no Content-Security-Policy violation");
     if (finish) await finish(page);
@@ -773,10 +811,20 @@ describe("Atlas chat bridge in a real browser: after a reload", SUITE, () => {
     await clearMap(page);
     await page.eval(INSTALL_RECORDER);
     await page.click(CHIP);
-    await page.waitFor(`${PHASE_IS("ready")} && document.querySelectorAll("#history li > p").length === 3`, {
-      timeout: 15000,
-      what: "the chat to paint the same three rows again",
-    });
+    if (REAL) {
+      // The working tree's chat reads the three rows back on boot, then keeps the new question pending (they
+      // are all older than it) and shows it under them.
+      await page.waitFor(`document.querySelectorAll("#history li > p").length === 4`, {
+        timeout: 15000,
+        what: "the chat to show the three old rows and the question just asked",
+      });
+      assert.notEqual((await read(page)).phase, "ready", "the question is still pending");
+    } else {
+      await page.waitFor(`${PHASE_IS("ready")} && document.querySelectorAll("#history li > p").length === 3`, {
+        timeout: 15000,
+        what: "the chat to paint the same three rows again",
+      });
+    }
     assert.equal(backend.posts.length, 2, "the suggestion went out again");
     await sleep(LATE_SETTLE_MS + 2500);
     const again = await read(page);

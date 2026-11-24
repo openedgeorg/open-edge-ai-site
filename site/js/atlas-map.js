@@ -32,6 +32,8 @@ const NAME_CHARS = 20;
 const EDGE_TIP_CHARS = 34;
 const TIP_LINE_H = 17;
 const FLARE_MS = 1800;
+/** A pointer report within this long (ms) of a scroll, at the spot where the pointer last moved, is the page drifting, not the pointer. */
+const DRIFT_MS = 400;
 const BAND_TOP = 10;
 const BAND_BOTTOM = 742;
 const CAPTION_Y = { level: 36, name: 54, sub: 70 };
@@ -193,8 +195,10 @@ function hasClass(node, name) {
  * @param {Document} config.document
  * @param {{REGIONS:any[], ISLANDS:any[], EDGES:any[], VIEWBOX:{width:number,height:number}, EDGE_DRAGON_CAPTION:string, OPEN_LABEL:string, CONTESTED_LABEL:string}} config.graph
  * @param {ReturnType<typeof buildIndex>} [config.index]
- * @param {(id: string|null) => void} [config.onSelect] hover / focus / click of an island
- * @param {(key: string|null) => void} [config.onSelectEdge] hover of a lit path
+ * @param {(id: string|null) => void} [config.onSelect] the place the visitor is looking at changed (hover, focus,
+ *   click). It is told about a place and about the end of an inspection (null) only when the visitor ends it
+ *   (Escape, a click on the empty sea): the pointer leaving a place is not the end of reading about it
+ * @param {(key: string|null) => void} [config.onSelectEdge] a lit path is hovered or pinned (null: neither)
  * @param {(id: string) => void} [config.onActivate] click / Enter / Space on a frontier island
  * @param {string} [config.noticeId] id of the page element that says why teasers are paused;
  *   a paused frontier island is `aria-disabled` and `aria-describedby` that element
@@ -240,8 +244,22 @@ export function createAtlasMap({
   let selectedId = null;
   let dismissed = false;
   let lastShown = null;
+  /** A path the visitor chose (a click or tap on it, or its button in the inspector): it stays drawn bold until they move on. */
+  let pinnedEdgeKey = null;
+  let lastEdge = null;
   const flareTimers = new Map();
   const flared = new Set();
+  // A page that scrolls under a resting pointer makes the browser report the pointer on whatever now lies
+  // beneath it, without the pointer having moved. That is not the visitor turning to another place.
+  const clockView = doc.defaultView;
+  const clock = () => (clockView && clockView.performance && typeof clockView.performance.now === "function" ? clockView.performance.now() : Date.now());
+  let pointerAt = null;
+  let scrolledAt = -Infinity;
+  if (clockView && typeof clockView.addEventListener === "function") {
+    clockView.addEventListener("scroll", () => {
+      scrolledAt = clock();
+    }, { passive: true });
+  }
 
   const statusOf = (id) => current.status[id] || "fogged";
   const revealed = (id) => nodes.has(id) && statusOf(id) !== "fogged";
@@ -335,6 +353,9 @@ export function createAtlasMap({
     body.appendChild(svgEl(doc, "circle", { r: BODY_R + 8 }, "atlas-halo"));
     if (island.status === "contested") body.appendChild(svgEl(doc, "circle", { r: BODY_R + 8.5 }, "atlas-contest-ring"));
     if (island.status === "open") {
+      // Hidden until the place is visited: then it is the same gold disc as every visited place, and the dashed ring and the
+      // dragon on it keep saying "open, not ratified". Visiting never makes an open question look settled.
+      body.appendChild(svgEl(doc, "circle", { r: BODY_R }, "atlas-disc"));
       const glyph = svgEl(doc, "g", { transform: "translate(0 3)" }, "atlas-dragon");
       for (const d of DRAGON_GLYPH) glyph.appendChild(svgEl(doc, "path", { d }, "atlas-dragon-line"));
       body.appendChild(glyph);
@@ -446,24 +467,61 @@ export function createAtlasMap({
     return focusId || selectedId || null;
   }
 
+  /** The path that is drawn bold and described: the one under the pointer, else the one the visitor chose. */
+  const edgeShownKey = () => hoverEdgeKey || pinnedEdgeKey;
+
   function paintActive() {
     const shown = shownNow();
+    const edgeKeyShown = edgeShownKey();
     for (const [id, node] of nodes) {
       node.g.classList.toggle("is-active", id === shown);
       node.g.classList.toggle("is-selected", id === selectedId);
+      // The place the inspector describes keeps a quiet mark after the pointer has left it.
+      node.g.classList.toggle("is-inspected", id === lastShown && id !== shown);
     }
     for (const [key, node] of edgeNodes) {
       const touches = shown !== null && (node.edge.a === shown || node.edge.b === shown);
-      node.g.classList.toggle("is-active", (touches && node.state === "lit") || key === hoverEdgeKey);
+      node.g.classList.toggle("is-active", (touches && node.state === "lit") || key === edgeKeyShown);
     }
   }
 
-  function notifyShown() {
-    const next = shownNow();
+  /**
+   * Repaint the emphasis and, when the visitor has just turned to a place (`target`: the pointer came onto it,
+   * it took focus or was clicked), tell the owner. Nothing is told when the pointer leaves, focus goes to the
+   * inspector or the page is scrolled under a resting pointer: hover is transient, the reading is not, so the
+   * inspector keeps the last place. Only endInspection() clears it.
+   * @param {string|null} [target]
+   */
+  function notifyShown(target = null) {
     paintActive();
-    if (next === lastShown) return;
-    lastShown = next;
-    onSelect(next);
+    if (!target) return;
+    if (target === lastShown && pinnedEdgeKey === null) return;
+    lastShown = target;
+    // Another place is being read: a path pinned for the one before is not.
+    pinnedEdgeKey = null;
+    paintActive();
+    onSelect(target);
+    syncEdge();
+  }
+
+  /** The visitor is done with the place: the inspector goes back to its hint (Escape, a click on the empty sea). */
+  function endInspection() {
+    selectedId = null;
+    hoverId = null;
+    pinnedEdgeKey = null;
+    lastShown = null;
+    syncEdge();
+    onSelect(null);
+  }
+
+  /** Tell the owner when the path on show changes (hovered, pinned, or neither). */
+  function syncEdge() {
+    const key = edgeShownKey();
+    showTip(key);
+    paintActive();
+    if (key === lastEdge) return;
+    lastEdge = key;
+    onSelectEdge(key);
   }
 
   function showTip(key) {
@@ -505,11 +563,18 @@ export function createAtlasMap({
   function setHoverEdge(key) {
     if (key === hoverEdgeKey) return;
     hoverEdgeKey = key;
-    showTip(key);
-    paintActive();
-    onSelectEdge(key);
-    // Leaving a path hands the caption back to the island that was showing.
-    if (key === null && lastShown !== null) onSelect(lastShown);
+    // Leaving a path hands the card back to the place that was showing (or to the pinned path).
+    syncEdge();
+  }
+
+  /** Choose a lit path: it stays bold and described until the visitor moves on to a place or presses Escape. */
+  function pinEdge(key) {
+    const wanted = key && edgeState(key) === "lit" ? key : null;
+    if (wanted === pinnedEdgeKey) return Boolean(wanted);
+    pinnedEdgeKey = wanted;
+    dismissed = false;
+    syncEdge();
+    return Boolean(wanted);
   }
 
   function setRoving(id) {
@@ -574,6 +639,9 @@ export function createAtlasMap({
     if (selectedId && !revealed(selectedId)) selectedId = null;
     if (hoverId && !revealed(hoverId)) hoverId = null;
     if (focusId && !revealed(focusId)) focusId = null;
+    if (pinnedEdgeKey && edgeState(pinnedEdgeKey) !== "lit") pinnedEdgeKey = null;
+    // The place the inspector describes went back into the fog (Clear map): there is nothing to keep.
+    const gone = lastShown !== null && !revealed(lastShown);
 
     svg.classList.toggle("is-paused", paused);
     svg.classList.toggle("has-replies", Number(opts.replies) > 0);
@@ -594,23 +662,28 @@ export function createAtlasMap({
         startFlare(id);
       }
     }
-    if (hoverEdgeKey) showTip(hoverEdgeKey);
+    if (gone) {
+      lastShown = null;
+      onSelect(null);
+    }
     notifyShown();
+    syncEdge();
   }
 
-  function focusIsland(id) {
+  function focusIsland(id, { preventScroll = false } = {}) {
     if (!revealed(id)) return false;
     setRoving(id);
     const node = nodes.get(id);
-    if (node && typeof node.g.focus === "function") node.g.focus();
+    if (node && typeof node.g.focus === "function") node.g.focus({ preventScroll });
     return true;
   }
 
   function select(id) {
     selectedId = id && revealed(id) ? id : null;
     dismissed = false;
-    lastShown = shownNow();
-    paintActive();
+    pinnedEdgeKey = null;
+    lastShown = selectedId;
+    syncEdge();
   }
 
   /**
@@ -670,7 +743,7 @@ export function createAtlasMap({
     if (status === "fogged") return;
     selectedId = id;
     dismissed = false;
-    notifyShown();
+    notifyShown(id);
     if (status === "frontier" && !paused) onActivate(id);
   }
 
@@ -687,26 +760,23 @@ export function createAtlasMap({
       activate(id);
       return;
     }
-    if (edgeOf(event.target)) return;
-    selectedId = null;
-    notifyShown();
+    const key = edgeOf(event.target);
+    if (key) {
+      // A click or tap on a lit path chooses it: its card stays until the visitor moves on.
+      pinEdge(key);
+      return;
+    }
+    // The empty sea: the visitor is done with the place.
+    endInspection();
   });
 
   svg.addEventListener("keydown", (event) => {
     if (event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.key === "Escape") {
       // Escape always reports a cleared selection, even if nothing was shown.
-      selectedId = null;
-      hoverId = null;
       dismissed = true;
-      if (hoverEdgeKey) {
-        hoverEdgeKey = null;
-        showTip(null);
-        onSelectEdge(null);
-      }
-      paintActive();
-      lastShown = null;
-      onSelect(null);
+      hoverEdgeKey = null;
+      endInspection();
       return;
     }
     const id = islandOf(event.target);
@@ -736,7 +806,7 @@ export function createAtlasMap({
     dismissed = false;
     arrows.observe(id);
     setRoving(id);
-    notifyShown();
+    notifyShown(id);
   });
 
   svg.addEventListener("focusout", (event) => {
@@ -746,15 +816,22 @@ export function createAtlasMap({
     notifyShown();
   });
 
+  svg.addEventListener("mousemove", (event) => {
+    pointerAt = { x: event.clientX, y: event.clientY };
+  });
+
   svg.addEventListener("mouseover", (event) => {
     const id = islandOf(event.target);
     const key = id ? null : edgeOf(event.target);
+    // The same spot of the window just after a scroll: the page moved, the pointer did not.
+    const drifted = Boolean(pointerAt) && event.clientX === pointerAt.x && event.clientY === pointerAt.y && clock() - scrolledAt < DRIFT_MS;
     if (id !== hoverId) {
       hoverId = id;
       if (id) dismissed = false;
-      notifyShown();
+      // The emphasis follows whatever is under the pointer; the inspector only follows a pointer that moved.
+      notifyShown(drifted ? null : id);
     }
-    setHoverEdge(key);
+    if (!drifted) setHoverEdge(key);
   });
 
   svg.addEventListener("mouseleave", () => {
@@ -772,5 +849,23 @@ export function createAtlasMap({
   // First paint: everything fogged until the caller renders a view.
   for (const node of nodes.values()) paintIsland(node);
 
-  return { element: svg, render, focusIsland, select, selected: () => selectedId, reveal };
+  return {
+    element: svg,
+    render,
+    focusIsland,
+    select,
+    selected: () => selectedId,
+    /** The place the inspector describes: the last one hovered, focused or clicked (null after Escape or Clear map). */
+    inspected: () => lastShown,
+    pinEdge,
+    pinnedEdge: () => pinnedEdgeKey,
+    /** The place that takes keyboard focus when the visitor tabs into the map. */
+    roving: () => rovingId,
+    reveal,
+    /** Where a revealed place is on screen (viewport pixels), or null. */
+    box: (id) => {
+      const node = nodes.get(id);
+      return node && revealed(id) && typeof node.g.getBoundingClientRect === "function" ? node.g.getBoundingClientRect() : null;
+    },
+  };
 }

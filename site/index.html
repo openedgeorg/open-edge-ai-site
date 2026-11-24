@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="css/main.css">
     <link rel="stylesheet" href="css/atlas.css">
     <link rel="stylesheet" href="css/atlas-panel.css">
+    <link rel="stylesheet" href="css/chat.css">
 </head>
 <body>
     <header class="site-header">
@@ -26,8 +27,14 @@
     <main>
         <section class="hero">
             <div class="hero-content">
-                <h1>Edge Settlement Protocol</h1>
-                <p class="hero-tagline">Transparent settlement at the edge, powered by Clear Ledger</p>
+                <p class="hero-kicker">Open Edge AI &middot; Edge Settlement Protocol (ESP), a draft design you can explore</p>
+                <h1>What if one monthly internet bill covered the apps you use?</h1>
+                <p class="hero-tagline">In this proposed design you would pay your internet provider one standing monthly plan, and the apps you use would earn from it through a shared protocol instead of billing you one by one. It is a draft with many parts still open, not a product, and any figures are illustrative.</p>
+                <div class="hero-ask-wrap" hidden>
+                    <p class="hero-ask-label">Start with one question</p>
+                    <button type="button" class="hero-ask"><span class="hero-ask-text"></span></button>
+                    <p class="hero-start">The map begins with &ldquo;Your internet bill&rdquo; already lit. That is only a starting marker (<span class="hero-count"></span>): &ldquo;visited&rdquo; means an answer mentioned a place, not that you understand it.</p>
+                </div>
                 <p class="hero-cta">
                     <a class="hero-cta-link" href="#explore">Explore the design</a>
                     <span class="hero-cta-note" hidden>Ask a question and watch a map of the design light up.</span>
@@ -82,7 +89,7 @@
                     <div id="atlas-list" class="atlas-list-wrap" hidden></div>
                     <div id="atlas-inspector" class="atlas-inspector"></div>
                     <ul class="atlas-legend" hidden>
-                        <li><span class="atlas-swatch atlas-swatch-visited" aria-hidden="true"></span> <strong>visited</strong>: an answer mentioned this place</li>
+                        <li><span class="atlas-swatch atlas-swatch-visited" aria-hidden="true"></span> <strong>visited</strong>: an answer mentioned this place (Your internet bill starts lit as a starting marker)</li>
                         <li><span class="atlas-swatch atlas-swatch-frontier" aria-hidden="true"></span> <strong>next to explore</strong>: one step from a place you have visited</li>
                         <li><span class="atlas-swatch atlas-swatch-contested" aria-hidden="true"></span> <strong>awaits incorporation</strong> (dashed outline): described in the draft, not yet part of the design&rsquo;s authoritative text</li>
                         <li><span class="atlas-swatch atlas-swatch-open" aria-hidden="true"></span> <strong>open, not ratified</strong>: the designers&rsquo; own open list, not a roadmap</li>
@@ -185,11 +192,15 @@
                 </div>
                 <div id="conversation" class="atlas-chat">
                     <h2>Conversation</h2>
-                    <p>The rest of the page stays available without JavaScript. This conversation is a development client and is not a Gate 1 claim.</p>
+                    <p>The rest of the page stays available without JavaScript.</p>
                     <noscript>
                         <p>Conversation controls need JavaScript. The rest of this page remains available.</p>
                     </noscript>
                     <form id="composer" class="composer">
+                        <div id="history-state" class="history-state" role="status" aria-live="polite" hidden>
+                            <span id="history-state-text" class="history-state-text"></span>
+                            <button type="button" id="history-retry" class="history-retry" hidden>Try again</button>
+                        </div>
                         <ol id="history" aria-label="History" tabindex="0"></ol>
                         <label for="provider">Provider for a new conversation</label>
                         <select id="provider" name="provider">
@@ -200,10 +211,20 @@
                         <textarea id="draft" name="draft" rows="4"></textarea>
                         <div class="composer-actions">
                             <button type="submit" id="send">Send</button>
-                            <button type="button" id="cancel" disabled>Cancel</button>
                         </div>
-                        <p id="phase" role="status" aria-live="polite"></p>
+                        <div class="chat-actions">
+                            <button type="button" id="cancel" hidden>Cancel</button>
+                            <button type="button" id="check-status" hidden>Check status</button>
+                            <button type="button" id="retry" hidden>Send again</button>
+                            <button type="button" id="new-conversation" hidden>New conversation</button>
+                        </div>
+                        <p id="chat-status" class="chat-status" role="status" aria-live="polite" hidden></p>
+                        <p id="phase" class="chat-phase"></p>
                     </form>
+                    <details class="atlas-dev-note">
+                        <summary>Developer details</summary>
+                        <p>This conversation is a development client and is not a Gate 1 claim.</p>
+                    </details>
                 </div>
             </div>
         </section>

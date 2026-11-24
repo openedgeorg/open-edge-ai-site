@@ -1,0 +1,9 @@
+The monthly pot is a protocol-held spending envelope assigned to each ISP. It is the hard ceiling on the total household allowances that ISP may authorize for the epoch.
+
+The pot is spending authority held by the protocol. Granting allowance from it does not transfer money to the ISP and does not by itself create ISP debt. Debt arises only if executed consumption pays apps more than the ISP funded.
+
+The pot can be larger than the ISP’s prepaid commitment `C`. The difference is the overdraft allocation `L`, common-fund capacity reserved for that ISP. Reserving that capacity is neither a transfer nor a debt draw. `C` is the prepaid funding layer and `P - C` is the underwritten credit layer. The protocol does not assign either layer to particular households. It enforces only the pot’s overall ceiling. The ISP decides how to spread grants across opening allowances and later top-ups, within that ceiling and its retail contracts.
+
+Across all ISPs, assigned pots cannot exceed the common fund’s liquid backing, so every authorized allowance is fully funded before execution. A new ISP’s initial pot equals its commitments unless extra exposure is protected by adequate collateral.
+
+Debt-service payments do not create new allowance or pot capacity. Unused pot capacity is not ISP revenue and is not new surplus contributed by the ISP. An unused overdraft was never drawn. After execution and the capital-account update, unused capacity is released back into the common fund.

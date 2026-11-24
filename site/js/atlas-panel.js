@@ -21,7 +21,9 @@ export const STATUS_WORDS = Object.freeze({
  */
 export const OPEN_STATUS_WORD = OPEN_LABEL;
 
-const INSPECTOR_HINT = "Point at or focus a lit place on the map to read about it here.";
+const INSPECTOR_HINT = "Point at, tap or focus a lit place on the map to read about it here. It stays here until you pick another.";
+/** Said on the card of the start place: the counter starts at 1 because of it, not because anything was learned. */
+export const START_NOTE = "Starting point: this place is marked visited so the map has somewhere to begin, whether or not an answer has mentioned it.";
 const OPEN_LIST_NOTE = "On the designers' own open list: what is described here is open or undecided.";
 
 /**
@@ -150,19 +152,42 @@ function litEdgesOf(index, view, id) {
 /**
  * The inspector card inside `mount`. It is not a live region (keyboard focus on an island already
  * announces it); it repaints only when the content changes, so repeated hover events stay quiet.
- * @param {{document: Document, graph: object, index?: ReturnType<typeof buildIndex>, mount: HTMLElement}} options
+ *
+ * The card is the place being read, not a tooltip: the owner decides when it changes. It shows the
+ * last place or path that was looked at (the map passes hover, focus and clicks to showIsland and
+ * showEdge) and keeps it when the pointer leaves, when focus moves into the card or when the page is
+ * scrolled; only showIsland(null) (Escape, a Clear map) puts the hint back. A visited or next-to-explore
+ * place carries an Ask button (the same question as its teaser), and every lit path of a visited place is
+ * a button too, so a path can be read by touch and keyboard as well as by pointer.
+ *
+ * @param {{document: Document, graph: object, index?: ReturnType<typeof buildIndex>, mount: HTMLElement,
+ *   onAsk?: (id: string) => void, onPath?: (key: string) => void, onShow?: (id: string) => void,
+ *   describedBy?: string}} options onAsk sends a place's teaser, onPath is told which path a visitor chose,
+ *   onShow which of a path's two places
  */
-export function createInspector({ document: doc, graph, index = buildIndex(), mount }) {
+export function createInspector({ document: doc, graph, index = buildIndex(), mount, onAsk, onPath, onShow, describedBy = "atlas-notice" }) {
   const regions = new Map((graph.REGIONS || []).map((region) => [region.id, region]));
-  const openLabel = graph.OPEN_LABEL || "open, not ratified";
   let selectedIsland = null;
   let selectedEdge = null;
   let lastView = null;
   let lastSignature = null;
+  let paused = false;
+  /** The buttons of the card on show that a pause must lock. */
+  let lockable = [];
 
   function add(card, tag, className, text) {
     const node = make(doc, tag, className, text);
     card.appendChild(node);
+    return node;
+  }
+
+  function button(className, text, onClick) {
+    const node = make(doc, "button", className, text);
+    node.type = "button";
+    node.addEventListener("click", () => {
+      if (node.getAttribute("aria-disabled") === "true") return;
+      onClick();
+    });
     return node;
   }
 
@@ -186,6 +211,7 @@ export function createInspector({ document: doc, graph, index = buildIndex(), mo
     if (region) add(card, "p", "atlas-inspector-where", regionHeading(region));
     const word = statusWord(status, island);
     add(card, "p", `atlas-inspector-status is-${island.status === "open" && status !== "visited" ? "open" : status}`, `Status: ${word}`);
+    if (island.start) add(card, "p", "atlas-inspector-start", START_NOTE);
     const sections = formatSections(island);
     if (sections) add(card, "p", "atlas-inspector-sections", `In the draft summary: ${sections}`);
     // The status line already says it for an unvisited dragon: do not repeat the same words as a badge.
@@ -194,7 +220,15 @@ export function createInspector({ document: doc, graph, index = buildIndex(), mo
     }
     if (island.status === "open") add(card, "p", "atlas-inspector-open", OPEN_LIST_NOTE);
     if (island.note) add(card, "p", "atlas-inspector-note", island.note);
-    if (island.teaser) add(card, "p", "atlas-inspector-teaser", `Ask: ${island.teaser}`);
+    if (island.teaser) {
+      add(card, "p", "atlas-inspector-teaser", `Ask: ${island.teaser}`);
+      if (typeof onAsk === "function" && (status === "visited" || status === "frontier")) {
+        const ask = button("atlas-inspector-ask", status === "visited" ? "Ask about this again" : "Ask this question", () => onAsk(island.id));
+        ask.setAttribute("aria-label", `${status === "visited" ? "Ask about this again" : "Ask this question"}: ${island.teaser}`);
+        card.appendChild(ask);
+        lockable.push(ask);
+      }
+    }
     if (status === "visited") {
       const paths = litEdgesOf(index, view, island.id);
       if (paths.length) {
@@ -202,7 +236,14 @@ export function createInspector({ document: doc, graph, index = buildIndex(), mo
         const list = add(card, "ul", "atlas-inspector-paths");
         for (const edge of paths) {
           const other = edge.a === island.id ? edge.b : edge.a;
-          add(list, "li", "atlas-inspector-path", `→ ${nameOf(other)}: ${edge.label}`);
+          const text = `→ ${nameOf(other)}: ${edge.label}`;
+          const item = add(list, "li", "atlas-inspector-path");
+          if (typeof onPath === "function") {
+            const key = edgeKey(edge.a, edge.b);
+            item.appendChild(button("atlas-inspector-path-button", text, () => onPath(key)));
+          } else {
+            item.textContent = text;
+          }
         }
       }
     } else if (status === "frontier") {
@@ -220,7 +261,23 @@ export function createInspector({ document: doc, graph, index = buildIndex(), mo
     add(card, "p", "atlas-inspector-label-path", edge.label);
     const sections = formatSections(edge);
     if (sections) add(card, "p", "atlas-inspector-sections", `In the draft summary: ${sections}`);
+    if (typeof onShow === "function") {
+      const ends = add(card, "div", "atlas-inspector-ends");
+      for (const id of [edge.a, edge.b]) ends.appendChild(button("atlas-inspector-end", `Show ${nameOf(id)}`, () => onShow(id)));
+    }
     return card;
+  }
+
+  function applyPause() {
+    for (const node of lockable) {
+      if (paused) {
+        node.setAttribute("aria-disabled", "true");
+        if (describedBy) node.setAttribute("aria-describedby", describedBy);
+      } else {
+        node.removeAttribute("aria-disabled");
+        node.removeAttribute("aria-describedby");
+      }
+    }
   }
 
   function paint() {
@@ -242,9 +299,24 @@ export function createInspector({ document: doc, graph, index = buildIndex(), mo
       signature = `island:${island.id}:${status}:${paths}:${from}`;
       build = () => islandCard(island, status, view);
     }
-    if (signature === lastSignature) return;
+    if (signature === lastSignature) {
+      applyPause();
+      return;
+    }
     lastSignature = signature;
-    mount.replaceChildren(build());
+    // A card that is rebuilt under the visitor's focus (the place they asked about has just been visited) hands
+    // the focus on to its own Ask button, or to the card, instead of dropping it to the page.
+    const active = doc.activeElement;
+    const hadFocus = Boolean(active && active !== mount && mount.contains(active));
+    lockable = [];
+    const card = build();
+    mount.replaceChildren(card);
+    applyPause();
+    if (hadFocus) {
+      const target = lockable[0] || card;
+      if (target === card) card.tabIndex = -1;
+      if (typeof target.focus === "function") target.focus();
+    }
   }
 
   paint();
@@ -269,11 +341,18 @@ export function createInspector({ document: doc, graph, index = buildIndex(), mo
       if (view) lastView = view;
       paint();
     },
-    /** Repaint the current selection against a new view. */
-    refresh(view) {
+    /**
+     * Repaint the current selection against a new view.
+     * @param {object} [view]
+     * @param {{paused?: boolean}} [options] whether the Ask button is locked (a question is running)
+     */
+    refresh(view, options = {}) {
       if (view) lastView = view;
+      if (typeof options.paused === "boolean") paused = options.paused;
       paint();
     },
+    /** What the card shows now: a place id, a path key, or neither. */
+    current: () => ({ island: selectedIsland, edge: selectedEdge }),
   };
 }
 

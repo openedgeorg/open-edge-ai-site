@@ -496,7 +496,8 @@ describe("Atlas in a real browser", { skip: CHROME.path ? CHAT_SETUP.skip : CHRO
 
     // The chat card reads top to bottom as it looks: history, provider, message box, Send, status line.
     const card = await page.eval(READ_CARD);
-    assert.equal(card.order.firstChild, "history", "the history is the first thing in the form");
+    // The conversation client's state line (#history-state, hidden unless it has something to say) comes right before the history.
+    assert.ok(["history", "history-state"].includes(card.order.firstChild), `the history (after its own state line) is the first thing in the form, not ${card.order.firstChild}`);
     assert.equal(card.order.lastChild, "phase", "the status line is the last thing in the form");
     assert.ok(card.order.historyBeforeProvider && card.order.historyBeforeDraft && card.order.sendBeforePhase, "DOM order = visual order");
     const historyFacts = await page.eval(`(() => {
@@ -1293,15 +1294,19 @@ describe("Atlas in a real browser", { skip: CHROME.path ? CHAT_SETUP.skip : CHRO
         `after the visitor's own send the history is at its newest row (${JSON.stringify(own.historyScroll)})`,
       );
 
-      // The history is the first keyboard stop of the chat card (right after the map), and shows a focus ring when it has focus.
+      // The history is the first keyboard stop of the chat card, and shows a focus ring when it has focus. Between the map
+      // and the chat card lies the inspector, whose Ask button and path buttons are stops of their own.
       await page.eval(`document.querySelector('#atlas-map [tabindex="0"]').focus()`);
-      await page.press("Tab");
-      const stop = await page.eval(`(() => {
-        const a = document.activeElement;
-        const s = a ? getComputedStyle(a) : null;
-        return { id: a ? a.id : "", focusVisible: !!a && a.matches(":focus-visible"), outlineStyle: s && s.outlineStyle, outlineWidth: s && s.outlineWidth };
-      })()`);
-      assert.equal(stop.id, "history", "Tab from the map lands on the history");
+      let stop = null;
+      for (let presses = 0; presses < 12 && !(stop && stop.inChat); presses += 1) {
+        await page.press("Tab");
+        stop = await page.eval(`(() => {
+          const a = document.activeElement;
+          const s = a ? getComputedStyle(a) : null;
+          return { id: a ? a.id : "", inChat: !!a && !!a.closest("#conversation"), inInspector: !!a && !!a.closest("#atlas-inspector"), focusVisible: !!a && a.matches(":focus-visible"), outlineStyle: s && s.outlineStyle, outlineWidth: s && s.outlineWidth };
+        })()`);
+      }
+      assert.equal(stop.id, "history", "Tab from the map reaches the history first of the chat card");
       assert.equal(stop.focusVisible, true);
       assert.ok(stop.outlineStyle !== "none" && stop.outlineWidth !== "0px", `the history shows a focus ring: ${stop.outlineStyle} ${stop.outlineWidth}`);
 
@@ -1783,7 +1788,8 @@ describe("Atlas in a real browser", { skip: CHROME.path ? CHAT_SETUP.skip : CHRO
       return {
         chipHeight: h("#atlas-suggest .atlas-chip"),
         sendHeight: h("#send"),
-        cancelHeight: h("#cancel"),
+        // Cancel is hidden unless a run can be cancelled: measure it as it would look when offered.
+        cancelHeight: (() => { const c = document.querySelector("#cancel"); const was = c.hidden; c.hidden = false; const v = c.getBoundingClientRect().height; c.hidden = was; return v; })(),
         resetHeight: h("#atlas-reset"),
         tabHeight: h("#atlas-view-list"),
         chipText: textContrast(chip),
@@ -1876,7 +1882,7 @@ describe("Atlas in a real browser", { skip: CHROME.path ? CHAT_SETUP.skip : CHRO
     await page.reload();
     await page.waitFor(`(document.querySelector("#atlas-count")?.textContent || "").length > 0`);
 
-    const CHAT_PATHS = [/^\/visitor-session$/, /^\/conversations$/, /^\/conversations\/conv-1\/(messages|events|history)$/, /^\/conversations\/conv-1\/status$/];
+    const CHAT_PATHS = [/^\/providers$/, /^\/visitor-session$/, /^\/conversations$/, /^\/conversations\/conv-1\/(messages|events|history)$/, /^\/conversations\/conv-1\/status$/];
     const STATIC_PATHS = [/^\/$/, /^\/favicon\.ico$/, /^\/css\/[a-z-]+\.css$/, /^\/js\/[a-z-]+\.js$/];
     const KEYS = ["client_request_id", "conversation_id", "message"];
     let posts = 0;

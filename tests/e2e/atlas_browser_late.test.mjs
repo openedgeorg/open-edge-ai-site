@@ -3,6 +3,17 @@
  * awkward ways: a "ready" that arrives before the reply, an older /history snapshot, a backend
  * that dies after the page loaded, a chat that never boots.
  *
+ * Two conversation clients run these scenarios (CHAT_SETUP.mode), and they are not the same client:
+ *  - "double" is the port of the OLD client (see its header). It paints `ready` too early and on an older
+ *    snapshot, and it leaves `#phase` empty when the chat cannot start. The scenarios below were written
+ *    for that, and their double branches are unchanged.
+ *  - "real" is the working tree's own client, which keeps a question pending until its OWN answer is in the
+ *    history, never paints `ready` early, paints an `unavailable` or `rejected` phase with a message when
+ *    the service fails, and recovers a chat that could not start. The real branches below say what the
+ *    Atlas must do about THAT: light nothing wrongly, light the reply once and not before it shows, and
+ *    tell the visitor the truth. What the bridge does with an early `ready` or a stale list is covered in
+ *    the double branches and in atlas_chat.test.mjs.
+ *
  * Same method as atlas_browser.test.mjs: the real site/index.html and the real js/atlas*.js
  * modules run in headless Chrome (DevTools protocol, Node built-ins only), served by a node:http
  * server that also answers the chat API. This file has its OWN stub backend because it needs
@@ -39,14 +50,16 @@ import http from "node:http";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { LATE_SETTLE_MS, NO_PROGRESS_MS, START_GIVE_UP_MS } from "../../site/js/atlas-chat.js";
-import { ISLANDS, START_ID, buildIndex } from "../../site/js/atlas-graph.js";
+import { LATE_SETTLE_MS, NO_PROGRESS_MS, REJECT_PAUSE_MS, START_GIVE_UP_MS } from "../../site/js/atlas-chat.js";
+import { FIRST_SUGGESTION, ISLANDS, START_ID, buildIndex } from "../../site/js/atlas-graph.js";
 import { compileGlossary, matchReply } from "../../site/js/atlas-match.js";
 import { deriveView } from "../../site/js/atlas-state.js";
 import { BROWSER_CONCURRENCY, CHAT_SETUP, findChrome, launchBrowser, siteFileFor, sleep } from "./atlas_browser_support.mjs";
 
 const INDEX = buildIndex();
 const GLOSSARY = compileGlossary(ISLANDS);
+/** The working tree's own conversation client (else the port of the old one). */
+const REAL = CHAT_SETUP.mode === "real";
 
 /** The proposal's example reply: it names several places. */
 const REPLY_ONE =
@@ -67,6 +80,7 @@ const diagnostics = [];
  * Behaviour switches, all changeable while a page runs:
  *  eventsMode  "404" (follow() settles at once) | "sse" (deltas, then done, over runMs)
  *  sessionMode "ok" | "html" (a 502 page: the chat never boots) | "reset" (connection dropped)
+ *  createMode  "ok" | "reset" (POST /conversations drops the connection)
  *  lagging     while true, /history only shows the turns before `lagFromTurn`
  *  runMs       how long a run takes before its assistant row exists in /history
  */
@@ -74,6 +88,7 @@ function createBackend() {
   const backend = {
     eventsMode: "404",
     sessionMode: "ok",
+    createMode: "ok",
     lagging: false,
     lagFromTurn: 2,
     runMs: 1500,
@@ -140,8 +155,17 @@ async function handle(req, res, backend) {
     }
     return json(res, 200, { subject_id: "s-1", csrf_token: "t-1" });
   }
+  if (method === "GET" && pathname === "/providers") {
+    return json(res, 200, {
+      providers: [
+        { provider: "openai", harness: "codex", display_model: "m", eligible: true, available: true },
+        { provider: "xai", harness: "grok-build", display_model: "m", eligible: true, available: true },
+      ],
+    });
+  }
   if (method === "POST" && pathname === "/conversations") {
     await readJson(req);
+    if (backend.createMode === "reset") return void req.socket.destroy();
     return json(res, 201, { id: "conv-1" });
   }
   if (method === "POST" && pathname === "/conversations/conv-1/messages") {
@@ -365,7 +389,7 @@ function assertMapShows(snap, replyTexts, label) {
  *  - the Atlas waited for the list to be quiet (LATE_SETTLE_MS) after the reply showed up.
  * @returns {{shownAt: number, litAt: number}}
  */
-function assertLitOnceAfterFinal(samples, { before, finalText, label }) {
+function assertLitOnceAfterFinal(samples, { before, finalText, label, waitsForQuiet = true }) {
   const early = samples.filter((s) => s.replies > before && s.last.trim() !== finalText.trim());
   assert.deepEqual(early, [], `${label}: the map must not light while the chat does not show the final reply yet`);
   const over = samples.filter((s) => s.replies > before + 1);
@@ -375,10 +399,12 @@ function assertLitOnceAfterFinal(samples, { before, finalText, label }) {
   assert.ok(shown, `${label}: the chat showed the final reply`);
   assert.ok(lit, `${label}: the map was lit`);
   assert.ok(lit.t >= shown.t, `${label}: lit (${lit.t}) at or after the reply showed (${shown.t})`);
-  assert.ok(
-    lit.t - shown.t >= LATE_SETTLE_MS - 100,
-    `${label}: the Atlas should wait for the list to be quiet (${lit.t - shown.t} ms after the reply showed)`,
-  );
+  if (waitsForQuiet) {
+    assert.ok(
+      lit.t - shown.t >= LATE_SETTLE_MS - 100,
+      `${label}: the Atlas should wait for the list to be quiet (${lit.t - shown.t} ms after the reply showed)`,
+    );
+  }
   return { shownAt: shown.t, litAt: lit.t };
 }
 
@@ -414,7 +440,8 @@ describe("Atlas chat bridge in a real browser: late and failing chats", SUITE, (
     // its status line from the controller state, which already says `ready`: it is not, the run goes on.
     await page.click("#draft");
     const early = await read(page);
-    assert.equal(early.phase, "ready", "precondition: the chat painted ready while the run is still going (app.js focus handler)");
+    if (REAL) assert.equal(early.phase, "running", "the working tree's chat does not paint ready while the run goes on");
+    else assert.equal(early.phase, "ready", "precondition: the chat painted ready while the run is still going (app.js focus handler)");
     assert.equal(early.rows.length, 1, "precondition: the list holds only the visitor's own question");
     assert.equal(early.replies, 0);
     assert.equal(early.visited.length, 1, "the map has not moved");
@@ -437,7 +464,8 @@ describe("Atlas chat bridge in a real browser: late and failing chats", SUITE, (
     const later = await read(page);
     assertMapShows(later, [REPLY_ONE], "a few seconds later");
     const samples = await timeline(page);
-    const gap = assertLitOnceAfterFinal(samples, { before: 0, finalText: REPLY_ONE, label: "focus while polling" });
+    // The real chat paints the reply and `ready` together, so there is no late path to wait for.
+    const gap = assertLitOnceAfterFinal(samples, { before: 0, finalText: REPLY_ONE, label: "focus while polling", waitsForQuiet: !REAL });
     t.diagnostic(`reply shown at ${gap.shownAt} ms, map lit at ${gap.litAt} ms (waited ${gap.litAt - gap.shownAt} ms for a quiet list)`);
     assert.equal(later.cspViolations, 0, "no Content-Security-Policy violation");
     assert.ok(backend.historyCalls >= 2, "the chat really did poll /history more than once");
@@ -470,25 +498,41 @@ describe("Atlas chat bridge in a real browser: late and failing chats", SUITE, (
     await page.click("#draft");
     await page.type("And what keeps the ISPs honest?");
     await page.click("#send");
-    await page.waitFor(`document.querySelectorAll("#history li > p").length === 2 && document.querySelector("#phase").textContent.trim() === "ready"`, {
-      timeout: 15000,
-      what: "the chat to paint ready on the older snapshot",
-    });
-    assert.equal(backend.turns.length, 2, "the question did reach the backend");
-    const stale = await read(page);
-    assert.equal(stale.rows[1], REPLY_ONE, "precondition: the chat now shows the older list, ending with the old reply");
+    if (REAL) {
+      // The working tree's chat keeps turn 2 pending: the older list [Q1, A1] holds no answer to it. It shows
+      // that list with the question just asked under it, and stays busy.
+      await page.waitFor(`document.querySelectorAll("#history li > p").length === 3`, {
+        timeout: 15000,
+        what: "the chat to show the older list and the pending question",
+      });
+      assert.equal(backend.turns.length, 2, "the question did reach the backend");
+      const pending = await read(page);
+      assert.equal(pending.rows[1], REPLY_ONE, "the older list ends with the old reply");
+      assert.equal(pending.rows[2], "And what keeps the ISPs honest?", "and the question just asked is under it");
+      assert.ok(["running", "reconciling"].includes(pending.phase), `the chat is busy with turn 2 (${pending.phase})`);
+    } else {
+      await page.waitFor(`document.querySelectorAll("#history li > p").length === 2 && document.querySelector("#phase").textContent.trim() === "ready"`, {
+        timeout: 15000,
+        what: "the chat to paint ready on the older snapshot",
+      });
+      assert.equal(backend.turns.length, 2, "the question did reach the backend");
+      const stale = await read(page);
+      assert.equal(stale.rows[1], REPLY_ONE, "precondition: the chat now shows the older list, ending with the old reply");
+    }
     // Neither the question nor the old reply may be taken for the new reply, however long we wait.
     await sleep(LATE_SETTLE_MS + 2000);
     const quiet = await read(page);
     assertMapShows(quiet, [REPLY_ONE], "on the older snapshot");
-    assert.equal(quiet.chips.some((chip) => chip.off), false, "nothing is busy: suggestions work");
+    if (REAL) assert.ok(quiet.chips.every((chip) => chip.off), "turn 2 is still pending: suggestions wait for it");
+    else assert.equal(quiet.chips.some((chip) => chip.off), false, "nothing is busy: suggestions work");
 
-    // /history catches up and the list is rewritten (the chat's own showHistory(), run again).
+    // /history catches up. The old chat needs its list rewritten (its own showHistory(), run again); the
+    // working tree's chat is still asking and finds the answer by itself.
     backend.lagging = false;
     const before = (await read(page)).replies;
-    await page.eval(`import("/js/app.js").then((chat) => chat.createController({ storage: sessionStorage }).showHistory()).then(() => true)`);
+    if (!REAL) await page.eval(`import("/js/app.js").then((chat) => chat.createController({ storage: sessionStorage }).showHistory()).then(() => true)`);
     await page.waitFor(`JSON.parse(sessionStorage.getItem("esp-atlas") || "{}").replies === ${before + 1}`, {
-      timeout: 10000,
+      timeout: REAL ? 20000 : 10000,
       what: "the Atlas to scan the reply once the list shows it",
     });
     const lit = await read(page);
@@ -499,7 +543,7 @@ describe("Atlas chat bridge in a real browser: late and failing chats", SUITE, (
     assertMapShows(await read(page), [REPLY_ONE, REPLY_TWO], "a few seconds later");
     const samples = await timeline(page);
     const turnTwo = samples.filter((s) => s.t >= samples.find((x) => x.replies === 1).t);
-    const gap = assertLitOnceAfterFinal(turnTwo, { before: 1, finalText: REPLY_TWO, label: "turn 2 on an older snapshot" });
+    const gap = assertLitOnceAfterFinal(turnTwo, { before: 1, finalText: REPLY_TWO, label: "turn 2 on an older snapshot", waitsForQuiet: !REAL });
     t.diagnostic(`reply shown at ${gap.shownAt} ms, map lit at ${gap.litAt} ms (waited ${gap.litAt - gap.shownAt} ms for a quiet list)`);
     assert.equal(lit.cspViolations, 0);
   });
@@ -538,6 +582,43 @@ describe("Atlas chat bridge in a real browser: late and failing chats", SUITE, (
       b.reply = () => REPLY_ONE;
     });
     await boot(page, url);
+
+    if (REAL) {
+      // The working tree's chat keeps its visitor session for minutes and does not ask for it before each send,
+      // so the service dies where the next send needs it: the conversation cannot be created. Nothing is sent.
+      backend.createMode = "reset";
+      await page.click(CHIP);
+      await page.waitFor(`document.querySelector("#phase").textContent.trim() === "rejected"`, { what: "the chat to say the question was not sent" });
+      const refused = await read(page);
+      assert.deepEqual(refused.rows, [], "a question that was not sent is not shown as sent");
+      assert.equal(refused.draft, FIRST_SUGGESTION, "it is back in the message box");
+      assert.equal(refused.sendDisabled, false);
+      assert.ok(refused.chips.every((chip) => chip.off), "the Atlas pauses its suggestions");
+      assert.match(refused.notice, /asked for a pause/i);
+      assert.match(await page.eval(`document.querySelector("#chat-status").textContent`), /nothing was sent/i, "and the chat says why, in words");
+      assert.deepEqual(backend.posts, [], "no question went out");
+      assertMapShows(refused, [], "nothing was answered");
+
+      // The pause is over (the page's clock is moved on); the service is back: a suggestion goes through.
+      backend.createMode = "ok";
+      await page.eval(`window.__atlasSkew(${REJECT_PAUSE_MS + 1000})`);
+      await page.click("#draft");
+      await page.type("x");
+      await page.press("Backspace");
+      await page.waitFor(`!document.querySelector(${JSON.stringify(CHIP)}).disabled && document.querySelector(${JSON.stringify(CHIP)}).getAttribute("aria-disabled") !== "true"`, {
+        what: "the suggestions to work again after the pause",
+      });
+      await page.click(CHIP);
+      await page.waitFor(`JSON.parse(sessionStorage.getItem("esp-atlas") || "{}").replies === 1`, {
+        timeout: 15000,
+        what: "the retried question to be answered and scanned",
+      });
+      const recovered = await read(page);
+      assertMapShows(recovered, [REPLY_ONE], "after the retry");
+      assert.equal(recovered.notice, "", "the notice is gone");
+      assert.equal(recovered.cspViolations, 0);
+      return;
+    }
 
     backend.sessionMode = "reset"; // the connection is dropped from now on
     const tappedAt = Date.now();
@@ -581,6 +662,30 @@ describe("Atlas chat bridge in a real browser: late and failing chats", SUITE, (
     const { backend, page, url } = await openSite(t, "never-boots", (b) => {
       b.sessionMode = "html";
     });
+    if (REAL) {
+      // The working tree's chat says at once that it cannot start (a phase and a sentence), then asks again
+      // by itself, a few times with growing gaps, and the Atlas follows when it succeeds.
+      await boot(page, url, { chat: false });
+      await page.waitFor(`document.querySelector("#phase").textContent.trim() === "unavailable"`, { what: "the chat to say it cannot start" });
+      const down = await read(page);
+      assert.ok(down.chips.length > 0 && down.chips.every((chip) => chip.off), "suggestions are off");
+      assert.equal(down.notice, "The chat is not available right now.");
+      assert.match(await page.eval(`document.querySelector("#chat-status").textContent`), /could not be reached\. Nothing was sent\./);
+      await page.click(CHIP);
+      await sleep(300);
+      assert.deepEqual(backend.posts, [], "no question was sent");
+      assert.equal((await read(page)).rows.length, 0);
+
+      backend.sessionMode = "ok";
+      await page.waitFor(
+        `(() => { const chip = document.querySelector(${JSON.stringify(CHIP)}); return !chip.disabled && chip.getAttribute("aria-disabled") !== "true" && document.querySelector("#atlas-notice").textContent.trim() === ""; })()`,
+        { timeout: 30000, what: "the chat to start by itself when the service is back, and the suggestions to work" },
+      );
+      assert.equal((await read(page)).phase, "ready");
+      assert.equal((await page.eval(`document.querySelector("#chat-status").textContent`)), "", "the explanation is gone");
+      assert.equal((await read(page)).cspViolations, 0);
+      return;
+    }
     const startedAt = Date.now();
     await boot(page, url, { chat: false });
     await sleep(700);
