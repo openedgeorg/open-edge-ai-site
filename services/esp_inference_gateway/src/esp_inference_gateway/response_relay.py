@@ -10,8 +10,14 @@ _ALLOWED = {"content-type", "cache-control"}
 
 
 async def _passthrough(chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-    async for chunk in chunks:
-        yield chunk
+    try:
+        async for chunk in chunks:
+            yield chunk
+    finally:
+        # A relay that stops early (the caller went away) closes the provider body, which frees the pooled connection.
+        close = getattr(chunks, "aclose", None)
+        if close is not None:
+            await close()
 
 
 def relay_response(response: ProviderResponse) -> StreamingResponse:

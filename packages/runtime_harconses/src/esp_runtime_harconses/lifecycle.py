@@ -645,26 +645,30 @@ def _drain_pools(pools: list[NativeRuntimeAdapter]) -> list[NativeEvent]:
     events: list[NativeEvent] = []
     for pool in pools:
         adapters = getattr(pool, "_adapters", None)
-        if not isinstance(adapters, dict):
-            continue
-        adapter_map = cast(Mapping[object, object], adapters)
-        for item in adapter_map.values():
-            inner = cast(object, item[0] if isinstance(item, tuple) else item)
-            queues = getattr(inner, "_events", None)
-            if not isinstance(queues, dict):
-                continue
-            for queue in cast(Mapping[object, object], queues).values():
-                if not isinstance(queue, asyncio.Queue):
-                    continue
-                event_queue = cast(asyncio.Queue[object], queue)
-                while True:
-                    try:
-                        event = event_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    if isinstance(event, NativeEvent):
-                        events.append(event)
+        if isinstance(adapters, dict):
+            adapter_map = cast(Mapping[object, object], adapters)
+            for item in adapter_map.values():
+                _drain_adapter_queues(item[0] if isinstance(item, tuple) else item, events)
+        # The API passes native adapters directly. A pool wrapper still uses `_adapters`.
+        _drain_adapter_queues(pool, events)
     return events
+
+
+def _drain_adapter_queues(adapter: object, events: list[NativeEvent]) -> None:
+    queues = getattr(adapter, "_events", None)
+    if not isinstance(queues, dict):
+        return
+    for queue in cast(Mapping[object, object], queues).values():
+        if not isinstance(queue, asyncio.Queue):
+            continue
+        event_queue = cast(asyncio.Queue[object], queue)
+        while True:
+            try:
+                event = event_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if isinstance(event, NativeEvent):
+                events.append(event)
 
 
 def _in_read(resident_reads: set[str], row: Mapping[str, object]) -> bool:

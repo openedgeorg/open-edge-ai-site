@@ -340,6 +340,8 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
         # Sessions loaded in this process by this adapter: created or resumed, and not closed since.
         self._known: set[str] = set()
         self._subscribers: dict[str, int] = {}
+        # Prompt text keyed by our message id. grok 1.0.46 saves the user chunk without messageId.
+        self._prompts: dict[str, str] = {}
         super().__init__(rpc, transport)
 
     async def initialize(self, *, client_name: str = "esp-supervisor", client_version: str = "1") -> dict[str, object]:
@@ -773,6 +775,7 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
         )
         self.transport.bind(context)
         self._bound.add(session_id)
+        self._prompts[message_id] = text
         params = {"sessionId": session_id, "messageId": message_id, "prompt": [{"type": "text", "text": text}]}
         task: asyncio.Task[object] = asyncio.get_running_loop().create_task(
             self._rpc.request(GROK_METHODS["submit"], params), name=f"grok-prompt-{session_id}"
@@ -866,9 +869,17 @@ class GrokBuildHarnessAdapter(HarnessAdapter):
         if isinstance(replay, _Operation):
             # A newer prompt already runs on the session; its replay window cannot be opened now.
             return _UNREADABLE
+        prompt = self._prompts.get(message_id)
         for update in replay:
-            if update.get("sessionUpdate") == "user_message_chunk" and update.get("messageId") == message_id:
+            if update.get("sessionUpdate") != "user_message_chunk":
+                continue
+            if update.get("messageId") == message_id:
                 return message_id
+            # This build persists the chunk text and omits messageId.
+            if not update.get("messageId") and prompt:
+                content = _object(update.get("content")) or {}
+                if content.get("text") == prompt:
+                    return message_id
         return None
 
     def _forget_session(self, session_id: str) -> None:

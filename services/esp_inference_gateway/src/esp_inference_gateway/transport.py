@@ -205,7 +205,7 @@ class FencedTransport:
                 name.decode("latin-1"): value.decode("latin-1")
                 for name, value in upstream.headers
             }
-            response = _LiveResponse(upstream.status, headers, _chunks(upstream))
+            response = _LiveResponse(upstream.status, headers, _ClosingBody(upstream))
             if not pending.done():
                 pending.set_result(response)
         except Exception as exc:
@@ -228,6 +228,32 @@ def _retrieve(pending: asyncio.Future[ProviderResponse]) -> None:
         pending.exception()
 
 
-async def _chunks(upstream: Any) -> AsyncIterator[bytes]:
-    async for chunk in upstream.aiter_stream():
-        yield bytes(chunk)
+class _ClosingBody:
+    """The upstream body as an async iterator that hands the pooled connection back when it ends or is closed.
+
+    The connection returns to the pool only when the response is closed, not when its body ends. Without this every
+    model call kept one of the pool's ten connections for good, and after a few turns each new call failed with a
+    PoolTimeout that the gateway reported as `provider_uncertain`. A consumer that stops early calls `aclose`.
+    """
+
+    def __init__(self, upstream: Any) -> None:
+        self._upstream = upstream
+        self._chunks = cast(AsyncIterator[bytes], upstream.aiter_stream().__aiter__())
+        self._closed = False
+
+    def __aiter__(self) -> _ClosingBody:
+        return self
+
+    async def __anext__(self) -> bytes:
+        try:
+            chunk = await self._chunks.__anext__()
+        except BaseException:
+            await self.aclose()
+            raise
+        return bytes(chunk)
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await self._upstream.aclose()

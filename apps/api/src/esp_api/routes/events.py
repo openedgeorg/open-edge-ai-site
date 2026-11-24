@@ -118,25 +118,29 @@ def _drain_session(pools: Sequence[object], native_session_id: str) -> list[Nati
     events: list[NativeEvent] = []
     for pool in pools:
         adapters = getattr(pool, "_adapters", None)
-        if not isinstance(adapters, dict):
-            continue
-        for item in cast(Mapping[object, object], adapters).values():
-            inner = cast(object, item[0] if isinstance(item, tuple) else item)
-            queues = getattr(inner, "_events", None)
-            if not isinstance(queues, dict):
-                continue
-            queue = cast(Mapping[object, object], queues).get(native_session_id)
-            if not isinstance(queue, asyncio.Queue):
-                continue
-            event_queue = cast("asyncio.Queue[object]", queue)
-            while True:
-                try:
-                    event = event_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                if isinstance(event, NativeEvent):
-                    events.append(event)
+        if isinstance(adapters, dict):
+            for item in cast(Mapping[object, object], adapters).values():
+                _drain_adapter(item[0] if isinstance(item, tuple) else item, native_session_id, events)
+        # build_api passes the native adapters themselves, not a pool wrapper.
+        _drain_adapter(pool, native_session_id, events)
     return events
+
+
+def _drain_adapter(adapter: object, native_session_id: str, events: list[NativeEvent]) -> None:
+    queues = getattr(adapter, "_events", None)
+    if not isinstance(queues, dict):
+        return
+    queue = cast(Mapping[object, object], queues).get(native_session_id)
+    if not isinstance(queue, asyncio.Queue):
+        return
+    event_queue = cast("asyncio.Queue[object]", queue)
+    while True:
+        try:
+            event = event_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+        if isinstance(event, NativeEvent):
+            events.append(event)
 
 
 @router.get("/conversations/{conversation_id}/events")

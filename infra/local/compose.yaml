@@ -25,3 +25,54 @@ services:
       AWS_DEFAULT_REGION: us-east-1
     ports:
       - "127.0.0.1:59000:4566"
+  conversational:
+    # Host glibc is newer than this image, but the uv CPython build only needs GLIBC_2.17.
+    # Host network so the published Postgres, Valkey and loopback relays stay on 127.0.0.1.
+    image: ubuntu:24.04
+    network_mode: host
+    # Starts as root only to install bubblewrap, then the listener drops to the laptop user.
+    # The harness sandboxes call bwrap; Docker's default seccomp blocks that clone.
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    cap_add:
+      - SYS_ADMIN
+    working_dir: /home/ibmko/lab/oe/open-edge-ai-site
+    volumes:
+      # Editable installs point at these absolute paths. Keep them identical inside the container.
+      - ../..:/home/ibmko/lab/oe/open-edge-ai-site
+      - /home/ibmko/.local:/home/ibmko/.local:ro
+      - /home/ibmko/.codex:/home/ibmko/.codex
+      - /home/ibmko/.grok:/home/ibmko/.grok
+      - /home/ibmko/.local/share/esp-local-compose:/var/lib/esp-local
+    tmpfs:
+      - /srv/esp:uid=1000,gid=1000,mode=0755
+    environment:
+      HOME: /home/ibmko
+      PATH: /usr/bin:/bin
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      ESP_LOCAL_STATE: /var/lib/esp-local
+      ESP_PUBLIC_PORT: "8766"
+    command:
+      - bash
+      - -lc
+      - >-
+        set -euo pipefail;
+        if ! command -v bwrap >/dev/null 2>&1;
+        then apt-get update -qq && apt-get install -y -qq bubblewrap;
+        fi;
+        exec setpriv --reuid=1000 --regid=1000 --clear-groups --inh-caps=-all
+        /home/ibmko/lab/oe/open-edge-ai-site/.venv/bin/python
+        /home/ibmko/lab/oe/open-edge-ai-site/scripts/local_listen.py
+    healthcheck:
+      test:
+        - CMD
+        - /home/ibmko/lab/oe/open-edge-ai-site/.venv/bin/python
+        - -c
+        - import ssl,urllib.request; ctx=ssl._create_unverified_context(); urllib.request.urlopen('https://127.0.0.1:8766/livez', context=ctx, timeout=3).read()
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 180s
+    restart: "no"
